@@ -10,11 +10,13 @@ const MAX_REQUESTS = 300;
 // Commands that still work while a JavaScript dialog blocks the page.
 const DIALOG_SAFE_METHODS = new Set(["Page.handleJavaScriptDialog", "Page.captureScreenshot", "Page.getLayoutMetrics"]);
 
-const sessions = new Map(); // tabId -> { lastUsed, dialog, console: [] }
+const sessions = new Map(); // tabId -> { lastUsed, dialog, console, requests, inflight (request keys still loading), frames }
 const eventListeners = new Set();
 
+// Returns a function that removes the listener.
 export function onCdpEvent(listener) {
   eventListeners.add(listener);
+  return () => eventListeners.delete(listener);
 }
 
 chrome.debugger.onDetach.addListener(({ tabId }) => sessions.delete(tabId));
@@ -62,12 +64,21 @@ chrome.debugger.onEvent.addListener(({ tabId, sessionId: source }, method, param
     if (details.executionContextId && !session.pageContexts.has(contextKey(details.executionContextId))) return;
     pushConsole(session, "error", details.exception?.description ?? details.text, details.url);
   } else if (method === "Network.requestWillBeSent") {
+    // Keyed by request ID alone: a frame's document request can start in the parent's session and
+    // finish in the session of the frame's new process.
+    session.inflight.add(params.requestId);
+    session.networkActivityAt = Date.now();
     session.requests.push({ id: params.requestId, method: params.request.method, url: params.request.url, type: params.type, timestamp: new Date().toISOString() });
     if (session.requests.length > MAX_REQUESTS) session.requests.shift();
   } else if (method === "Network.responseReceived") {
     const request = session.requests.findLast((r) => r.id === params.requestId);
     if (request) request.status = params.response.status;
+  } else if (method === "Network.loadingFinished") {
+    session.inflight.delete(params.requestId);
+    session.networkActivityAt = Date.now();
   } else if (method === "Network.loadingFailed") {
+    session.inflight.delete(params.requestId);
+    session.networkActivityAt = Date.now();
     const request = session.requests.findLast((r) => r.id === params.requestId);
     if (request) request.error = params.errorText;
   } else if (method === "Log.entryAdded") {
@@ -125,7 +136,7 @@ async function attachNow(tabId) {
     if (!/already attached/i.test(error.message)) throw error;
     reattached = true;
   }
-  const session = { lastUsed: Date.now(), dialog: null, console: [], dialogWaiters: [], pageContexts: new Set(), frames: new Map(), requests: [] };
+  const session = { lastUsed: Date.now(), dialog: null, console: [], dialogWaiters: [], pageContexts: new Set(), frames: new Map(), requests: [], inflight: new Set(), attachedAt: Date.now(), networkActivityAt: null };
   sessions.set(tabId, session);
   // After a service worker restart the session is still attached but its state is gone. Turning
   // auto-attach and Runtime off first makes the browser report frames and execution contexts again.
@@ -222,7 +233,8 @@ async function sendChecked(tabId, method, params, sessionId) {
 export async function tabState(tabId) {
   const session = await attach(tabId);
   const frames = [...session.frames].map(([frameId, frame]) => ({ frameId, ...frame }));
-  return { dialog: session.dialog, frames };
+  const quietMs = session.inflight.size ? 0 : Date.now() - (session.networkActivityAt ?? session.attachedAt);
+  return { dialog: session.dialog, frames, inflightRequests: session.inflight.size, networkQuietMs: quietMs };
 }
 
 export function consoleLogs(tabId) {

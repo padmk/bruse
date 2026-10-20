@@ -3,7 +3,8 @@
 // logic lives in the MCP server.
 
 import { cdp, consoleLogs, detach, networkRequests, onCdpEvent, tabState } from "./cdp.js";
-import { agentTabs, endSession, groupAgentTab, markTab, nameSession } from "./sessions.js";
+import { waitForDownload } from "./downloads.js";
+import { agentTabs, endSession, groupAgentTab, markTab, nameSession, noteWindowOpen, onTabOpened } from "./sessions.js";
 
 const OFFSCREEN_ALARM = "offscreen-check";
 const MANAGEMENT_METHODS = {
@@ -25,6 +26,7 @@ function tabInfo(tab) {
     url: tab.url,
     groupId: tab.groupId,
     lastAccessed: tab.lastAccessed,
+    pendingUrl: tab.pendingUrl,
     status: tab.status,
   };
 }
@@ -49,46 +51,6 @@ function waitForLoad(tabId, timeoutMs = LOAD_TIMEOUT_MS) {
 function browserName() {
   const brands = navigator.userAgentData?.brands?.map((brand) => brand.brand) ?? [];
   return brands.find((brand) => !/Chromium|Not.?A.?Brand/i.test(brand)) ?? "Chromium";
-}
-
-// Waits for the next download whose referrer is on the given origin (any download when none is given).
-function waitForDownload(timeoutMs, referrerOrigin) {
-  return new Promise((resolve, reject) => {
-    let downloadId = null;
-    const cleanup = () => {
-      clearTimeout(timer);
-      chrome.downloads.onCreated.removeListener(onCreated);
-      chrome.downloads.onChanged.removeListener(onChanged);
-    };
-    const onCreated = (item) => {
-      if (downloadId !== null) return;
-      const origin = (() => {
-        try {
-          return new URL(item.referrer || item.url).origin;
-        } catch {
-          return null;
-        }
-      })();
-      if (!referrerOrigin || referrerOrigin === "null" || origin === referrerOrigin) downloadId = item.id;
-    };
-    const onChanged = async (delta) => {
-      if (delta.id !== downloadId || !delta.state) return;
-      if (delta.state.current === "complete") {
-        cleanup();
-        const [item] = await chrome.downloads.search({ id: downloadId });
-        resolve({ path: item.filename, url: item.finalUrl ?? item.url, mime: item.mime });
-      } else if (delta.state.current === "interrupted") {
-        cleanup();
-        reject(new Error("Download was interrupted"));
-      }
-    };
-    const timer = setTimeout(() => {
-      cleanup();
-      reject(new Error("No download completed in time"));
-    }, timeoutMs);
-    chrome.downloads.onCreated.addListener(onCreated);
-    chrome.downloads.onChanged.addListener(onChanged);
-  });
 }
 
 const handlers = {
@@ -143,7 +105,7 @@ const handlers = {
   "history.search": ({ text = "", startTime, endTime, maxResults = 100 }) =>
     chrome.history.search({ text, startTime, endTime, maxResults }),
 
-  "downloads.wait": ({ timeoutMs = 120_000, referrerOrigin }) => waitForDownload(timeoutMs, referrerOrigin),
+  "downloads.wait": ({ tabId, timeoutMs = 120_000 }) => waitForDownload(tabId, timeoutMs),
 
   // Browser organization through the WebExtensions APIs; only listed methods can be called.
   "browser.manage": ({ namespace, method, args = [] }) => {
@@ -234,8 +196,12 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 });
 
 onCdpEvent((tabId, method, params, sessionId) => {
+  if (method === "Page.windowOpen") noteWindowOpen(tabId, params.url);
   if (FORWARDED_EVENTS.has(method)) send({ type: "event", tabId, method, params, sessionId });
 });
+
+// Tells sessions which tab a page opened, so that notifications name the exact tab.
+onTabOpened((openerTabId, tabId, url) => send({ type: "event", tabId: openerTabId, method: "tabs.opened", params: { tabId, url } }));
 
 async function ensureOffscreenDocument() {
   const existing = await chrome.runtime.getContexts({ contextTypes: ["OFFSCREEN_DOCUMENT"] });

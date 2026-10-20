@@ -1,7 +1,7 @@
 // Playwright-style locators evaluated with the in-page locator engine. Single-element actions are
 // strict: they wait for exactly one match and fail on ambiguity.
 
-import { callOn, clickAt, dragBetween, elementCenter, focusNode, prepareClick } from "./elements.mjs";
+import { callOn, clickAt, dragBetween, focusNode } from "./elements.mjs";
 import { pressChord } from "./keys.mjs";
 import { LOCATOR_ENGINE, SET_VALUE } from "./page-scripts.mjs";
 
@@ -85,17 +85,57 @@ export class Locator {
     return this.chain({ kind: "or", steps: other.steps });
   }
 
-  // Returns the backend node IDs currently matched. Handles live in one object group released at the end.
-  async resolveAll() {
-    const cdp = this.tab.cdpSender();
+  // Where the steps run. Each frame step moves into the frame's document: a frame in another process
+  // (a cross-origin iframe) through its own CDP session, a frame in the same process through its owner
+  // element (`rootId`). Returns { sessionId, rootId, steps } for the remaining steps.
+  async scope() {
+    let sessionId = null;
+    let rootId = null;
+    let steps = this.steps;
+    for (;;) {
+      const cut = steps.findIndex((step) => step.kind === "frame");
+      if (cut < 0) return { sessionId, rootId, steps };
+      const owners = await this.matchIn({ sessionId, rootId }, [...steps.slice(0, cut), { kind: "css", selector: steps[cut].selector }]);
+      // Several or no matching frames are left to the in-page engine, which can only enter same-origin ones.
+      if (owners.length !== 1) return { sessionId, rootId, steps };
+      const { node } = await this.tab.cdpSender(sessionId)("DOM.describeNode", { backendNodeId: owners[0] });
+      const { frames } = await this.tab.context.call("page.state", { tabId: this.tab.tabId });
+      const frame = frames.find((f) => f.frameId === node.frameId);
+      if (frame) [sessionId, rootId] = [frame.sessionId, null];
+      else rootId = owners[0];
+      steps = steps.slice(cut + 1);
+    }
+  }
+
+  // Runs the locator engine on `steps` in a scope and passes its result to `consume` (a function source
+  // taking the matched elements and `arg`). Returns the CDP result object.
+  async runEngine({ sessionId, rootId }, steps, consume, arg, options) {
+    const cdp = this.tab.cdpSender(sessionId);
+    const call = `function (steps, arg) {
+      const root = this.nodeType === 9 ? this : this.contentDocument;
+      if (!root) return (${consume})([], arg);
+      return (${consume})((${LOCATOR_ENGINE})(steps, root), arg);
+    }`;
+    let objectId;
+    if (rootId) objectId = (await cdp("DOM.resolveNode", { backendNodeId: rootId, objectGroup: options.objectGroup })).object.objectId;
+    else objectId = (await cdp("Runtime.evaluate", { expression: "document", objectGroup: options.objectGroup })).result.objectId;
+    const { result, exceptionDetails } = await cdp("Runtime.callFunctionOn", {
+      objectId,
+      functionDeclaration: call,
+      arguments: [{ value: steps }, { value: arg ?? null }],
+      awaitPromise: true,
+      ...options,
+    });
+    if (exceptionDetails) throw new Error(exceptionDetails.exception?.description?.split("\n")[0] ?? exceptionDetails.text);
+    return result;
+  }
+
+  // Backend node IDs matched by `steps` in a scope. Handles live in one object group released at the end.
+  async matchIn(scope, steps) {
+    const cdp = this.tab.cdpSender(scope.sessionId);
     const objectGroup = `locator-${Math.random().toString(36).slice(2)}`;
     try {
-      const { result, exceptionDetails } = await cdp("Runtime.evaluate", {
-        expression: `(${LOCATOR_ENGINE})(${JSON.stringify(this.steps)})`,
-        returnByValue: false,
-        objectGroup,
-      });
-      if (exceptionDetails) throw new Error(exceptionDetails.exception?.description?.split("\n")[0] ?? exceptionDetails.text);
+      const result = await this.runEngine(scope, steps, "(elements) => elements", null, { returnByValue: false, objectGroup });
       const { result: properties } = await cdp("Runtime.getProperties", { objectId: result.objectId, ownProperties: true });
       const elements = properties.filter((p) => /^\d+$/.test(p.name) && p.value?.objectId).sort((a, b) => Number(a.name) - Number(b.name));
       return Promise.all(elements.map(async (element) => (await cdp("DOM.describeNode", { objectId: element.value.objectId })).node.backendNodeId));
@@ -104,11 +144,18 @@ export class Locator {
     }
   }
 
+  // Returns { ids, sessionId, cdp } for the elements currently matched.
+  async resolveAll() {
+    const scope = await this.scope();
+    return { ids: await this.matchIn(scope, scope.steps), sessionId: scope.sessionId, cdp: this.tab.cdpSender(scope.sessionId) };
+  }
+
+  // Waits for exactly one match and returns { id, sessionId, cdp }.
   async resolveOne({ timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
     const deadline = Date.now() + timeoutMs;
     for (;;) {
-      const ids = await this.resolveAll();
-      if (ids.length === 1) return ids[0];
+      const { ids, sessionId, cdp } = await this.resolveAll();
+      if (ids.length === 1) return { id: ids[0], sessionId, cdp };
       if (ids.length > 1) throw new Error(`Locator matched ${ids.length} elements; narrow it with filter(), nth(), first() or a more specific selector`);
       if (Date.now() > deadline) throw new Error(`Locator matched no element within ${timeoutMs} ms: ${JSON.stringify(this.steps)}`);
       await sleep(POLL_MS);
@@ -116,7 +163,7 @@ export class Locator {
   }
 
   async count() {
-    return (await this.resolveAll()).length;
+    return (await this.resolveAll()).ids.length;
   }
   async all() {
     const n = await this.count();
@@ -124,18 +171,12 @@ export class Locator {
   }
 
   async evaluate(fn, arg, { timeoutMs } = {}) {
-    const id = await this.resolveOne({ timeoutMs });
-    return callOn(this.tab.cdpSender(), id, `function (arg) { return (${functionSource(fn, "element, arg")})(this, arg); }`, [arg]);
+    const { id, cdp } = await this.resolveOne({ timeoutMs });
+    return callOn(cdp, id, `function (arg) { return (${functionSource(fn, "element, arg")})(this, arg); }`, [arg]);
   }
   async evaluateAll(fn, arg) {
-    const cdp = this.tab.cdpSender();
-    const { result, exceptionDetails } = await cdp("Runtime.evaluate", {
-      expression: `(${functionSource(fn, "elements, arg")})((${LOCATOR_ENGINE})(${JSON.stringify(this.steps)}), ${JSON.stringify(arg ?? null)})`,
-      returnByValue: true,
-      awaitPromise: true,
-    });
-    if (exceptionDetails) throw new Error(exceptionDetails.exception?.description?.split("\n")[0] ?? exceptionDetails.text);
-    return result.value;
+    const scope = await this.scope();
+    return (await this.runEngine(scope, scope.steps, functionSource(fn, "elements, arg"), arg, { returnByValue: true })).value;
   }
 
   async textContent(options) {
@@ -151,9 +192,9 @@ export class Locator {
     return this.evaluate((el, attribute) => el.getAttribute(attribute), name, options);
   }
   async isVisible() {
-    const ids = await this.resolveAll();
+    const { ids, cdp } = await this.resolveAll();
     if (!ids.length) return false;
-    return callOn(this.tab.cdpSender(), ids[0], "function () { const r = this.getBoundingClientRect(); return r.width > 0 && r.height > 0 && (!this.checkVisibility || this.checkVisibility({ checkVisibilityCSS: true })); }");
+    return callOn(cdp, ids[0], "function () { const r = this.getBoundingClientRect(); return r.width > 0 && r.height > 0 && (!this.checkVisibility || this.checkVisibility({ checkVisibilityCSS: true })); }");
   }
   async isEnabled() {
     return this.evaluate((el) => !el.disabled && el.getAttribute("aria-disabled") !== "true");
@@ -171,11 +212,12 @@ export class Locator {
     }
   }
 
-  async click({ button = "left", modifiers = [], timeoutMs, clickCount = 1 } = {}) {
-    const id = await this.resolveOne({ timeoutMs });
-    const cdp = this.tab.cdpSender();
-    await prepareClick(cdp, id);
-    await clickAt(cdp, await elementCenter(cdp, id), { mouseButton: button, clickCount, key: modifiers.map((m) => (m === "ControlOrMeta" ? "meta" : m)).join("+") });
+  // Waits, within the timeout, until a click at the element's center would reach the element.
+  async click({ button = "left", modifiers = [], timeoutMs = DEFAULT_TIMEOUT_MS, clickCount = 1, force = false } = {}) {
+    const deadline = Date.now() + timeoutMs;
+    const { id, sessionId } = await this.resolveOne({ timeoutMs });
+    const point = await this.tab.nodePoint(id, sessionId, { hitTest: true, force, timeoutMs: Math.max(0, deadline - Date.now()) });
+    await clickAt(this.tab.cdpSender(), point, { mouseButton: button, clickCount, key: modifiers.map((m) => (m === "ControlOrMeta" ? "meta" : m)).join("+") });
     await this.tab.afterInput();
   }
   async dblclick(options = {}) {
@@ -183,40 +225,38 @@ export class Locator {
   }
 
   async hover({ timeoutMs } = {}) {
-    const cdp = this.tab.cdpSender();
-    const [x, y] = await elementCenter(cdp, await this.resolveOne({ timeoutMs }));
-    await cdp("Input.dispatchMouseEvent", { type: "mouseMoved", x, y });
+    const { id, sessionId } = await this.resolveOne({ timeoutMs });
+    const [x, y] = await this.tab.nodePoint(id, sessionId);
+    await this.tab.cdpSender()("Input.dispatchMouseEvent", { type: "mouseMoved", x, y });
     await this.tab.afterInput();
   }
 
   // Drags this element onto the target locator's element.
   async dragTo(target, { timeoutMs } = {}) {
-    const cdp = this.tab.cdpSender();
     const [from, to] = [await this.resolveOne({ timeoutMs }), await target.resolveOne({ timeoutMs })];
-    await dragBetween(cdp, await elementCenter(cdp, from), await elementCenter(cdp, to));
+    await dragBetween(this.tab.cdpSender(), await this.tab.nodePoint(from.id, from.sessionId), await this.tab.nodePoint(to.id, to.sessionId));
     await this.tab.afterInput();
   }
 
   async fill(value, { timeoutMs } = {}) {
-    const id = await this.resolveOne({ timeoutMs });
-    await callOn(this.tab.cdpSender(), id, SET_VALUE, [value]);
+    const { id, cdp } = await this.resolveOne({ timeoutMs });
+    await callOn(cdp, id, SET_VALUE, [value]);
     await this.tab.afterInput();
   }
+  // Key and text input goes to the tab; the browser routes it to the focused frame.
   async pressSequentially(text, { timeoutMs } = {}) {
-    const id = await this.resolveOne({ timeoutMs });
-    const cdp = this.tab.cdpSender();
+    const { id, cdp } = await this.resolveOne({ timeoutMs });
     await focusNode(cdp, id);
-    for (const char of text) await cdp("Input.insertText", { text: char });
+    for (const char of text) await this.tab.cdpSender()("Input.insertText", { text: char });
     await this.tab.afterInput();
   }
   async type(text, options) {
     return this.pressSequentially(text, options);
   }
   async press(key, { timeoutMs } = {}) {
-    const id = await this.resolveOne({ timeoutMs });
-    const cdp = this.tab.cdpSender();
+    const { id, cdp } = await this.resolveOne({ timeoutMs });
     await focusNode(cdp, id);
-    await pressChord(cdp, key.replace(/\bControlOrMeta\b/, "meta"));
+    await pressChord(this.tab.cdpSender(), key.replace(/\bControlOrMeta\b/, "meta"));
     await this.tab.afterInput();
   }
 
@@ -250,8 +290,8 @@ export class Locator {
   }
 
   async setInputFiles(files, { timeoutMs } = {}) {
-    const id = await this.resolveOne({ timeoutMs });
-    await this.tab.cdpSender()("DOM.setFileInputFiles", { backendNodeId: id, files: Array.isArray(files) ? files : [files] });
+    const { id, cdp } = await this.resolveOne({ timeoutMs });
+    await cdp("DOM.setFileInputFiles", { backendNodeId: id, files: Array.isArray(files) ? files : [files] });
     await this.tab.afterInput();
   }
 }

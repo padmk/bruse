@@ -77,7 +77,7 @@ function linkTarget(url, pageHost) {
   return clip(shortUrl(url), 100);
 }
 
-function property(node, name) {
+export function property(node, name) {
   return node.properties?.find((p) => p.name === name)?.value?.value;
 }
 
@@ -189,7 +189,7 @@ export async function fetchPageTree(cdpFor, outOfProcessFrames = []) {
 }
 
 // Builds the simplified element tree: { key, node, sessionId, attrs, children }.
-function simplifyTree(page) {
+export function simplifyTree(page) {
   const frameRoots = new Map(); // owner key -> [AX roots of child frames]
   const frameInfo = new Map(); // frameId -> { byId, sessionId }
   let mainRoot = null;

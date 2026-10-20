@@ -26,10 +26,13 @@ MCP server (hub) ◀──WebSocket 127.0.0.1:47615──▶ extension ──chr
   passes requests to `service-worker.js`, which handles tab lifecycle, browser management, history and
   downloads. `cdp.js` relays DevTools Protocol commands through `chrome.debugger`, including the
   sessions of cross-origin frames, and tracks dialogs and console output. `sessions.js` keeps each agent
-  session's tabs in its own tab group and closes the unmarked ones when the session ends.
+  session's tabs in its own tab group and closes the unmarked ones when the session ends. `downloads.js`
+  pairs downloads with the tabs that started them.
 - `browser/mcp/`: MCP stdio server, no dependencies.
   - `server.mjs`: the `js` and `js_reset` tools. It runs the REPL in a worker thread (`repl-worker.mjs`)
-    and replaces the worker when a call exceeds its timeout, so even code that never yields is stopped.
+    and replaces the worker whenever a call times out, so nothing the call left running (an endless
+    loop, a timer, a pending request) can act on a page later. The browser connection stays in the main
+    thread and survives the replacement; the worker reaches it through `browser-port.mjs`.
   - `repl.mjs`: the persistent REPL; `hoist.mjs`: turns top-level declarations of a cell into globals so
     they persist and can be redeclared.
   - `browser-link.mjs`, `websocket.mjs`, `config.mjs`: hub election, authentication and transport. The
@@ -38,7 +41,7 @@ MCP server (hub) ◀──WebSocket 127.0.0.1:47615──▶ extension ──chr
     is elected on the next call.
   - `cua/`: the browser API. `index.mjs` (`cua` object, browser and management capability), `tab.mjs`
     (tab methods), `ax-tree.mjs` (accessibility snapshots across frames with stable element numbers and
-    diffs), `locator.mjs` and `page-scripts.mjs` (locators and in-page helpers), `elements.mjs` (pointer
+    diffs), `aria-snapshot.mjs` (Playwright-style ARIA snapshot for `domSnapshot()`), `locator.mjs` and `page-scripts.mjs` (locators and in-page helpers), `elements.mjs` (pointer
     input), `keys.mjs` (xdotool-style key chords), `content.mjs` (YouTube transcript and Google
     Workspace exports), `docs.mjs` (documentation shown to the agent), `output.mjs`.
 
@@ -86,7 +89,9 @@ The full API is in `browser/mcp/cua/docs.mjs`, which the agent receives on its f
 
 - Agent tabs open without focus in a tab group named after the session (`sessionName` or
   `browser.nameSession`). When the session ends, its unmarked tabs close, including tabs its pages
-  opened; `markDeliverable()` and `markHandoff()` keep a tab. Tabs bound with `getTab` stay untouched.
+  opened (paired with the opening page through the debugger's `Page.windowOpen`, so tool results name
+  the exact new tab); `markDeliverable()` and `markHandoff()` keep a tab. Tabs bound with `getTab` and
+  other tabs in the group, such as ones the user moves there, stay untouched.
 - Password manager menus are frames of another extension, which make the browser cut off debugger
   access. Fields the agent clicks or focuses get the opt-out attributes password managers honor, any
   such frame that still appears is removed before the command is retried, and password manager buttons
@@ -101,7 +106,16 @@ The full API is in `browser/mcp/cua/docs.mjs`, which the agent receives on its f
   `getJsDialog()`.
 - Console logs include only the page's own contexts, not other extensions' content scripts.
 - All frames, including cross-origin ones in other processes, are part of the accessibility tree and
-  accept input by element number. Playwright locators reach the main document and same-origin frames.
+  accept input by element number. Playwright locators reach them too, through `frameLocator()`.
+- Clicks aim at the center of the element's visible part and check that the element receives them: a
+  click by element number waits up to 1 s and a locator click up to its timeout for a covering element
+  (an overlay, a toast) to go away, then fails naming what would receive the click instead (also when
+  the element has `pointer-events: none`). `{ force: true }` clicks the point anyway. Actions on an element that was removed or replaced
+  fail with a pointer to `getAXState()` instead of changing the detached node.
+- `waitForLoadState({ state: "networkidle" })` waits until the tab has had no request in flight for
+  500 ms. `waitForEvent("download")` takes the next download the tab itself starts: downloads are paired
+  with the tab that reported them, so two tabs downloading the same URL each get their own file.
+- CSS locators reach into open shadow roots, as in Playwright.
 - The first call of a new session connects within about 0.5 s. While no session runs, the offscreen
   document retries twice a second; the browser logs the refused connections on the extension's card
   under **Errors**, which is expected.

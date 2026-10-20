@@ -33,7 +33,22 @@ export class Repl {
 
   reset() {
     this.cuaSession?.dispose();
+    for (const clear of this.timers?.values() ?? []) clear();
     this.cuaSession = createCua();
+    // Timers the code scheduled, cleared on reset so that leftover callbacks never run.
+    const timers = (this.timers = new Map());
+    const track = (start, stop, once) => (callback, ms, ...args) => {
+      const handle = start((...callbackArgs) => {
+        if (once) timers.delete(handle);
+        return callback(...callbackArgs);
+      }, ms, ...args);
+      timers.set(handle, () => stop(handle));
+      return handle;
+    };
+    const untrack = (stop) => (handle) => {
+      timers.delete(handle);
+      stop(handle);
+    };
     this.items = null;
     let context;
     // Writes from a context that was reset (for example a timed-out cell still running) are dropped.
@@ -52,10 +67,10 @@ export class Repl {
       cua: this.cuaSession.cua,
       nodeRepl,
       console: consoleProxy,
-      setTimeout,
-      clearTimeout,
-      setInterval,
-      clearInterval,
+      setTimeout: track(setTimeout, clearTimeout, true),
+      clearTimeout: untrack(clearTimeout),
+      setInterval: track(setInterval, clearInterval, false),
+      clearInterval: untrack(clearInterval),
       Buffer,
       URL,
       URLSearchParams,
@@ -113,11 +128,8 @@ export class Repl {
     const items = this.items.length ? this.items : [{ type: "text", text: "" }];
     this.items = null;
     useOutput(null);
-    // Code that outlived its call could still act and write output later; start a fresh session.
-    if (timedOut) {
-      this.reset();
-      items.push({ type: "text", text: "The REPL was reset because the call timed out. Bind tabs again with cua.getTab(id)." });
-    }
-    return { content: items, isError };
+    // Code that outlived its call could still act; the server replaces this worker when it sees timedOut.
+    if (timedOut) this.reset();
+    return { content: items, isError, timedOut };
   }
 }

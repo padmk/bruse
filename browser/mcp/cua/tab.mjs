@@ -1,9 +1,10 @@
 // A bound browser tab: accessibility state, screenshots, input by element index or point, navigation,
 // dialogs, Playwright-style locators and console logs.
 
+import { ariaSnapshot } from "./aria-snapshot.mjs";
 import { AXTracker, fetchPageTree } from "./ax-tree.mjs";
 import { createContentApi } from "./content.mjs";
-import { callOn, clickAt, dragBetween, elementCenter, focusNode, prepareClick } from "./elements.mjs";
+import { callOn, clickAt, coveringElement, dragBetween, elementCenter, focusNode, prepareClick } from "./elements.mjs";
 import { pressChord } from "./keys.mjs";
 import { Locator, functionSource, isRegExp } from "./locator.mjs";
 import { emitImage, emitText } from "./output.mjs";
@@ -23,6 +24,9 @@ const WAIT_FOR_QUIET_DOM = `(quietMs, maxMs) => new Promise((resolve) => {
   const limit = setTimeout(done, Math.max(quietMs, maxMs));
 })`;
 const SCROLL_PAGE_FRACTION = 0.85;
+const NETWORK_IDLE_MS = 500;
+// How long a click by element number waits for something covering the element (an animation, a toast) to go away.
+const COVERED_WAIT_MS = 1_000;
 const DIRECTIONS = { up: [0, -1], u: [0, -1], down: [0, 1], d: [0, 1], left: [-1, 0], l: [-1, 0], right: [1, 0], r: [1, 0] };
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -98,26 +102,58 @@ export class Tab {
     return this.tracker.nodeRef(index);
   }
 
-  // Top-left of a frame session's viewport in main-page coordinates.
-  async frameOffset(sessionId) {
-    if (!sessionId) return [0, 0];
+  // A frame session's owner element in its parent session and the frame's content box there.
+  async frameOwner(sessionId) {
     const { frames } = await this.context.call("page.state", { tabId: this.tabId });
     const frame = frames.find((f) => f.sessionId === sessionId);
     if (!frame) throw new Error("The frame of this element is gone; call getAXState() again");
     const parent = this.cdpSender(frame.parentSessionId);
     const { backendNodeId } = await parent("DOM.getFrameOwner", { frameId: frame.frameId });
     const { model } = await parent("DOM.getBoxModel", { backendNodeId });
-    const [px, py] = await this.frameOffset(frame.parentSessionId);
-    return [px + model.content[0], py + model.content[1]];
+    return { parentSessionId: frame.parentSessionId, backendNodeId, origin: [model.content[0], model.content[1]] };
   }
 
-  async pointFor(target) {
+  // Top-left of a frame session's viewport in main-page coordinates.
+  async frameOffset(sessionId) {
+    if (!sessionId) return [0, 0];
+    const { parentSessionId, origin } = await this.frameOwner(sessionId);
+    const [px, py] = await this.frameOffset(parentSessionId);
+    return [px + origin[0], py + origin[1]];
+  }
+
+  // What would receive a click at `point` (in the node's session) instead of the node, through all
+  // frames up to the page, or null.
+  async coveringAt(backendNodeId, sessionId, point) {
+    const covering = await coveringElement(this.cdpSender(sessionId), backendNodeId, point, !sessionId);
+    if (covering || !sessionId) return covering;
+    const owner = await this.frameOwner(sessionId);
+    return this.coveringAt(owner.backendNodeId, owner.parentSessionId, [point[0] + owner.origin[0], point[1] + owner.origin[1]]);
+  }
+
+  // Main-page point at the center of a node. With `hitTest`, waits until a click there would reach the
+  // node and fails if another element stays on top (`force` skips the check).
+  async nodePoint(backendNodeId, sessionId, { hitTest = false, force = false, timeoutMs = COVERED_WAIT_MS } = {}) {
+    const cdp = this.cdpSender(sessionId);
+    await prepareClick(cdp, backendNodeId);
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      const point = await elementCenter(cdp, backendNodeId);
+      const covering = hitTest && !force ? await this.coveringAt(backendNodeId, sessionId, point) : null;
+      if (!covering) {
+        const [dx, dy] = await this.frameOffset(sessionId);
+        return [point[0] + dx, point[1] + dy];
+      }
+      if (Date.now() > deadline) {
+        throw new Error(`A click on the element would reach ${covering} instead: something covers the element or it does not take pointer events. Close or click what covers it first, or pass { force: true } to click the point anyway`);
+      }
+      await sleep(100);
+    }
+  }
+
+  async pointFor(target, options) {
     if (Array.isArray(target)) return target;
     const { backendNodeId, sessionId } = await this.nodeFor(target);
-    await prepareClick(this.cdpSender(sessionId), backendNodeId);
-    const [x, y] = await elementCenter(this.cdpSender(sessionId), backendNodeId);
-    const [dx, dy] = await this.frameOffset(sessionId);
-    return [x + dx, y + dy];
+    return this.nodePoint(backendNodeId, sessionId, options);
   }
 
   // --- Observation ---
@@ -185,7 +221,7 @@ export class Tab {
   // --- Input ---
 
   async click(target, options = {}) {
-    await clickAt(this.cdpSender(), await this.pointFor(target), options);
+    await clickAt(this.cdpSender(), await this.pointFor(target, { hitTest: true, force: options.force }), options);
     await this.afterInput();
   }
 
@@ -352,21 +388,33 @@ export class Tab {
       async evaluate(fn, arg) {
         return tab.evaluateInPage(`(${functionSource(fn, "arg")})(${JSON.stringify(arg ?? null)})`);
       },
+      // ARIA snapshot of the page in Playwright's format; it does not change element numbers.
       async domSnapshot() {
-        return tab.evaluateInPage(`(() => {
-          const clone = document.documentElement.cloneNode(true);
-          clone.querySelectorAll("script, style, noscript, svg").forEach((el) => el.remove());
-          const frames = document.querySelectorAll("iframe");
-          clone.querySelectorAll("iframe").forEach((frame, i) => {
-            try { const body = frames[i].contentDocument?.body; if (body) frame.setAttribute("data-body", body.innerHTML.slice(0, 20000)); } catch {}
-          });
-          return clone.outerHTML;
-        })()`);
+        await tab.settle();
+        const { frames } = await tab.context.call("page.state", { tabId: tab.tabId });
+        return ariaSnapshot(await fetchPageTree((sessionId) => tab.cdpSender(sessionId), frames));
       },
       waitForTimeout: (ms) => sleep(ms),
+      // "networkidle" waits until the tab has had no request in flight for NETWORK_IDLE_MS.
       async waitForLoadState({ state = "load", timeoutMs = 30_000 } = {}) {
-        await tab.context.call("tabs.waitForLoad", { tabId: tab.tabId, timeoutMs });
-        if (state === "networkidle") await sleep(500);
+        const deadline = Date.now() + timeoutMs;
+        const timedOut = (what) => new Error(`The page did not reach ${what} within ${timeoutMs} ms`);
+        if (state === "domcontentloaded") {
+          while ((await tab.evaluateInPage("document.readyState").catch(() => "loading")) === "loading") {
+            if (Date.now() > deadline) throw timedOut("domcontentloaded");
+            await sleep(50);
+          }
+          return;
+        }
+        const { loaded } = await tab.context.call("tabs.waitForLoad", { tabId: tab.tabId, timeoutMs });
+        if (!loaded) throw timedOut("load");
+        if (state !== "networkidle") return;
+        for (;;) {
+          const { inflightRequests, networkQuietMs } = await tab.context.call("page.state", { tabId: tab.tabId });
+          if (networkQuietMs >= NETWORK_IDLE_MS) return;
+          if (Date.now() > deadline) throw new Error(`The network did not become idle within ${timeoutMs} ms (${inflightRequests} requests still loading)`);
+          await sleep(Math.max(50, Math.min(NETWORK_IDLE_MS - networkQuietMs, 100)));
+        }
       },
       async waitForURL(pattern, { timeoutMs = 30_000 } = {}) {
         const deadline = Date.now() + timeoutMs;
@@ -391,8 +439,8 @@ export class Tab {
       },
       async waitForEvent(event, { timeoutMs = 30_000 } = {}) {
         if (event === "download") {
-          // Only downloads started from this tab's site count, not unrelated ones elsewhere in the browser.
-          const download = tab.context.call("downloads.wait", { timeoutMs, referrerOrigin: new URL((await tab.url()) ?? "about:blank").origin });
+          // Only a download this tab starts counts, not unrelated ones elsewhere in the browser.
+          const download = tab.context.call("downloads.wait", { tabId: tab.tabId, timeoutMs });
           download.catch(() => {}); // the caller may never ask for the path
           return { path: async () => (await download).path };
         }
