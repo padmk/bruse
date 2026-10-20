@@ -1,6 +1,8 @@
 // Agent sessions: tabs an agent session opened, the tab group that marks them, and cleanup when the
 // session ends. State lives in chrome.storage.session so it survives service worker restarts.
 
+import { sinceAgentInput } from "./cdp.js";
+
 const DEFAULT_GROUP_TITLE = "Claude";
 const GROUP_COLOR = "orange";
 // Marked tabs survive session cleanup: deliverables are results for the user, handoffs wait for later work.
@@ -34,25 +36,32 @@ chrome.tabs.onRemoved.addListener((tabId) =>
 );
 
 // Tabs that pages open (target=_blank links, window.open, also with noopener) are reported by the
-// browser together with the tab that opened them. A tab that a session's page opened belongs to that
-// session. Other new tabs, including ones the user opens or moves into the agent group, belong to none.
+// browser together with the tab that opened them. A tab that a session's page opened in response to
+// the agent's input belongs to that session. Other new tabs, including ones the user opens from such a
+// page or moves into the agent group, belong to none.
 const openedListeners = new Set();
-const openerOf = new Map(); // tab id -> id of the tab that opened it
+const ancestorsOf = new Map(); // tab id -> tabs that opened it, nearest first; kept when those close
+
+// A page opened a tab from an agent action when the agent gave the opening tab input just before.
+// Tabs the user opens from such a page (its context menu, a middle click) are not the session's.
+const AGENT_OPEN_WINDOW_MS = 3_000;
 
 export function onTabOpened(listener) {
   openedListeners.add(listener);
 }
 
-// The tab that opened this tab, if a page opened it.
-export function openerTab(tabId) {
-  return openerOf.get(tabId);
+// The tabs that opened this tab, nearest first.
+export function openerChain(tabId) {
+  return ancestorsOf.get(tabId) ?? [];
 }
 
-chrome.tabs.onRemoved.addListener((tabId) => openerOf.delete(tabId));
+chrome.tabs.onRemoved.addListener((tabId) => ancestorsOf.delete(tabId));
 
 chrome.webNavigation.onCreatedNavigationTarget.addListener(({ sourceTabId, tabId, url }) => {
-  openerOf.set(tabId, sourceTabId);
-  for (const listener of openedListeners) listener(sourceTabId, tabId, url);
+  ancestorsOf.set(tabId, [sourceTabId, ...openerChain(sourceTabId)].slice(0, 8));
+  const byAgent = sinceAgentInput(sourceTabId) < AGENT_OPEN_WINDOW_MS;
+  for (const listener of openedListeners) listener(sourceTabId, tabId, url, byAgent);
+  if (!byAgent) return;
   serialized(async () => {
     const state = await load();
     const opener = state.tabs[sourceTabId];

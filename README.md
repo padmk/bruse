@@ -94,8 +94,9 @@ The full API is in `browser/mcp/cua/docs.mjs`, which the agent receives on its f
 
 - Agent tabs open without focus in a tab group named after the session (`sessionName` or
   `browser.nameSession`). When the session ends, its unmarked tabs close, including tabs its pages
-  opened (the browser reports each such tab with the tab that opened it, through
-  `webNavigation.onCreatedNavigationTarget`, so tool results name the exact new tab);
+  opened in response to the agent's input (the browser reports each such tab with the tab that
+  opened it, through `webNavigation.onCreatedNavigationTarget`, so tool results name the exact new
+  tab; tabs the user opens from an agent page, for example from its context menu, stay the user's);
   `markDeliverable()` and `markHandoff()` keep a tab. Tabs bound with `getTab` and
   other tabs in the group, such as ones the user moves there, stay untouched.
 - Agent work keeps the user's app in front. Brave brings its window forward when a page opens a tab

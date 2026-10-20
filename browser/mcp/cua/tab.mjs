@@ -4,7 +4,7 @@
 import { ariaSnapshot } from "./aria-snapshot.mjs";
 import { AXTracker, fetchPageTree } from "./ax-tree.mjs";
 import { createContentApi } from "./content.mjs";
-import { callOn, clickAt, coveringElement, dragBetween, elementCenter, focusNode, prepareClick } from "./elements.mjs";
+import { OFF_PAGE, callOn, clickAt, coveringElement, dragBetween, elementCenter, focusNode, prepareClick } from "./elements.mjs";
 import { pressChord } from "./keys.mjs";
 import { Locator, functionSource, isRegExp } from "./locator.mjs";
 import { emitImage, emitText } from "./output.mjs";
@@ -46,6 +46,27 @@ function urlMatches(url, pattern) {
     return regex.test(url);
   }
   return url === pattern;
+}
+
+// Maps the unit square onto a quad (top-left, top-right, bottom-right, bottom-left), also through a
+// perspective transform: the projective mapping fixed by the four corners.
+function squareToQuad([x0, y0, x1, y1, x2, y2, x3, y3]) {
+  const dx3 = x0 - x1 + x2 - x3;
+  const dy3 = y0 - y1 + y2 - y3;
+  let g = 0;
+  let h = 0;
+  if (Math.abs(dx3) > 1e-9 || Math.abs(dy3) > 1e-9) {
+    const [dx1, dx2, dy1, dy2] = [x1 - x2, x3 - x2, y1 - y2, y3 - y2];
+    const det = dx1 * dy2 - dx2 * dy1;
+    g = (dx3 * dy2 - dx2 * dy3) / det;
+    h = (dx1 * dy3 - dx3 * dy1) / det;
+  }
+  const [a, b, c] = [x1 - x0 + g * x1, x3 - x0 + h * x3, x0];
+  const [d, e, f] = [y1 - y0 + g * y1, y3 - y0 + h * y3, y0];
+  return (u, v) => {
+    const w = g * u + h * v + 1;
+    return [(a * u + b * v + c) / w, (d * u + e * v + f) / w];
+  };
 }
 
 export class Tab {
@@ -121,11 +142,8 @@ export class Tab {
       this.cdpSender(sessionId)("Runtime.evaluate", { expression: "[innerWidth, innerHeight]", returnByValue: true }),
     ]);
     const [width, height] = result.value ?? [model.width, model.height];
-    const q = model.content;
-    const toParent = ([x, y]) => [
-      q[0] + (x / width) * (q[2] - q[0]) + (y / height) * (q[6] - q[0]),
-      q[1] + (x / width) * (q[3] - q[1]) + (y / height) * (q[7] - q[1]),
-    ];
+    const toUnit = squareToQuad(model.content);
+    const toParent = ([x, y]) => toUnit(x / width, y / height);
     return { parentSessionId: frame.parentSessionId, backendNodeId, toParent };
   }
 
@@ -156,6 +174,7 @@ export class Tab {
       const covering = hitTest && !force ? await this.coveringAt(backendNodeId, sessionId, point) : null;
       if (!covering) return this.pagePoint(sessionId, point);
       if (Date.now() > deadline) {
+        if (covering === OFF_PAGE) throw new Error("The element's visible part is outside the page area (scrolled away or transformed off screen); scroll it into view first, or pass { force: true } to click the point anyway");
         throw new Error(`A click on the element would reach ${covering} instead: something covers the element or it does not take pointer events. Close or click what covers it first, or pass { force: true } to click the point anyway`);
       }
       await sleep(100);
