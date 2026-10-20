@@ -55,12 +55,36 @@ const TERMINATE_GRACE_MS = 500;
 const RESET_WAIT_MS = 2_000;
 const TIMED_OUT_NOTE = "The REPL was reset because the call timed out: code still running from it was stopped. Bind tabs again with cua.getTab(id).";
 
+// Mouse buttons the REPL's code holds pressed. A worker replaced in the middle of a long press would
+// leave the button down in the page; the host releases it.
+class PressedButtons {
+  constructor() {
+    this.pressed = new Map(); // "tab:button" -> mousePressed params with the tab
+  }
+
+  note(method, params) {
+    if (method !== "cdp" || params?.method !== "Input.dispatchMouseEvent") return;
+    const { type, button } = params.params ?? {};
+    const key = `${params.tabId}:${button}`;
+    if (type === "mousePressed") this.pressed.set(key, params);
+    else if (type === "mouseReleased") this.pressed.delete(key);
+  }
+
+  releaseAll() {
+    for (const { tabId, sessionId, params } of this.pressed.values()) {
+      callBrowser("cdp", { tabId, sessionId, method: "Input.dispatchMouseEvent", params: { ...params, type: "mouseReleased", clickCount: 1 } }).catch(() => {});
+    }
+    this.pressed.clear();
+  }
+}
+
 // Hosts the REPL worker and relays its browser calls and events through this thread's browser link.
 // A call that times out ends with the worker replaced, which stops everything the call left running.
 class ReplHost {
   constructor() {
     this.nextId = 1;
     this.pending = new Map();
+    this.buttons = new PressedButtons();
     onBrowserEvent((event) => this.worker.postMessage({ type: "browser-event", event }));
     this.start();
   }
@@ -83,6 +107,7 @@ class ReplHost {
       const reason = failure?.message ?? "it exited";
       const settle = [...this.pending.values()];
       this.pending.clear();
+      this.buttons.releaseAll();
       this.start();
       for (const resolve of settle) {
         resolve({ content: [{ type: "text", text: `The REPL crashed (${reason}) and was started again; its state is gone. Bind tabs again with cua.getTab(id).` }], isError: true });
@@ -91,19 +116,22 @@ class ReplHost {
   }
 
   async relay(worker, { callId, method, params }) {
+    // A replaced worker may still be running until it is terminated; it reaches nothing anymore.
+    if (worker !== this.worker) return;
+    this.buttons.note(method, params);
     let reply;
     try {
       reply = { type: "browser-reply", callId, result: await callBrowser(method, params) };
     } catch (error) {
       reply = { type: "browser-reply", callId, error: error?.message ?? String(error) };
     }
-    // A replaced worker gets no replies.
     if (worker === this.worker) worker.postMessage(reply);
   }
 
   async restart() {
     const old = this.worker;
     this.pending.clear();
+    this.buttons.releaseAll();
     this.start();
     await old.terminate();
   }

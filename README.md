@@ -92,12 +92,14 @@ The full API is in `browser/mcp/cua/docs.mjs`, which the agent receives on its f
 
 - Agent tabs open without focus in a tab group named after the session (`sessionName` or
   `browser.nameSession`). When the session ends, its unmarked tabs close, including tabs its pages
-  opened (paired with the opening page through the debugger's `Page.windowOpen`, so tool results name
-  the exact new tab); `markDeliverable()` and `markHandoff()` keep a tab. Tabs bound with `getTab` and
+  opened (the browser reports each such tab with the tab that opened it, through
+  `webNavigation.onCreatedNavigationTarget`, so tool results name the exact new tab);
+  `markDeliverable()` and `markHandoff()` keep a tab. Tabs bound with `getTab` and
   other tabs in the group, such as ones the user moves there, stay untouched.
 - Password manager menus are frames of another extension, which make the browser cut off debugger
   access. Fields the agent clicks or focuses get the opt-out attributes password managers honor, any
-  such frame that still appears is removed before the command is retried, and password manager buttons
+  such frame that still appears is removed (only the frame, or a known password manager's wrapper)
+  before the command is retried, and password manager buttons
   and live regions are left out of the accessibility tree.
 - State reads after an action wait until the DOM has had no mutations for 60 ms (at most 1 s from the
   action) instead of a fixed delay.
@@ -116,8 +118,10 @@ The full API is in `browser/mcp/cua/docs.mjs`, which the agent receives on its f
   the element has `pointer-events: none`). `{ force: true }` clicks the point anyway. Actions on an element that was removed or replaced
   fail with a pointer to `getAXState()` instead of changing the detached node.
 - `waitForLoadState({ state: "networkidle" })` waits until the tab has had no request in flight for
-  500 ms. `waitForEvent("download")` takes the next download the tab itself starts: downloads are paired
-  with the tab that reported them, so two tabs downloading the same URL each get their own file.
+  500 ms. `waitForEvent("download")` takes the next download the tab starts, or a tab it opened (such
+  as a `target=_blank` link to an attachment): downloads are paired with the tab that reported them or
+  that the browser opened for them, so two tabs downloading the same URL each get their own file, and
+  a download nothing ties to the tab is never handed out.
 - CSS locators reach into open shadow roots, as in Playwright.
 - The first call of a new session connects within about 0.5 s. While no session runs, the offscreen
   document retries twice a second; the browser logs the refused connections on the extension's card

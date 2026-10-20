@@ -33,72 +33,33 @@ chrome.tabs.onRemoved.addListener((tabId) =>
   }),
 );
 
-// Tabs that pages open (target=_blank links, window.open) are paired with the page that opened them:
-// the debugger reports the opening page and URL, the tabs API the new tab, in either order. A tab that
-// a session's page opened belongs to that session. Other new tabs, including ones the user moves into
-// the agent group, belong to no session.
-const PAIRING_WINDOW_MS = 5_000;
-const unpairedOpens = []; // { openerTabId, url, at }
-const unpairedTabs = []; // { tabId, url, at }
+// Tabs that pages open (target=_blank links, window.open, also with noopener) are reported by the
+// browser together with the tab that opened them. A tab that a session's page opened belongs to that
+// session. Other new tabs, including ones the user opens or moves into the agent group, belong to none.
 const openedListeners = new Set();
+const openerOf = new Map(); // tab id -> id of the tab that opened it
 
 export function onTabOpened(listener) {
   openedListeners.add(listener);
 }
 
-function normalizedUrl(url) {
-  if (!url || url === "about:blank") return "";
-  try {
-    return new URL(url).href;
-  } catch {
-    return url;
-  }
+// The tab that opened this tab, if a page opened it.
+export function openerTab(tabId) {
+  return openerOf.get(tabId);
 }
 
-function expire(list) {
-  const now = Date.now();
-  for (let i = list.length - 1; i >= 0; i--) if (now - list[i].at > PAIRING_WINDOW_MS) list.splice(i, 1);
-}
+chrome.tabs.onRemoved.addListener((tabId) => openerOf.delete(tabId));
 
-function takeFirst(list, url) {
-  expire(unpairedOpens);
-  expire(unpairedTabs);
-  const index = list.findIndex((entry) => entry.url === url);
-  return index < 0 ? null : list.splice(index, 1)[0];
-}
-
-function paired(openerTabId, tabId, url) {
-  for (const listener of openedListeners) listener(openerTabId, tabId, url);
-  return serialized(async () => {
+chrome.webNavigation.onCreatedNavigationTarget.addListener(({ sourceTabId, tabId, url }) => {
+  openerOf.set(tabId, sourceTabId);
+  for (const listener of openedListeners) listener(sourceTabId, tabId, url);
+  serialized(async () => {
     const state = await load();
-    const opener = state.tabs[openerTabId];
+    const opener = state.tabs[sourceTabId];
     if (!opener?.sessionId || state.tabs[tabId]) return;
     state.tabs[tabId] = { sessionId: opener.sessionId, mark: null };
     await save(state);
   });
-}
-
-export function noteWindowOpen(openerTabId, url) {
-  const key = normalizedUrl(url);
-  const tab = takeFirst(unpairedTabs, key);
-  if (tab) paired(openerTabId, tab.tabId, url);
-  else unpairedOpens.push({ openerTabId, url: key, at: Date.now() });
-}
-
-function noteTabUrl(tabId, url, at) {
-  const open = takeFirst(unpairedOpens, normalizedUrl(url));
-  if (open) paired(open.openerTabId, tabId, url);
-  else unpairedTabs.push({ tabId, url: normalizedUrl(url), at });
-}
-
-chrome.tabs.onCreated.addListener((tab) => noteTabUrl(tab.id, tab.pendingUrl || tab.url, Date.now()));
-
-// A tab opened by window.open() may get its URL only after it was created.
-chrome.tabs.onUpdated.addListener((tabId, change, tab) => {
-  const url = tab.pendingUrl || change.url;
-  if (!url) return;
-  const index = unpairedTabs.findIndex((entry) => entry.tabId === tabId && entry.url === "");
-  if (index >= 0) noteTabUrl(tabId, url, unpairedTabs.splice(index, 1)[0].at);
 });
 
 async function groupExists(groupId) {

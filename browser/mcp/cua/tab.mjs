@@ -107,23 +107,33 @@ export class Tab {
     return this.tracker.nodeRef(index);
   }
 
-  // A frame session's owner element in its parent session and the frame's content box there.
+  // A frame session's owner element in its parent session, with the quad of the frame's content box
+  // there and the frame's viewport size, which together map points into the parent (also through CSS
+  // transforms such as scale).
   async frameOwner(sessionId) {
     const { frames } = await this.context.call("page.state", { tabId: this.tabId });
     const frame = frames.find((f) => f.sessionId === sessionId);
     if (!frame) throw new Error("The frame of this element is gone; call getAXState() again");
     const parent = this.cdpSender(frame.parentSessionId);
     const { backendNodeId } = await parent("DOM.getFrameOwner", { frameId: frame.frameId });
-    const { model } = await parent("DOM.getBoxModel", { backendNodeId });
-    return { parentSessionId: frame.parentSessionId, backendNodeId, origin: [model.content[0], model.content[1]] };
+    const [{ model }, { result }] = await Promise.all([
+      parent("DOM.getBoxModel", { backendNodeId }),
+      this.cdpSender(sessionId)("Runtime.evaluate", { expression: "[innerWidth, innerHeight]", returnByValue: true }),
+    ]);
+    const [width, height] = result.value ?? [model.width, model.height];
+    const q = model.content;
+    const toParent = ([x, y]) => [
+      q[0] + (x / width) * (q[2] - q[0]) + (y / height) * (q[6] - q[0]),
+      q[1] + (x / width) * (q[3] - q[1]) + (y / height) * (q[7] - q[1]),
+    ];
+    return { parentSessionId: frame.parentSessionId, backendNodeId, toParent };
   }
 
-  // Top-left of a frame session's viewport in main-page coordinates.
-  async frameOffset(sessionId) {
-    if (!sessionId) return [0, 0];
-    const { parentSessionId, origin } = await this.frameOwner(sessionId);
-    const [px, py] = await this.frameOffset(parentSessionId);
-    return [px + origin[0], py + origin[1]];
+  // A point in a frame session's viewport mapped to main-page coordinates.
+  async pagePoint(sessionId, point) {
+    if (!sessionId) return point;
+    const { parentSessionId, toParent } = await this.frameOwner(sessionId);
+    return this.pagePoint(parentSessionId, toParent(point));
   }
 
   // What would receive a click at `point` (in the node's session) instead of the node, through all
@@ -132,7 +142,7 @@ export class Tab {
     const covering = await coveringElement(this.cdpSender(sessionId), backendNodeId, point, !sessionId);
     if (covering || !sessionId) return covering;
     const owner = await this.frameOwner(sessionId);
-    return this.coveringAt(owner.backendNodeId, owner.parentSessionId, [point[0] + owner.origin[0], point[1] + owner.origin[1]]);
+    return this.coveringAt(owner.backendNodeId, owner.parentSessionId, owner.toParent(point));
   }
 
   // Main-page point at the center of a node. With `hitTest`, waits until a click there would reach the
@@ -144,10 +154,7 @@ export class Tab {
     for (;;) {
       const point = await elementCenter(cdp, backendNodeId);
       const covering = hitTest && !force ? await this.coveringAt(backendNodeId, sessionId, point) : null;
-      if (!covering) {
-        const [dx, dy] = await this.frameOffset(sessionId);
-        return [point[0] + dx, point[1] + dy];
-      }
+      if (!covering) return this.pagePoint(sessionId, point);
       if (Date.now() > deadline) {
         throw new Error(`A click on the element would reach ${covering} instead: something covers the element or it does not take pointer events. Close or click what covers it first, or pass { force: true } to click the point anyway`);
       }
