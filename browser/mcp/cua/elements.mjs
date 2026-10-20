@@ -2,6 +2,7 @@
 // a clickable point, and mouse input. `cdp` is a tab-bound CDP sender.
 
 import { modifierMask } from "./keys.mjs";
+import { OPT_OUT_OF_PASSWORD_MANAGERS } from "./page-scripts.mjs";
 
 const BUTTONS = { left: "left", l: "left", right: "right", r: "right", middle: "middle", m: "middle" };
 
@@ -25,21 +26,17 @@ export async function callOn(cdp, backendNodeId, functionDeclaration, args = [])
 
 export async function elementCenter(cdp, backendNodeId) {
   await cdp("DOM.scrollIntoViewIfNeeded", { backendNodeId }).catch(() => {});
-  const { quads } = await cdp("DOM.getContentQuads", { backendNodeId }).catch(() => ({ quads: [] }));
+  // Only a missing layout box means "not visible"; other failures (e.g. a lost debugger session) surface as they are.
+  const { quads } = await cdp("DOM.getContentQuads", { backendNodeId }).catch((error) => {
+    if (/Could not compute content quads/i.test(error.message)) return { quads: [] };
+    throw error;
+  });
   const quad = quads?.find((q) => q.length === 8 && Math.abs((q[2] - q[0]) * (q[5] - q[1])) > 0) ?? quads?.[0];
   if (!quad) throw new Error("The element is not visible on the page (it has no layout box)");
   return [(quad[0] + quad[2] + quad[4] + quad[6]) / 4, (quad[1] + quad[3] + quad[5] + quad[7]) / 4];
 }
 
-// Focuses an element in one call. It first adds the attributes password managers honor to skip a
-// field: their inline menus are frames of another extension, which make the browser cut off debugger
-// access to the tab.
-const OPT_OUT_OF_PASSWORD_MANAGERS = `
-  if (this instanceof HTMLInputElement || this instanceof HTMLTextAreaElement || this.isContentEditable) {
-    for (const [name, value] of [["data-1p-ignore", ""], ["data-lpignore", "true"], ["data-bwignore", "true"], ["data-form-type", "other"]]) {
-      if (!this.hasAttribute(name)) this.setAttribute(name, value);
-    }
-  }`;
+// Focuses an element in one call, after opting the field out of password manager menus.
 const FOCUS_ELEMENT = `function () {${OPT_OUT_OF_PASSWORD_MANAGERS}
   this.scrollIntoView({ block: "nearest", inline: "nearest" });
   this.focus({ preventScroll: true });

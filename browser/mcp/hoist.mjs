@@ -6,8 +6,9 @@
 // A line break does not end a statement after these tokens, or before these tokens.
 const CONTINUES_AFTER = new Set(["=", ",", "?", ":", "+", "-", "*", "/", "%", "&", "|", "^", "!", "~", "<", ">", ".", "(", "[", "{", "=>", "new", "typeof", "instanceof", "in", "of", "await", "yield", "delete", "void"]);
 const CONTINUES_BEFORE = new Set([".", "?", ":", ",", ")", "]", "}", "=", "+", "-", "*", "/", "%", "&", "|", "^", "<", ">", "(", "[", "`", "=>", "in", "of", "instanceof"]);
+const CONDITION_KEYWORDS = new Set(["if", "while", "for", "with"]);
 const KEYWORDS_BEFORE_REGEX = new Set(["return", "typeof", "instanceof", "in", "of", "new", "delete", "void", "throw", "case", "do", "else", "yield", "await"]);
-const IDENT = /[A-Za-z0-9_$\u0080-￿]/;
+const IDENT = /[A-Za-z0-9_$\u0080-\uffff]/;
 
 // Returns [{ start, end, kind, depth, statementStart }] tokens that matter for hoisting.
 function scan(code) {
@@ -74,13 +75,16 @@ function scan(code) {
       while (i < code.length && IDENT.test(code[i])) i++;
       push(start, i, "word");
     } else if ("([{".includes(c)) {
+      // A parenthesis after if/while/for/with holds a condition; a "/" right after it starts a regex.
+      const opener = c === "(" && CONDITION_KEYWORDS.has(lastSignificant) ? "(condition" : c;
       push(i, i + 1, "open");
-      brackets.push(c);
+      brackets.push(opener);
       i++;
       if (c === "{") statementStart = true;
     } else if (")]}".includes(c)) {
-      brackets.pop();
+      const opener = brackets.pop();
       push(i, i + 1, "close");
+      if (opener === "(condition") lastSignificant = ";";
       i++;
       if (c === "}") statementStart = true;
     } else if (c === ";") {
