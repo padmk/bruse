@@ -5,7 +5,7 @@ import { AXTracker, fetchPageTree } from "./ax-tree.mjs";
 import { createContentApi } from "./content.mjs";
 import { callOn, clickAt, dragBetween, elementCenter, focusNode, prepareClick } from "./elements.mjs";
 import { pressChord } from "./keys.mjs";
-import { Locator, functionSource } from "./locator.mjs";
+import { Locator, functionSource, isRegExp } from "./locator.mjs";
 import { emitImage, emitText } from "./output.mjs";
 import { DISPATCH_PASTE, SELECT_TEXT, SET_VALUE } from "./page-scripts.mjs";
 
@@ -32,7 +32,7 @@ function toBytes(base64) {
 }
 
 function urlMatches(url, pattern) {
-  if (pattern instanceof RegExp) return pattern.test(url);
+  if (isRegExp(pattern)) return pattern.test(url);
   if (typeof pattern === "function") return pattern(new URL(url));
   if (pattern.includes("*")) {
     const regex = new RegExp(`^${pattern.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*\*/g, "\u0000").replace(/\*/g, "[^/]*").replace(/\u0000/g, ".*")}$`);
@@ -376,11 +376,13 @@ export class Tab {
         }
         await tab.context.call("tabs.waitForLoad", { tabId: tab.tabId, timeoutMs: Math.max(1, deadline - Date.now()) });
       },
+      // Waits for a new document, so a reload or a submission back to the same URL also counts.
       async expectNavigation(action, { timeoutMs = 30_000, url } = {}) {
-        const before = await tab.url();
+        const loaderId = async () => (await tab.cdpSender()("Page.getFrameTree")).frameTree.frame.loaderId;
+        const before = await loaderId();
         const result = await action();
         const deadline = Date.now() + timeoutMs;
-        while ((await tab.url()) === before || (url && !urlMatches(await tab.url(), url))) {
+        while ((await loaderId().catch(() => before)) === before || (url && !urlMatches(await tab.url(), url))) {
           if (Date.now() > deadline) throw new Error("No navigation happened in time");
           await sleep(100);
         }
@@ -389,12 +391,22 @@ export class Tab {
       },
       async waitForEvent(event, { timeoutMs = 30_000 } = {}) {
         if (event === "download") {
-          const download = tab.context.call("downloads.wait", { timeoutMs });
+          // Only downloads started from this tab's site count, not unrelated ones elsewhere in the browser.
+          const download = tab.context.call("downloads.wait", { timeoutMs, referrerOrigin: new URL((await tab.url()) ?? "about:blank").origin });
+          download.catch(() => {}); // the caller may never ask for the path
           return { path: async () => (await download).path };
         }
         if (event === "filechooser") {
-          await tab.cdpSender()("Page.setInterceptFileChooserDialog", { enabled: true });
-          const opened = await tab.context.waitForEvent((e) => e.tabId === tab.tabId && e.method === "Page.fileChooserOpened", timeoutMs);
+          const cdp = tab.cdpSender();
+          await cdp("Page.setInterceptFileChooserDialog", { enabled: true });
+          let opened;
+          try {
+            opened = await tab.context.waitForEvent((e) => e.tabId === tab.tabId && e.method === "Page.fileChooserOpened", timeoutMs);
+          } catch (error) {
+            // Leave the user's own file pickers working.
+            await cdp("Page.setInterceptFileChooserDialog", { enabled: false }).catch(() => {});
+            throw error;
+          }
           return {
             isMultiple: () => opened.params.mode === "selectMultiple",
             setFiles: async (files) => {

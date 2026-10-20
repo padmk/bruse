@@ -35,16 +35,20 @@ export class Repl {
     this.cuaSession?.dispose();
     this.cuaSession = createCua();
     this.items = null;
-    const write = (value) => this.pushText(typeof value === "string" ? value : inspect(value, { depth: 6, breakLength: 120 }));
+    let context;
+    // Writes from a context that was reset (for example a timed-out cell still running) are dropped.
+    const write = (value) => {
+      if (context === this.context) this.pushText(typeof value === "string" ? value : inspect(value, { depth: 6, breakLength: 120 }));
+    };
     const nodeRepl = {
       write,
       emitImage: async (image, mimeType) => {
         const { data, mimeType: type } = imagePayload(await image, mimeType);
-        this.items?.push({ type: "image", data, mimeType: type });
+        if (context === this.context) this.items?.push({ type: "image", data, mimeType: type });
       },
     };
     const consoleProxy = Object.fromEntries(["log", "info", "warn", "error", "debug"].map((level) => [level, (...args) => write(args.map((a) => (typeof a === "string" ? a : inspect(a, { depth: 4 }))).join(" "))]));
-    this.context = vm.createContext({
+    context = this.context = vm.createContext({
       cua: this.cuaSession.cua,
       nodeRepl,
       console: consoleProxy,
@@ -80,6 +84,7 @@ export class Repl {
       image: (data, mimeType) => this.items.push({ type: "image", data, mimeType }),
     });
     let isError = false;
+    let timedOut = false;
     try {
       const script = new vm.Script(`(async () => {\n${hoistTopLevelDeclarations(code)}\n})()`, {
         filename: "repl.js",
@@ -89,18 +94,30 @@ export class Repl {
       });
       let timer;
       const timeout = new Promise((_, reject) => {
-        timer = setTimeout(() => reject(new Error(`Execution timed out after ${timeoutMs} ms; the code may still be running`)), timeoutMs);
+        timer = setTimeout(() => {
+          timedOut = true;
+          reject(new Error(`Execution timed out after ${timeoutMs} ms`));
+        }, timeoutMs);
       });
-      await Promise.race([script.runInContext(this.context), timeout]).finally(() => clearTimeout(timer));
+      // The vm timeout interrupts synchronous code (e.g. an endless loop before the first await).
+      await Promise.race([script.runInContext(this.context, { timeout: timeoutMs }), timeout]).finally(() => clearTimeout(timer));
     } catch (error) {
       isError = true;
-      this.pushText(error instanceof Error ? (error.stack ?? error.message).split("\n").filter((line) => !line.includes("node:internal")).slice(0, 6).join("\n") : String(error));
+      // Errors thrown in the vm come from another realm, so instanceof Error does not apply.
+      const text = typeof error?.stack === "string" ? error.stack : error?.message ?? String(error);
+      this.pushText(text.split("\n").filter((line) => !line.includes("node:internal")).slice(0, 6).join("\n"));
+      if (/Script execution timed out/.test(text)) timedOut = true;
     }
     const notifications = await this.cuaSession.takeNotifications();
     if (notifications.length) this.pushText(`Notifications:\n${notifications.map((n) => `- ${n}`).join("\n")}`);
     const items = this.items.length ? this.items : [{ type: "text", text: "" }];
     this.items = null;
     useOutput(null);
+    // Code that outlived its call could still act and write output later; start a fresh session.
+    if (timedOut) {
+      this.reset();
+      items.push({ type: "text", text: "The REPL was reset because the call timed out. Bind tabs again with cua.getTab(id)." });
+    }
     return { content: items, isError };
   }
 }

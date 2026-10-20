@@ -2,9 +2,9 @@
   "manifest_version": 3,
   "name": "Browser Control Bridge",
   "description": "Lets local agents read and operate browser tabs through a local MCP server.",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAt+CDMGy3iiZvT5vI4PKmuVuKXe7YGiPUpWbsDzyLF0sawSs2vMXfq2GWSHGDjMbQZP7Nd9BcUxUvmPXAhiWaSxCXLYB177zOwHMil6rwiGbu/aLLU+8bdY4yCMn5FGvhKuTwbAuTkuyxptxTxnvgV3v+O6wNgjRGrleRdo5I/C1XlMgEPHwI605D4G21lqAy2Gcel17hc6vpmkAdHZbwS1ymA6jaK6bpcpg8wVKsPe2ALOZlwXCRLu+yxEXp1seg2QLGfxo8ZO/RqnVAfQz00gEPPsMor2YrKdxKH3Vps/3hlA4XLVAzNjxZMLCuIcOwwuBYJQSHNjRJLrjQh4GjsQIDAQAB",
-  "minimum_chrome_version": "120",
+  "minimum_chrome_version": "125",
   "permissions": [
     "debugger",
     "tabs",

@@ -4,7 +4,7 @@
 
 const MAX_LINES = 3000;
 const MAX_TEXT = 300;
-const SKIPPED_ROLES = new Set(["InlineTextBox", "LineBreak"]);
+const SKIPPED_ROLES = new Set(["InlineTextBox", "LineBreak", "ListMarker"]);
 // Wrappers without their own meaning; unnamed ones are flattened unless they group several children.
 const TRANSPARENT_ROLES = new Set(["generic", "none", "presentation", "group", "listitem", "paragraph", "section", "Section", "LayoutTable", "LayoutTableRow", "LayoutTableCell", "Pre", "time", "Abbr", "emphasis", "strong", "code", "mark", "subscript", "superscript", "DescriptionListTerm", "DescriptionListDetail", "blockquote", "figure", "Ruby", "label", "LabelText"]);
 const ROLE_LABELS = {
@@ -145,11 +145,47 @@ export async function fetchPageTree(cdpFor, outOfProcessFrames = []) {
           trees.push({ frameId: frame.id, sessionId: null, nodes, ownerKey: `main:${backendNodeId}` });
         }
       } catch {
-        unavailableFrames.push(frame.url);
+        unavailableFrames.push(frame);
       }
     }),
   );
-  return { loaderId: frameTree.frame.loaderId, url: frameTree.frame.url, trees, attributes, unavailableFrames };
+
+  // Frames inside a cross-origin frame that share its process are reached through that frame's session.
+  await Promise.all(
+    outOfProcessFrames.map(async (remoteFrame) => {
+      const child = cdpFor(remoteFrame.sessionId);
+      const { frameTree: remoteTree } = await child("Page.getFrameTree").catch(() => ({ frameTree: null }));
+      const nested = [];
+      const walkTree = (tree) => {
+        for (const sub of tree?.childFrames ?? []) {
+          if (!remote.has(sub.frame.id)) nested.push(sub.frame);
+          walkTree(sub);
+        }
+      };
+      walkTree(remoteTree);
+      await Promise.all(
+        nested.map(async (frame) => {
+          try {
+            const [{ nodes }, { backendNodeId }] = await Promise.all([
+              child("Accessibility.getFullAXTree", { frameId: frame.id }),
+              child("DOM.getFrameOwner", { frameId: frame.id }),
+            ]);
+            trees.push({ frameId: frame.id, sessionId: remoteFrame.sessionId, nodes, ownerKey: `${sessionKey(remoteFrame.sessionId)}:${backendNodeId}` });
+          } catch {
+            unavailableFrames.push(frame);
+          }
+        }),
+      );
+    }),
+  );
+  const included = new Set(trees.map((tree) => tree.frameId));
+  return {
+    loaderId: frameTree.frame.loaderId,
+    url: frameTree.frame.url,
+    trees,
+    attributes,
+    unavailableFrames: [...new Map(unavailableFrames.filter((f) => !included.has(f.id)).map((f) => [f.id, f.url])).values()],
+  };
 }
 
 // Builds the simplified element tree: { key, node, sessionId, attrs, children }.
@@ -198,7 +234,8 @@ function simplifyTree(page) {
   const entry = (node, frameId, children) => {
     const { sessionId } = frameInfo.get(frameId);
     return {
-      key: node.backendDOMNodeId !== undefined ? `b${sessionKey(sessionId)}:${node.backendDOMNodeId}` : `${frameId}:${node.nodeId}`,
+      // Nodes without a DOM node get a key from their position when the tree is rendered.
+      key: node.backendDOMNodeId !== undefined ? `b${sessionKey(sessionId)}:${node.backendDOMNodeId}` : null,
       node,
       sessionId,
       attrs: page.attributes.get(`${sessionKey(sessionId)}:${node.backendDOMNodeId}`) ?? {},
@@ -278,9 +315,20 @@ export class AXTracker {
 
     const current = new Map();
     const order = [];
+    // Only elements in this snapshot can be acted on.
+    this.backendByIndex = new Map();
+    const lastChildOf = new Map(); // parent key -> key of the previous sibling seen
     let focusedLine = null;
     let truncated = false;
+    const positionalCounts = new Map();
     const visit = (element, depth, parentKey = null) => {
+      // AX node IDs change between snapshots, so a node without a DOM node is keyed by parent, role, name and order.
+      if (element.key === null) {
+        const base = `${parentKey}>${element.node.role?.value}:${element.node.name?.value ?? ""}`;
+        const count = positionalCounts.get(base) ?? 0;
+        positionalCounts.set(base, count + 1);
+        element.key = `${base}#${count}`;
+      }
       if (order.length >= MAX_LINES) {
         truncated = true;
         return;
@@ -288,7 +336,9 @@ export class AXTracker {
       const index = this.indexFor(element.key, depth === 0);
       const line = `${index} ${describe(element, pageHost)}`;
       if (element.node.backendDOMNodeId !== undefined) this.backendByIndex.set(index, { backendNodeId: element.node.backendDOMNodeId, sessionId: element.sessionId });
-      current.set(element.key, { index, depth, line, parent: parentKey });
+      const previousSibling = lastChildOf.get(parentKey) ?? null;
+      lastChildOf.set(parentKey, element.key);
+      current.set(element.key, { index, depth, line, parent: parentKey, previousSibling });
       order.push(element.key);
       if (property(element.node, "focused")) focusedLine = line;
       for (const child of element.children) visit(child, depth + 1, element.key);
@@ -305,8 +355,9 @@ export class AXTracker {
         const now = current.get(key);
         const before = this.previous.get(key);
         if (!before) changes.push(`+${format(now)}`);
-        // A node that moved to another parent counts as changed, shown at its new depth.
-        else if (before.line !== now.line || before.parent !== now.parent) changes.push(`~${format(now)}`);
+        // A node that moved to another parent or position counts as changed. A new previous sibling that
+        // was only inserted or removed next to it is not a move.
+        else if (before.line !== now.line || before.parent !== now.parent || this.reordered(before, now, current)) changes.push(`~${format(now)}`);
       }
       const removed = [...this.previous.entries()].filter(([key]) => !current.has(key)).map(([, value]) => value.index).sort((a, b) => a - b);
       if (!changes.length && !removed.length) text = "There has been no change in the accessibility tree.";
@@ -320,6 +371,13 @@ export class AXTracker {
     if (page.unavailableFrames.length) text += `\nCross-origin frames not included: ${page.unavailableFrames.map(shortUrl).join(", ")}`;
     this.previous = current;
     return { text, focusedLine };
+  }
+
+  reordered(before, now, current) {
+    if (before.previousSibling === now.previousSibling) return false;
+    const newNeighbourExisted = now.previousSibling === null || this.previous.has(now.previousSibling);
+    const oldNeighbourRemains = before.previousSibling === null || current.has(before.previousSibling);
+    return newNeighbourExisted && oldNeighbourRemains;
   }
 
   // Returns { backendNodeId, sessionId } for an element number of the latest snapshot.

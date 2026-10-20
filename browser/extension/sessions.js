@@ -15,19 +15,34 @@ async function save(state) {
   await chrome.storage.session.set({ agentState: state });
 }
 
-chrome.tabs.onRemoved.addListener(async (tabId) => {
-  const state = await load();
-  if (!state.tabs[tabId]) return;
-  delete state.tabs[tabId];
-  await save(state);
-});
+// Read-modify-write operations on the state run one at a time so concurrent requests do not
+// overwrite each other's changes.
+let queue = Promise.resolve();
+function serialized(task) {
+  const result = queue.then(task, task);
+  queue = result.catch(() => {});
+  return result;
+}
+
+chrome.tabs.onRemoved.addListener((tabId) =>
+  serialized(async () => {
+    const state = await load();
+    if (!state.tabs[tabId]) return;
+    delete state.tabs[tabId];
+    await save(state);
+  }),
+);
 
 async function groupExists(groupId) {
   if (groupId === undefined) return false;
   return chrome.tabGroups.get(groupId).then(() => true, () => false);
 }
 
-export async function groupAgentTab(tabId, sessionId, sessionName) {
+export function groupAgentTab(tabId, sessionId, sessionName) {
+  return serialized(() => groupAgentTabNow(tabId, sessionId, sessionName));
+}
+
+async function groupAgentTabNow(tabId, sessionId, sessionName) {
   const state = await load();
   if (sessionName) state.names[sessionId] = sessionName;
   let groupId = state.groups[sessionId];
@@ -44,7 +59,11 @@ export async function groupAgentTab(tabId, sessionId, sessionName) {
   await save(state);
 }
 
-export async function nameSession(sessionId, name) {
+export function nameSession(sessionId, name) {
+  return serialized(() => nameSessionNow(sessionId, name));
+}
+
+async function nameSessionNow(sessionId, name) {
   const state = await load();
   state.names[sessionId] = name;
   await save(state);
@@ -52,7 +71,11 @@ export async function nameSession(sessionId, name) {
   return null;
 }
 
-export async function markTab(tabId, mark) {
+export function markTab(tabId, mark) {
+  return serialized(() => markTabNow(tabId, mark));
+}
+
+async function markTabNow(tabId, mark) {
   const state = await load();
   state.tabs[tabId] ??= { sessionId: null, mark: null };
   state.tabs[tabId].mark = mark;
@@ -66,7 +89,11 @@ export async function agentTabs() {
 
 // Closes the session's unmarked agent tabs, including tabs its pages opened into the agent group,
 // and forgets the session.
-export async function endSession(sessionId) {
+export function endSession(sessionId) {
+  return serialized(() => endSessionNow(sessionId));
+}
+
+async function endSessionNow(sessionId) {
   const state = await load();
   const toClose = new Set();
   const groupId = state.groups[sessionId];

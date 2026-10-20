@@ -14,8 +14,9 @@ const GSUITE_FORMATS = {
   presentation: { pptx: "export/pptx", pdf: "export/pdf" },
 };
 
+// A file name without path separators or leading dots, so it stays inside the export directory.
 function safeName(text) {
-  return (text || "export").replace(/[^\p{L}\p{N} ._-]+/gu, "_").trim().slice(0, 80) || "export";
+  return (text || "export").replace(/[^\p{L}\p{N} ._-]+/gu, "_").replace(/^[.\s]+/, "").trim().slice(0, 80) || "export";
 }
 
 function save(name, data) {
@@ -69,7 +70,7 @@ export function createContentApi(tab) {
       if (!/(^|\.)youtube\.com$/.test(url.hostname) || url.pathname !== "/watch") throw new Error("Open a youtube.com/watch page first");
       const text = await tab.evaluateInPage(`(${READ_TRANSCRIPT})(${TRANSCRIPT_WAIT_MS})`);
       const title = (await tab.title())?.replace(/^\(\d+\)\s*/, "").replace(/ - YouTube$/, "");
-      return save(`${safeName(title)}-${url.searchParams.get("v")}.txt`, text);
+      return save(`${safeName(title)}-${safeName(url.searchParams.get("v"))}.txt`, text);
     },
 
     async exportGsuite(type) {
