@@ -6,6 +6,7 @@ const PROTOCOL_VERSION = "1.3";
 const IDLE_DETACH_MS = 120_000;
 const COMMAND_TIMEOUT_MS = 30_000;
 const MAX_CONSOLE_ENTRIES = 500;
+const MAX_REQUESTS = 300;
 // Commands that still work while a JavaScript dialog blocks the page.
 const DIALOG_SAFE_METHODS = new Set(["Page.handleJavaScriptDialog", "Page.captureScreenshot", "Page.getLayoutMetrics"]);
 
@@ -23,6 +24,7 @@ function enableChildSession(tabId, sessionId) {
   for (const [method, params] of [
     ["Page.enable", {}],
     ["Runtime.enable", {}],
+    ["Network.enable", {}],
     ["DOM.enable", {}],
     ["Target.setAutoAttach", { autoAttach: true, waitForDebuggerOnStart: false, flatten: true }],
   ]) {
@@ -59,6 +61,15 @@ chrome.debugger.onEvent.addListener(({ tabId, sessionId: source }, method, param
     const details = params.exceptionDetails;
     if (details.executionContextId && !session.pageContexts.has(contextKey(details.executionContextId))) return;
     pushConsole(session, "error", details.exception?.description ?? details.text, details.url);
+  } else if (method === "Network.requestWillBeSent") {
+    session.requests.push({ id: params.requestId, method: params.request.method, url: params.request.url, type: params.type, timestamp: new Date().toISOString() });
+    if (session.requests.length > MAX_REQUESTS) session.requests.shift();
+  } else if (method === "Network.responseReceived") {
+    const request = session.requests.findLast((r) => r.id === params.requestId);
+    if (request) request.status = params.response.status;
+  } else if (method === "Network.loadingFailed") {
+    const request = session.requests.findLast((r) => r.id === params.requestId);
+    if (request) request.error = params.errorText;
   } else if (method === "Log.entryAdded") {
     pushConsole(session, params.entry.level === "verbose" ? "debug" : params.entry.level, params.entry.text, params.entry.url);
   }
@@ -106,7 +117,7 @@ async function attach(tabId) {
     if (!/already attached/i.test(error.message)) throw error;
     reattached = true;
   }
-  const session = { lastUsed: Date.now(), dialog: null, console: [], dialogWaiters: [], pageContexts: new Set(), frames: new Map() };
+  const session = { lastUsed: Date.now(), dialog: null, console: [], dialogWaiters: [], pageContexts: new Set(), frames: new Map(), requests: [] };
   sessions.set(tabId, session);
   // Turning auto-attach off first makes the browser report frames that were attached before a restart.
   if (reattached) await rawSend(tabId, "Target.setAutoAttach", { autoAttach: false, waitForDebuggerOnStart: false, flatten: true }).catch(() => {});
@@ -116,6 +127,7 @@ async function attach(tabId) {
     rawSend(tabId, "Page.enable"),
     rawSend(tabId, "Runtime.enable"),
     rawSend(tabId, "Log.enable"),
+    rawSend(tabId, "Network.enable"),
     rawSend(tabId, "DOM.enable"),
     rawSend(tabId, "Accessibility.enable"),
     rawSend(tabId, "Page.setWebLifecycleState", { state: "active" }),
@@ -190,4 +202,8 @@ export async function tabState(tabId) {
 
 export function consoleLogs(tabId) {
   return sessions.get(tabId)?.console ?? [];
+}
+
+export function networkRequests(tabId) {
+  return (sessions.get(tabId)?.requests ?? []).map(({ id, ...request }) => request);
 }

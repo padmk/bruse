@@ -1,32 +1,16 @@
 // Persistent JavaScript session behind the `js` tool. Code runs as the body of an async function in a
-// long-lived vm context; top-level declarations are rewritten into context globals so that values
-// such as `const tab = …` survive between calls.
+// long-lived vm context; top-level declarations are rewritten into context globals (see hoist.mjs) so
+// that values such as `const tab = …` survive between calls and can be redeclared.
 
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { inspect } from "node:util";
 import vm from "node:vm";
 import { createCua } from "./cua/index.mjs";
+import { hoistTopLevelDeclarations } from "./hoist.mjs";
 import { useOutput } from "./cua/output.mjs";
 
 const DEFAULT_TIMEOUT_MS = 30_000;
-
-// Rewrites top-level (column 0) declarations into assignments to the context's globals.
-export function hoistTopLevelDeclarations(code) {
-  return code
-    .split("\n")
-    .map((line) => {
-      let match = line.match(/^(?:const|let|var)\s+([{[][^=]*[}\]])\s*=\s*(.*?);?\s*$/);
-      if (match) return `(${match[1]} = ${match[2]});`;
-      match = line.match(/^(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*;\s*$/);
-      if (match) return `${match[1]} = undefined;`;
-      line = line.replace(/^(?:const|let|var)\s+(?=[A-Za-z_$][\w$]*\s*=)/, "");
-      line = line.replace(/^(async\s+)?function(\s*\*?\s*)([A-Za-z_$][\w$]*)/, (_, async = "", star, name) => `${name} = ${async}function${star}${name}`);
-      line = line.replace(/^class\s+([A-Za-z_$][\w$]*)/, (_, name) => `${name} = class ${name}`);
-      return line;
-    })
-    .join("\n");
-}
 
 function imagePayload(image, mimeType) {
   if (image instanceof Uint8Array || Buffer.isBuffer(image)) return { data: Buffer.from(image).toString("base64"), mimeType: mimeType ?? "image/png" };

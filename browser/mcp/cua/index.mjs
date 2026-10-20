@@ -216,15 +216,16 @@ export function createCua() {
       showDocumentation();
       return makeBrowser();
     },
-    async createBrowserTab(browserId, url, options) {
+    async createBrowserTab(browserId, url, options = {}) {
       const tab = await createBrowserTab(browserId, url, options);
       showDocumentation();
-      await tab.getAXState();
+      if (options.emit !== false) await tab.getAXState();
       return tab;
     },
-    async getTab(reference, options) {
+    async getTab(reference, options = {}) {
       const tab = await getTab(reference, options);
       showDocumentation();
+      if (options.emit === false) return tab;
       const url = await tab.url();
       // New-tab pages carry no content worth reading.
       if (/^(chrome|brave):\/\/newtab\/?$/.test(url ?? "")) emitText(`Browser tab: ${tab.id}, Title: "New Tab", URL: ${JSON.stringify(url)}. Use tab.goto(url) to load a page.`);

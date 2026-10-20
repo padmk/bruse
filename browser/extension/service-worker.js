@@ -2,7 +2,7 @@
 // lifecycle, agent tab groups, raw CDP commands, browser management, history and downloads. Page
 // logic lives in the MCP server.
 
-import { cdp, consoleLogs, detach, onCdpEvent, tabState } from "./cdp.js";
+import { cdp, consoleLogs, detach, networkRequests, onCdpEvent, tabState } from "./cdp.js";
 import { agentTabs, endSession, groupAgentTab, markTab, nameSession } from "./sessions.js";
 
 const OFFSCREEN_ALARM = "offscreen-check";
@@ -129,6 +129,7 @@ const handlers = {
   cdp: ({ tabId, method, params, sessionId }) => cdp(tabId, method, params, sessionId),
   "page.state": ({ tabId }) => tabState(tabId),
   "page.console": ({ tabId }) => consoleLogs(tabId),
+  "page.network": ({ tabId }) => networkRequests(tabId),
 
   "history.search": ({ text = "", startTime, endTime, maxResults = 100 }) =>
     chrome.history.search({ text, startTime, endTime, maxResults }),

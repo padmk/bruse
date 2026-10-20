@@ -18,18 +18,19 @@ declare const cua: {
   listBrowsers(options?: ObservationOptions): Promise<BrowserInfo[]>;
   listTabs(options?: { browser?: string } & ObservationOptions): Promise<TabInfo[]>;
   getBrowser(options?: { id?: string }): Promise<Browser>;
-  createBrowserTab(browserId: string, url?: string, options?: { sessionName?: string }): Promise<Tab>; // opens a background tab in the agent tab group and shows its state
-  getTab(reference: string | { url: string }, options?: { browser?: string }): Promise<Tab>;            // binds an existing tab (ID or exact URL) and shows its state
+  createBrowserTab(browserId: string, url?: string, options?: { sessionName?: string; emit?: boolean }): Promise<Tab>; // opens a background tab in the agent tab group and shows its state
+  getTab(reference: string | { url: string }, options?: { browser?: string; emit?: boolean }): Promise<Tab>;            // binds an existing tab (ID or exact URL) and shows its state
   rewriteDocumentation(): Promise<void>;
 };
 
 interface Tab {
   readonly id: string;
   getAXState(options?: StateOptions): Promise<string>;        // numbered accessibility tree; later calls show a diff
-  getScreenshot(options?: ObservationOptions): Promise<Uint8Array>;
+  getScreenshot(options?: ObservationOptions): Promise<Uint8Array>;   // CSS pixels: points in the full-size image are click([x, y]) points; a client may show it downscaled
   getAXStateAndScreenshot(options?: StateOptions): Promise<{ state: string; screenshot?: Uint8Array }>;
   click(target: number | Vec2, options?: ClickOptions): Promise<void>;
-  drag(from: Vec2, to: Vec2): Promise<void>;
+  hover(target: number | Vec2): Promise<void>;                        // opens hover menus and tooltips
+  drag(from: number | Vec2, to: number | Vec2): Promise<void>;        // element numbers or points
   scroll(target: number | Vec2 | null, direction: Direction, pages?: number | { pixels: number }): Promise<void>;
   selectText(elementIndex: number, text: string, options?: { prefix?: string; suffix?: string; selectionType?: "text" | "cursor_before" | "cursor_after" }): Promise<void>;
   setValue(elementIndex: number, value: string): Promise<void>;          // inputs, textareas, selects (value or label), checkboxes ("true"/"false"), contenteditable
@@ -47,7 +48,10 @@ interface Tab {
   resetViewport(): Promise<void>;
   content: { exportYouTubeTranscript(): Promise<string>; exportGsuite(type: "pdf" | "docx" | "md" | "txt" | "xlsx" | "csv" | "pptx"): Promise<string> }; // returns a local file path
   playwright: PlaywrightAPI;
-  dev: { logs(options?: { filter?: string; levels?: string[]; limit?: number }): Promise<Array<{ level: string; message: string; timestamp: string; url?: string }>> };
+  dev: {
+    logs(options?: { filter?: string; levels?: string[]; limit?: number }): Promise<Array<{ level: string; message: string; timestamp: string; url?: string }>>;
+    requests(options?: { filter?: string; types?: string[]; limit?: number }): Promise<Array<{ method: string; url: string; type: string; status?: number; error?: string; timestamp: string }>>; // e.g. confirm a fetch/XHR submission
+  };
   clipboard: { readText(): Promise<string>; writeText(text: string): Promise<void> };
 }
 
@@ -75,7 +79,7 @@ interface PlaywrightAPI {             // locators: getByRole/getByText/getByLabe
   waitForEvent(event: "download"): Promise<{ path(): Promise<string> }>;   // start waiting before the click that downloads
   waitForEvent(event: "filechooser"): Promise<{ isMultiple(): boolean; setFiles(files: string | string[]): Promise<void> }>;
 }
-// Locator: click, dblclick, fill, type, pressSequentially, press, check, uncheck, setChecked, selectOption,
+// Locator: click, dblclick, hover, dragTo(locator), fill, type, pressSequentially, press, check, uncheck, setChecked, selectOption,
 // setInputFiles, textContent, innerText, allTextContents, getAttribute, isVisible, isEnabled, count, all,
 // first, last, nth, filter({ hasText, hasNotText, has, hasNot, visible }), and, or, locator, getBy…,
 // evaluate(fn(element, arg)), evaluateAll(fn(elements, arg)), waitFor({ state }). Single-element actions are strict.

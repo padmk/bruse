@@ -3,14 +3,25 @@
 
 import { AXTracker, fetchPageTree } from "./ax-tree.mjs";
 import { createContentApi } from "./content.mjs";
-import { callOn, clickAt, dragBetween, elementCenter, focusNode } from "./elements.mjs";
+import { callOn, clickAt, dragBetween, elementCenter, focusNode, prepareClick } from "./elements.mjs";
 import { pressChord } from "./keys.mjs";
 import { Locator, functionSource } from "./locator.mjs";
 import { emitImage, emitText } from "./output.mjs";
 import { DISPATCH_PASTE, SELECT_TEXT, SET_VALUE } from "./page-scripts.mjs";
 
 const SETTLE_LOAD_MS = 5_000;
-const SETTLE_DELAY_MS = 150;
+// After an action, state reads wait until the DOM has had no mutations for QUIET_MS, for at most
+// SETTLE_WINDOW_MS from the action.
+const QUIET_MS = 60;
+const SETTLE_WINDOW_MS = 1_000;
+const WAIT_FOR_QUIET_DOM = `(quietMs, maxMs) => new Promise((resolve) => {
+  let timer;
+  const done = () => { observer.disconnect(); clearTimeout(timer); clearTimeout(limit); resolve(); };
+  const observer = new MutationObserver(() => { clearTimeout(timer); timer = setTimeout(done, quietMs); });
+  observer.observe(document, { subtree: true, childList: true, attributes: true, characterData: true });
+  timer = setTimeout(done, quietMs);
+  const limit = setTimeout(done, Math.max(quietMs, maxMs));
+})`;
 const SCROLL_PAGE_FRACTION = 0.85;
 const DIRECTIONS = { up: [0, -1], u: [0, -1], down: [0, 1], d: [0, 1], left: [-1, 0], l: [-1, 0], right: [1, 0], r: [1, 0] };
 
@@ -37,7 +48,7 @@ export class Tab {
     this.id = String(info.id);
     this.tracker = new AXTracker();
     this.playwright = this.createPlaywright();
-    this.dev = { logs: (options) => this.logs(options) };
+    this.dev = { logs: (options) => this.logs(options), requests: (options) => this.requests(options) };
     this.clipboard = {
       readText: () => this.evaluateInPage("navigator.clipboard.readText()"),
       writeText: (text) => this.evaluateInPage(`navigator.clipboard.writeText(${JSON.stringify(text)})`),
@@ -60,14 +71,21 @@ export class Tab {
     return this.context.call("tabs.get", { tabId: this.tabId });
   }
 
-  async settle() {
-    const info = await this.info();
-    if (info.status === "loading") await this.context.call("tabs.waitForLoad", { tabId: this.tabId, timeoutMs: SETTLE_LOAD_MS });
-    await sleep(SETTLE_DELAY_MS);
+  // Waits for a loading page and, after a recent action, until the DOM has been quiet for a moment.
+  // Returns whether anything may have changed while waiting.
+  async settle(info) {
+    const sinceAction = Date.now() - (this.lastActionAt ?? 0);
+    const loading = (info ?? (await this.info())).status === "loading";
+    if (loading) await this.context.call("tabs.waitForLoad", { tabId: this.tabId, timeoutMs: SETTLE_LOAD_MS }).catch(() => {});
+    if (sinceAction < SETTLE_WINDOW_MS) {
+      await this.evaluateInPage(`(${WAIT_FOR_QUIET_DOM})(${QUIET_MS}, ${SETTLE_WINDOW_MS - sinceAction})`).catch(() => sleep(QUIET_MS));
+      return true;
+    }
+    return loading;
   }
 
   async afterInput() {
-    await sleep(50);
+    this.lastActionAt = Date.now();
   }
 
   async evaluateInPage(expression) {
@@ -96,6 +114,7 @@ export class Tab {
   async pointFor(target) {
     if (Array.isArray(target)) return target;
     const { backendNodeId, sessionId } = await this.nodeFor(target);
+    await prepareClick(this.cdpSender(sessionId), backendNodeId);
     const [x, y] = await elementCenter(this.cdpSender(sessionId), backendNodeId);
     const [dx, dy] = await this.frameOffset(sessionId);
     return [x + dx, y + dy];
@@ -104,8 +123,8 @@ export class Tab {
   // --- Observation ---
 
   async renderState(options = {}) {
-    await this.settle();
-    const [info, state] = await Promise.all([this.info(), this.context.call("page.state", { tabId: this.tabId })]);
+    let [info, state] = await Promise.all([this.info(), this.context.call("page.state", { tabId: this.tabId })]);
+    if (await this.settle(info)) [info, state] = await Promise.all([this.info(), this.context.call("page.state", { tabId: this.tabId })]);
     const header = `Browser tab: ${this.id}, Title: ${JSON.stringify(info.title ?? "")}, URL: ${JSON.stringify(info.url ?? "")}.`;
     if (state.dialog) {
       const { type, message } = state.dialog;
@@ -122,15 +141,18 @@ export class Tab {
     return text;
   }
 
+  // Captures in CSS pixels, so a point in the image is the same point for click([x, y]).
   async captureScreenshot({ fullPage = false, clip } = {}) {
-    const params = { format: "jpeg", quality: 80 };
-    if (fullPage || clip) {
-      const metrics = await this.cdpSender()("Page.getLayoutMetrics");
-      const size = metrics.cssContentSize ?? metrics.contentSize;
-      params.captureBeyondViewport = true;
-      params.clip = clip ? { ...clip, scale: 1 } : { x: 0, y: 0, width: size.width, height: size.height, scale: 1 };
-    }
-    const { data } = await this.cdpSender()("Page.captureScreenshot", params);
+    const cdp = this.cdpSender();
+    const [metrics, ratio] = await Promise.all([cdp("Page.getLayoutMetrics"), this.evaluateInPage("devicePixelRatio").catch(() => 1)]);
+    const viewport = metrics.cssVisualViewport;
+    const size = metrics.cssContentSize ?? metrics.contentSize;
+    const scale = 1 / (ratio || 1);
+    let region;
+    if (clip) region = { x: viewport.pageX + clip.x, y: viewport.pageY + clip.y, width: clip.width, height: clip.height };
+    else if (fullPage) region = { x: 0, y: 0, width: size.width, height: size.height };
+    else region = { x: viewport.pageX, y: viewport.pageY, width: viewport.clientWidth, height: viewport.clientHeight };
+    const { data } = await cdp("Page.captureScreenshot", { format: "jpeg", quality: 80, captureBeyondViewport: fullPage, clip: { ...region, scale } });
     return toBytes(data);
   }
 
@@ -167,8 +189,16 @@ export class Tab {
     await this.afterInput();
   }
 
+  // Moves the pointer over an element or point, e.g. to open hover menus.
+  async hover(target) {
+    const [x, y] = await this.pointFor(target);
+    await this.cdpSender()("Input.dispatchMouseEvent", { type: "mouseMoved", x, y });
+    await this.afterInput();
+  }
+
+  // Drags between element numbers or viewport points.
   async drag(from, to) {
-    await dragBetween(this.cdpSender(), from, to);
+    await dragBetween(this.cdpSender(), await this.pointFor(from), await this.pointFor(to));
     await this.afterInput();
   }
 
@@ -295,6 +325,14 @@ export class Tab {
     let entries = await this.context.call("page.console", { tabId: this.tabId });
     if (levels?.length) entries = entries.filter((entry) => levels.includes(entry.level) || (entry.level === "warn" && levels.includes("warning")));
     if (filter) entries = entries.filter((entry) => entry.message.includes(filter));
+    return limit ? entries.slice(-limit) : entries;
+  }
+
+  // Recent network requests of the tab (fetch, XHR, documents, …), oldest first.
+  async requests({ filter, types, limit } = {}) {
+    let entries = await this.context.call("page.network", { tabId: this.tabId });
+    if (types?.length) entries = entries.filter((entry) => types.includes(entry.type));
+    if (filter) entries = entries.filter((entry) => entry.url.includes(filter));
     return limit ? entries.slice(-limit) : entries;
   }
 

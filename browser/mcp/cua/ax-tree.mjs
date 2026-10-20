@@ -36,6 +36,9 @@ const ROLE_LABELS = {
   Iframe: "frame",
   IframePresentational: "frame",
   LabelText: "label",
+  LayoutTable: "container",
+  LayoutTableRow: "container",
+  LayoutTableCell: "container",
   generic: "container",
   group: "container",
   none: "container",
@@ -50,16 +53,28 @@ const ROLE_LABELS = {
   tree: "outline",
   treeitem: "row",
 };
+const EXTENSION_UI_TAGS = /^(com-1password|com-bitwarden|bitwarden-|lastpass-|dashlane-|protonpass-)/i;
+const EXTENSION_UI_IDS = /^(1p-|op-button|__lpform|bit-notification|protonpass-)/i;
+const STRUCTURAL_ROLES = new Set(["row", "cell", "gridcell", "generic", "group", "list", "listitem", "LayoutTable", "LayoutTableRow", "LayoutTableCell", "paragraph", "section", "region", "rowgroup", "table"]);
 const SETTABLE_ROLES = new Set(["textbox", "searchbox", "combobox", "spinbutton", "slider", "checkbox", "radio", "switch", "listbox", "ComboBoxMenuButton"]);
 const STATE_NAMES = { disabled: "disabled", checked: "checked", selected: "selected", pressed: "pressed", required: "required", readonly: "read only", invalid: "invalid" };
 
-function clip(text) {
+function clip(text, max = MAX_TEXT) {
   const flat = String(text).replace(/\s+/g, " ").trim();
-  return flat.length > MAX_TEXT ? `${flat.slice(0, MAX_TEXT)}…` : flat;
+  return flat.length > max ? `${flat.slice(0, max)}…` : flat;
 }
 
 function shortUrl(url) {
   return String(url).replace(/^https?:\/\//, "").replace(/^www\./, "");
+}
+
+// Link targets on the page's own host are shown as a path, others as host and path.
+function linkTarget(url, pageHost) {
+  try {
+    const parsed = new URL(url);
+    if (parsed.host === pageHost) return clip(`${parsed.pathname}${parsed.search}${parsed.hash}`, 80);
+  } catch {}
+  return clip(shortUrl(url), 100);
 }
 
 function property(node, name) {
@@ -88,7 +103,11 @@ function collectAttributes(domRoot, sessionId, attributes) {
 // plus DOM attributes. `cdpFor(sessionId)` returns a sender for that frame session (null: main).
 export async function fetchPageTree(cdpFor, outOfProcessFrames = []) {
   const main = cdpFor(null);
-  const [{ frameTree }, { root: domRoot }] = await Promise.all([main("Page.getFrameTree"), main("DOM.getDocument", { depth: -1, pierce: true })]);
+  const [{ frameTree }, { root: domRoot }, { nodes: mainNodes }] = await Promise.all([
+    main("Page.getFrameTree"),
+    main("DOM.getDocument", { depth: -1, pierce: true }),
+    main("Accessibility.getFullAXTree"),
+  ]);
   const attributes = new Map();
   collectAttributes(domRoot, null, attributes);
 
@@ -106,7 +125,7 @@ export async function fetchPageTree(cdpFor, outOfProcessFrames = []) {
   await Promise.all(
     frames.map(async (frame, index) => {
       if (index === 0) {
-        trees.push({ frameId: frame.id, sessionId: null, nodes: (await main("Accessibility.getFullAXTree")).nodes, ownerKey: null, main: true });
+        trees.push({ frameId: frame.id, sessionId: null, nodes: mainNodes, ownerKey: null, main: true });
         return;
       }
       const remoteFrame = remote.get(frame.id);
@@ -156,9 +175,14 @@ function simplifyTree(page) {
     let children = fieldRoot ? [] : (node.childIds ?? []).flatMap((id) => simplify(byId.get(id), frameId));
     for (const frame of frameRoots.get(`${sessionKey(sessionId)}:${node.backendDOMNodeId}`) ?? []) children = children.concat(simplify(frame.root, frame.frameId));
     if (node.ignored) return children;
+    // Password manager buttons and live regions injected into the page are not part of it.
+    const attrs = page.attributes.get(`${sessionKey(sessionId)}:${node.backendDOMNodeId}`);
+    if (attrs && (EXTENSION_UI_TAGS.test(attrs.tag ?? "") || EXTENSION_UI_IDS.test(attrs.id ?? ""))) return [];
     const name = clip(node.name?.value ?? "");
     if (TRANSPARENT_ROLES.has(role) && !name && !property(node, "focusable")) return children.length >= 2 ? [entry(node, frameId, children)] : children;
     if (role === "StaticText" && !name) return [];
+    // Empty structural cells, rows and wrappers carry nothing.
+    if (!name && !children.length && STRUCTURAL_ROLES.has(role) && !property(node, "focusable")) return [];
     // Unlabeled images carry nothing a reader can use.
     if ((role === "image" || role === "img") && !name && !children.length) return [];
     // Text leaves that repeat part of this element's name, or the value of an editable field, add nothing.
@@ -185,7 +209,7 @@ function simplifyTree(page) {
   return root ?? null;
 }
 
-function describe(element) {
+function describe(element, pageHost) {
   const { node, attrs } = element;
   const role = node.role?.value ?? "unknown";
   if (role === "RootWebArea" || role === "WebArea") return `AXWebArea ${clip(node.name?.value ?? "")}, URL: ${shortUrl(property(node, "url") ?? "")}`;
@@ -209,7 +233,7 @@ function describe(element) {
   const level = property(node, "level");
   if (name) parts.push(name);
   if (role === "heading" && level) parts.push(`Value: ${level}`);
-  else if (url) parts.push(`Value: ${shortUrl(url)}`);
+  else if (url) parts.push(`Value: ${linkTarget(url, pageHost)}`);
   else if (value && value !== name) parts.push(`Value: ${value}`);
   if (!value && attrs.placeholder && attrs.placeholder !== name) parts.push(`Placeholder: ${clip(attrs.placeholder)}`);
   const description = clip(node.description?.value ?? "");
@@ -246,24 +270,28 @@ export class AXTracker {
   render(page, { disableDiffing = false } = {}) {
     if (page.loaderId !== this.loaderId) this.reset(page.loaderId);
     const root = simplifyTree(page);
+    let pageHost = "";
+    try {
+      pageHost = new URL(page.url).host;
+    } catch {}
     if (!root) return { text: "The page has no accessibility tree yet.", focusedLine: null };
 
     const current = new Map();
     const order = [];
     let focusedLine = null;
     let truncated = false;
-    const visit = (element, depth) => {
+    const visit = (element, depth, parentKey = null) => {
       if (order.length >= MAX_LINES) {
         truncated = true;
         return;
       }
       const index = this.indexFor(element.key, depth === 0);
-      const line = `${index} ${describe(element)}`;
+      const line = `${index} ${describe(element, pageHost)}`;
       if (element.node.backendDOMNodeId !== undefined) this.backendByIndex.set(index, { backendNodeId: element.node.backendDOMNodeId, sessionId: element.sessionId });
-      current.set(element.key, { index, depth, line });
+      current.set(element.key, { index, depth, line, parent: parentKey });
       order.push(element.key);
       if (property(element.node, "focused")) focusedLine = line;
-      for (const child of element.children) visit(child, depth + 1);
+      for (const child of element.children) visit(child, depth + 1, element.key);
     };
     visit(root, 0);
 
@@ -277,7 +305,8 @@ export class AXTracker {
         const now = current.get(key);
         const before = this.previous.get(key);
         if (!before) changes.push(`+${format(now)}`);
-        else if (before.line !== now.line) changes.push(`~${format(now)}`);
+        // A node that moved to another parent counts as changed, shown at its new depth.
+        else if (before.line !== now.line || before.parent !== now.parent) changes.push(`~${format(now)}`);
       }
       const removed = [...this.previous.entries()].filter(([key]) => !current.has(key)).map(([, value]) => value.index).sort((a, b) => a - b);
       if (!changes.length && !removed.length) text = "There has been no change in the accessibility tree.";

@@ -1,7 +1,7 @@
 // Playwright-style locators evaluated with the in-page locator engine. Single-element actions are
 // strict: they wait for exactly one match and fail on ambiguity.
 
-import { callOn, clickAt, elementCenter, focusNode } from "./elements.mjs";
+import { callOn, clickAt, dragBetween, elementCenter, focusNode, prepareClick } from "./elements.mjs";
 import { pressChord } from "./keys.mjs";
 import { LOCATOR_ENGINE, SET_VALUE } from "./page-scripts.mjs";
 
@@ -166,11 +166,27 @@ export class Locator {
   async click({ button = "left", modifiers = [], timeoutMs, clickCount = 1 } = {}) {
     const id = await this.resolveOne({ timeoutMs });
     const cdp = this.tab.cdpSender();
+    await prepareClick(cdp, id);
     await clickAt(cdp, await elementCenter(cdp, id), { mouseButton: button, clickCount, key: modifiers.map((m) => (m === "ControlOrMeta" ? "meta" : m)).join("+") });
     await this.tab.afterInput();
   }
   async dblclick(options = {}) {
     return this.click({ ...options, clickCount: 2 });
+  }
+
+  async hover({ timeoutMs } = {}) {
+    const cdp = this.tab.cdpSender();
+    const [x, y] = await elementCenter(cdp, await this.resolveOne({ timeoutMs }));
+    await cdp("Input.dispatchMouseEvent", { type: "mouseMoved", x, y });
+    await this.tab.afterInput();
+  }
+
+  // Drags this element onto the target locator's element.
+  async dragTo(target, { timeoutMs } = {}) {
+    const cdp = this.tab.cdpSender();
+    const [from, to] = [await this.resolveOne({ timeoutMs }), await target.resolveOne({ timeoutMs })];
+    await dragBetween(cdp, await elementCenter(cdp, from), await elementCenter(cdp, to));
+    await this.tab.afterInput();
   }
 
   async fill(value, { timeoutMs } = {}) {

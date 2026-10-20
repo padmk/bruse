@@ -31,19 +31,29 @@ export async function elementCenter(cdp, backendNodeId) {
   return [(quad[0] + quad[2] + quad[4] + quad[6]) / 4, (quad[1] + quad[3] + quad[5] + quad[7]) / 4];
 }
 
-// Attributes that password managers honor to skip a field. Their inline menus are frames of another
-// extension, which make the browser cut off debugger access to the tab.
-const PASSWORD_MANAGER_OPT_OUT = `function () {
-  if (!(this instanceof HTMLInputElement || this instanceof HTMLTextAreaElement || this.isContentEditable)) return;
-  for (const [name, value] of [["data-1p-ignore", ""], ["data-lpignore", "true"], ["data-bwignore", "true"], ["data-form-type", "other"]]) {
-    if (!this.hasAttribute(name)) this.setAttribute(name, value);
-  }
+// Focuses an element in one call. It first adds the attributes password managers honor to skip a
+// field: their inline menus are frames of another extension, which make the browser cut off debugger
+// access to the tab.
+const OPT_OUT_OF_PASSWORD_MANAGERS = `
+  if (this instanceof HTMLInputElement || this instanceof HTMLTextAreaElement || this.isContentEditable) {
+    for (const [name, value] of [["data-1p-ignore", ""], ["data-lpignore", "true"], ["data-bwignore", "true"], ["data-form-type", "other"]]) {
+      if (!this.hasAttribute(name)) this.setAttribute(name, value);
+    }
+  }`;
+const FOCUS_ELEMENT = `function () {${OPT_OUT_OF_PASSWORD_MANAGERS}
+  this.scrollIntoView({ block: "nearest", inline: "nearest" });
+  this.focus({ preventScroll: true });
+}`;
+// Run before a click that may focus a field.
+const PREPARE_CLICK = `function () {${OPT_OUT_OF_PASSWORD_MANAGERS}
 }`;
 
 export async function focusNode(cdp, backendNodeId) {
-  await cdp("DOM.scrollIntoViewIfNeeded", { backendNodeId }).catch(() => {});
-  await callOn(cdp, backendNodeId, PASSWORD_MANAGER_OPT_OUT).catch(() => {});
-  await cdp("DOM.focus", { backendNodeId });
+  await callOn(cdp, backendNodeId, FOCUS_ELEMENT).catch(() => cdp("DOM.focus", { backendNodeId }));
+}
+
+export async function prepareClick(cdp, backendNodeId) {
+  await callOn(cdp, backendNodeId, PREPARE_CLICK).catch(() => {});
 }
 
 export async function clickAt(cdp, [x, y], { mouseButton = "left", clickCount = 1, key, durationMs = 0 } = {}) {

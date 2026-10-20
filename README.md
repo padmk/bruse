@@ -25,7 +25,8 @@ MCP server (hub) ◀──WebSocket 127.0.0.1:47615──▶ extension ──chr
   sessions of cross-origin frames, and tracks dialogs and console output. `sessions.js` keeps each agent
   session's tabs in its own tab group and closes the unmarked ones when the session ends.
 - `browser/mcp/`: MCP stdio server, no dependencies.
-  - `server.mjs`: the `js` and `js_reset` tools; `repl.mjs`: the persistent REPL.
+  - `server.mjs`: the `js` and `js_reset` tools; `repl.mjs`: the persistent REPL; `hoist.mjs`: turns
+    top-level declarations of a cell into globals so they persist and can be redeclared.
   - `browser-link.mjs`, `websocket.mjs`, `config.mjs`: hub election and transport. The first server to
     bind the port becomes the hub; the others connect to it and a new hub is elected when it exits.
   - `cua/`: the browser API. `index.mjs` (`cua` object, browser and management capability), `tab.mjs`
@@ -75,8 +76,15 @@ The full API is in `browser/mcp/cua/docs.mjs`, which the agent receives on its f
   `browser.nameSession`). When the session ends, its unmarked tabs close, including tabs its pages
   opened; `markDeliverable()` and `markHandoff()` keep a tab. Tabs bound with `getTab` stay untouched.
 - Password manager menus are frames of another extension, which make the browser cut off debugger
-  access. Fields the agent focuses get the opt-out attributes password managers honor, and any such
-  frame that still appears is removed before the command is retried.
+  access. Fields the agent clicks or focuses get the opt-out attributes password managers honor, any
+  such frame that still appears is removed before the command is retried, and password manager buttons
+  and live regions are left out of the accessibility tree.
+- State reads after an action wait until the DOM has had no mutations for 60 ms (at most 1 s from the
+  action) instead of a fixed delay.
+- Screenshots are captured in CSS pixels, so points in the image are the points `click([x, y])` takes.
+- `tab.hover()` and `locator.hover()` open hover menus; `tab.drag()` takes element numbers or points and
+  `locator.dragTo()` drags onto another element; `tab.dev.requests()` lists recent network requests,
+  for example to confirm a submission made with `fetch`.
 - Input that opens a JavaScript dialog returns immediately; the dialog is reported and handled with
   `getJsDialog()`.
 - Console logs include only the page's own contexts, not other extensions' content scripts.
