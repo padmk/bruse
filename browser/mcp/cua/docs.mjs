@@ -13,7 +13,7 @@ type ObservationOptions = { emit?: boolean };              // emit: false return
 type StateOptions = ObservationOptions & { disableDiffing?: boolean };
 type Direction = "up" | "down" | "left" | "right" | "u" | "d" | "l" | "r";
 type MouseButton = "left" | "right" | "middle" | "l" | "r" | "m";
-type ClickOptions = { mouseButton?: MouseButton; clickCount?: number; key?: string /* modifier chord, e.g. "shift" */; durationMs?: number };
+type ClickOptions = { mouseButton?: MouseButton; clickCount?: number; key?: string /* modifier chord, e.g. "shift" */; durationMs?: number; force?: boolean /* click an element even if another element covers it */ };
 
 declare const cua: {
   getState(options?: ObservationOptions): Promise<{ apps: []; browsers: Array<BrowserInfo & { tabs: TabInfo[] }> }>;
@@ -74,8 +74,10 @@ interface PlaywrightAPI {             // locators: getByRole/getByText/getByLabe
   locator(selector: string): Locator; getByRole(role: string, options?: { name?: string | RegExp; exact?: boolean }): Locator;
   getByText(text: string | RegExp, options?: { exact?: boolean }): Locator; getByLabel(text: string | RegExp): Locator;
   getByPlaceholder(text: string | RegExp): Locator; getByTestId(id: string): Locator; frameLocator(selector: string): Locator;
-  evaluate(fn: Function | string, arg?: unknown): Promise<unknown>; domSnapshot(): Promise<string>;
-  waitForTimeout(ms: number): Promise<void>; waitForLoadState(options?: { state?: "load" | "domcontentloaded" | "networkidle"; timeoutMs?: number }): Promise<void>;
+  evaluate(fn: Function | string, arg?: unknown): Promise<unknown>;   // runs in the page and can change it; prefer actions for input
+  domSnapshot(): Promise<string>;     // ARIA snapshot in Playwright's YAML form, including cross-origin frames
+  waitForLoadState(options?: { state?: "load" | "domcontentloaded" | "networkidle"; timeoutMs?: number }): Promise<void>; // networkidle: no request for 500 ms
+  waitForTimeout(ms: number): Promise<void>;
   waitForURL(url: string | RegExp, options?: { timeoutMs?: number }): Promise<void>;
   expectNavigation<T>(action: () => Promise<T>, options?: { timeoutMs?: number; url?: string | RegExp }): Promise<T>;
   waitForEvent(event: "download"): Promise<{ path(): Promise<string> }>;   // start waiting before the click that downloads
@@ -85,6 +87,7 @@ interface PlaywrightAPI {             // locators: getByRole/getByText/getByLabe
 // setInputFiles, textContent, innerText, allTextContents, getAttribute, isVisible, isEnabled, count, all,
 // first, last, nth, filter({ hasText, hasNotText, has, hasNot, visible }), and, or, locator, getBy…,
 // evaluate(fn(element, arg)), evaluateAll(fn(elements, arg)), waitFor({ state }). Single-element actions are strict.
+// click waits until no other element covers the target; { force: true } clicks the point anyway.
 \`\`\`
 
 ## Workflow

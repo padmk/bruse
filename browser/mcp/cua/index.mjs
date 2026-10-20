@@ -1,11 +1,12 @@
 // The `cua` object exposed in the REPL: browser inventory, browser selection and tab binding.
 
-import { callBrowser, onBrowserEvent, sessionId } from "../browser-link.mjs";
+import { callBrowser, onBrowserEvent, sessionId } from "../browser-port.mjs";
 import { BROWSER_DOCUMENTATION } from "./docs.mjs";
 import { emitText } from "./output.mjs";
 import { Tab } from "./tab.mjs";
 
 const BROWSER_ID = "1";
+const OPENED_TAB_WAIT_MS = 500;
 
 function waitForEvent(predicate, timeoutMs) {
   return new Promise((resolve, reject) => {
@@ -22,14 +23,9 @@ function waitForEvent(predicate, timeoutMs) {
   });
 }
 
-const context = {
-  call: (method, params) => callBrowser(method, params),
-  waitForEvent,
-};
-
 // Browser organization through allow-listed WebExtensions methods, e.g. management.tabs.query({}).
-function managementNamespace(namespace, methods) {
-  return Object.fromEntries(methods.map((method) => [method, (...args) => callBrowser("browser.manage", { namespace, method, args })]));
+function managementNamespace(call, namespace, methods) {
+  return Object.fromEntries(methods.map((method) => [method, (...args) => call("browser.manage", { namespace, method, args })]));
 }
 
 const MANAGEMENT_DOCUMENTATION = `management: Chrome-compatible windows, tabs, tabGroups and bookmarks methods for organizing the
@@ -40,16 +36,16 @@ browser when the user asks for it. Arguments and results follow the chrome.* API
 - bookmarks: search, getTree, getChildren, getRecent, get, create, update, move, remove, removeTree
 Change only what the user asked for, confirm before deleting bookmarks or closing user tabs, and report what changed.`;
 
-const capabilities = {
+const createCapabilities = (call) => ({
   management: {
     description: "Organize windows, tabs, tab groups and bookmarks.",
     documentation: async () => MANAGEMENT_DOCUMENTATION,
-    windows: managementNamespace("windows", ["getAll", "get", "getCurrent", "getLastFocused", "create", "update", "remove"]),
-    tabs: managementNamespace("tabs", ["query", "get", "update", "move", "group", "ungroup", "remove", "reload", "duplicate", "discard"]),
-    tabGroups: managementNamespace("tabGroups", ["query", "get", "update", "move"]),
-    bookmarks: managementNamespace("bookmarks", ["search", "getTree", "getChildren", "getRecent", "get", "create", "update", "move", "remove", "removeTree"]),
+    windows: managementNamespace(call, "windows", ["getAll", "get", "getCurrent", "getLastFocused", "create", "update", "remove"]),
+    tabs: managementNamespace(call, "tabs", ["query", "get", "update", "move", "group", "ungroup", "remove", "reload", "duplicate", "discard"]),
+    tabGroups: managementNamespace(call, "tabGroups", ["query", "get", "update", "move"]),
+    bookmarks: managementNamespace(call, "bookmarks", ["search", "getTree", "getChildren", "getRecent", "get", "create", "update", "move", "remove", "removeTree"]),
   },
-};
+});
 
 function tabSummary(tab) {
   return {
@@ -62,32 +58,46 @@ function tabSummary(tab) {
 }
 
 // One instance per REPL session: tracks bound tabs (so element numbers persist), shown documentation
-// and notifications to report after each call.
+// and notifications to report after each call. After dispose() every browser call of the instance
+// fails, so code left over from a reset REPL (timers, un-awaited promises) cannot act anymore.
 export function createCua() {
   const tabs = new Map(); // tab id -> Tab
   const notifications = [];
   let documentationShown = false;
   let sessionName = null;
+  let disposed = false;
 
+  const call = (method, params) => {
+    if (disposed) return Promise.reject(new Error("This REPL session was reset; its browser objects no longer work"));
+    return callBrowser(method, params);
+  };
+  const context = { call, waitForEvent };
+  const capabilities = createCapabilities(call);
+
+  // Page.windowOpen says a page opened a window; the extension follows up with tabs.opened naming the
+  // new tab. Notifications keep their order; an opening is reported once its tab is known.
   const stopEvents = onBrowserEvent((event) => {
     if (!tabs.has(String(event.tabId))) return;
-    if (event.method === "Page.windowOpen") notifications.push({ opener: event.tabId, url: event.params.url });
-    else if (event.method === "Page.javascriptDialogOpening") {
+    if (event.method === "Page.windowOpen") notifications.push({ opener: event.tabId, url: event.params.url, tabId: null });
+    else if (event.method === "tabs.opened") {
+      const opening = notifications.find((n) => typeof n === "object" && n.opener === event.tabId && n.tabId === null);
+      if (opening) opening.tabId = event.params.tabId;
+      else notifications.push({ opener: event.tabId, url: event.params.url, tabId: event.params.tabId });
+    } else if (event.method === "Page.javascriptDialogOpening") {
       notifications.push(`Tab ${event.tabId} opened a JavaScript ${event.params.type} dialog: ${JSON.stringify(event.params.message)}. Handle it with getJsDialog().`);
     }
   });
 
-  // Resolves new-window notifications to the tabs they created, matched by URL.
   async function takeNotifications() {
-    const pending = notifications.splice(0);
-    if (!pending.some((n) => typeof n !== "string")) return pending;
-    const open = await callBrowser("tabs.list").catch(() => []);
-    return pending.map((n) => {
+    // The new tab of an opening is usually known within moments.
+    for (let waited = 0; waited < OPENED_TAB_WAIT_MS && notifications.some((n) => typeof n === "object" && n.tabId === null); waited += 50) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    return notifications.splice(0).map((n) => {
       if (typeof n === "string") return n;
-      const created = open.filter((tab) => tab.url === n.url && tab.id !== n.opener).sort((a, b) => b.id - a.id)[0];
-      return created
-        ? `Tab ${n.opener} opened a new tab ${created.id} (${n.url}); bind it with \`await cua.getTab("${created.id}")\`.`
-        : `Tab ${n.opener} opened a new window for ${n.url}; find it with cua.listTabs().`;
+      return n.tabId !== null
+        ? `Tab ${n.opener} opened a new tab ${n.tabId} (${n.url}); bind it with \`await cua.getTab("${n.tabId}")\`.`
+        : `Tab ${n.opener} tried to open ${n.url}, but no new tab appeared (the browser may have blocked the popup); check with cua.listTabs().`;
     });
   }
 
@@ -98,7 +108,7 @@ export function createCua() {
   }
 
   async function browserInfo() {
-    const { name } = await callBrowser("browser.info");
+    const { name } = await call("browser.info");
     return { id: BROWSER_ID, name, family: name.toLowerCase(), type: "extension" };
   }
 
@@ -115,20 +125,20 @@ export function createCua() {
   }
 
   async function listTabs() {
-    return (await callBrowser("tabs.list")).map(tabSummary);
+    return (await call("tabs.list")).map(tabSummary);
   }
 
   async function getTab(reference, { browser } = {}) {
     checkBrowser(browser);
     let info;
     if (typeof reference === "object" && reference?.url) {
-      const matches = (await callBrowser("tabs.list")).filter((tab) => tab.url === reference.url);
+      const matches = (await call("tabs.list")).filter((tab) => tab.url === reference.url);
       if (matches.length !== 1) throw new Error(`Expected exactly one tab with URL ${reference.url}, found ${matches.length}`);
       [info] = matches;
     } else {
       const id = Number(typeof reference === "object" ? (reference.id ?? reference.mention) : reference);
       if (!Number.isInteger(id)) throw new Error(`Invalid tab reference ${JSON.stringify(reference)}`);
-      info = await callBrowser("tabs.get", { tabId: id });
+      info = await call("tabs.get", { tabId: id });
     }
     const tab = bind(info);
     return tab;
@@ -137,7 +147,7 @@ export function createCua() {
   async function createBrowserTab(browserId, url, { sessionName: name } = {}) {
     checkBrowser(browserId);
     if (name) sessionName = name;
-    const info = await callBrowser("tabs.create", { url, sessionId, sessionName });
+    const info = await call("tabs.create", { url, sessionId, sessionName });
     return bind(info);
   }
 
@@ -147,11 +157,11 @@ export function createCua() {
       documentation: async () => BROWSER_DOCUMENTATION,
       nameSession: async (name) => {
         sessionName = name;
-        await callBrowser("session.name", { sessionId, name });
+        await call("session.name", { sessionId, name });
       },
       history: async ({ queries, from, to, limit = 100 } = {}) => {
         const search = async (text) =>
-          callBrowser("history.search", {
+          call("history.search", {
             text,
             startTime: from ? new Date(from).getTime() : 0,
             endTime: to ? new Date(to).getTime() : undefined,
@@ -169,7 +179,7 @@ export function createCua() {
         get: (id) => getTab(id),
         new: () => createBrowserTab(BROWSER_ID),
         selected: async () => {
-          const active = (await callBrowser("tabs.list")).find((tab) => tab.active);
+          const active = (await call("tabs.list")).find((tab) => tab.active);
           return active ? bind(active) : undefined;
         },
       },
@@ -241,6 +251,9 @@ export function createCua() {
   return {
     cua,
     takeNotifications,
-    dispose: stopEvents,
+    dispose() {
+      disposed = true;
+      stopEvents();
+    },
   };
 }

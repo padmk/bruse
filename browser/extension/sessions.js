@@ -33,6 +33,69 @@ chrome.tabs.onRemoved.addListener((tabId) =>
   }),
 );
 
+// Tabs that pages open (target=_blank links, window.open) are paired with the page that opened them:
+// the debugger reports the opening page and URL, the tabs API the new tab, in either order. A tab that
+// a session's page opened belongs to that session. Other new tabs, including ones the user moves into
+// the agent group, belong to no session.
+const PAIRING_WINDOW_MS = 5_000;
+const unpairedOpens = []; // { openerTabId, url, at }
+const unpairedTabs = []; // { tabId, url, at }
+const openedListeners = new Set();
+
+export function onTabOpened(listener) {
+  openedListeners.add(listener);
+}
+
+function normalizedUrl(url) {
+  if (!url || url === "about:blank") return "";
+  try {
+    return new URL(url).href;
+  } catch {
+    return url;
+  }
+}
+
+function takeFirst(list, url) {
+  const now = Date.now();
+  for (let i = list.length - 1; i >= 0; i--) if (now - list[i].at > PAIRING_WINDOW_MS) list.splice(i, 1);
+  const index = list.findIndex((entry) => entry.url === url);
+  return index < 0 ? null : list.splice(index, 1)[0];
+}
+
+function paired(openerTabId, tabId, url) {
+  for (const listener of openedListeners) listener(openerTabId, tabId, url);
+  return serialized(async () => {
+    const state = await load();
+    const opener = state.tabs[openerTabId];
+    if (!opener?.sessionId || state.tabs[tabId]) return;
+    state.tabs[tabId] = { sessionId: opener.sessionId, mark: null };
+    await save(state);
+  });
+}
+
+export function noteWindowOpen(openerTabId, url) {
+  const key = normalizedUrl(url);
+  const tab = takeFirst(unpairedTabs, key);
+  if (tab) paired(openerTabId, tab.tabId, url);
+  else unpairedOpens.push({ openerTabId, url: key, at: Date.now() });
+}
+
+function noteTabUrl(tabId, url, at) {
+  const open = takeFirst(unpairedOpens, normalizedUrl(url));
+  if (open) paired(open.openerTabId, tabId, url);
+  else unpairedTabs.push({ tabId, url: normalizedUrl(url), at });
+}
+
+chrome.tabs.onCreated.addListener((tab) => noteTabUrl(tab.id, tab.pendingUrl || tab.url, Date.now()));
+
+// A tab opened by window.open() may get its URL only after it was created.
+chrome.tabs.onUpdated.addListener((tabId, change, tab) => {
+  const url = tab.pendingUrl || change.url;
+  if (!url) return;
+  const index = unpairedTabs.findIndex((entry) => entry.tabId === tabId && entry.url === "");
+  if (index >= 0) noteTabUrl(tabId, url, unpairedTabs.splice(index, 1)[0].at);
+});
+
 async function groupExists(groupId) {
   if (groupId === undefined) return false;
   return chrome.tabGroups.get(groupId).then(() => true, () => false);
@@ -87,29 +150,24 @@ export async function agentTabs() {
   return (await load()).tabs;
 }
 
-// Closes the session's unmarked agent tabs, including tabs its pages opened into the agent group,
-// and forgets the session.
+// Closes the session's unmarked tabs (those it opened and those its pages opened) and forgets the
+// session. Other tabs in the agent group stay open.
 export function endSession(sessionId) {
   return serialized(() => endSessionNow(sessionId));
 }
 
 async function endSessionNow(sessionId) {
   const state = await load();
-  const toClose = new Set();
-  const groupId = state.groups[sessionId];
-  if (await groupExists(groupId)) {
-    for (const tab of await chrome.tabs.query({ groupId })) {
-      if (!KEPT_MARKS.has(state.tabs[tab.id]?.mark)) toClose.add(tab.id);
-    }
-  }
+  const toClose = [];
   for (const [tabId, entry] of Object.entries(state.tabs)) {
     if (entry.sessionId !== sessionId) continue;
-    if (!KEPT_MARKS.has(entry.mark)) toClose.add(Number(tabId));
+    if (!KEPT_MARKS.has(entry.mark)) toClose.push(Number(tabId));
     delete state.tabs[tabId];
   }
   delete state.groups[sessionId];
   delete state.names[sessionId];
   await save(state);
-  if (toClose.size) await chrome.tabs.remove([...toClose]).catch(() => {});
-  return { closed: toClose.size };
+  // One by one, so a tab that is already gone does not keep the others open.
+  await Promise.all(toClose.map((tabId) => chrome.tabs.remove(tabId).catch(() => {})));
+  return { closed: toClose.length };
 }

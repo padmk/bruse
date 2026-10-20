@@ -84,7 +84,7 @@ export const DISPATCH_PASTE = `function (mimeType, data) {${OPT_OUT_OF_PASSWORD_
 }`;
 
 // Finds elements for a chain of locator steps. Returns an array of elements.
-export const LOCATOR_ENGINE = `function (steps) {
+export const LOCATOR_ENGINE = `function (steps, startRoot) {
   const norm = (s) => (s ?? "").replace(/\\s+/g, " ").trim();
   const matches = (text, matcher, exact) => {
     text = norm(text);
@@ -108,6 +108,43 @@ export const LOCATOR_ENGINE = `function (steps) {
     };
     walk(root);
     return out;
+  };
+  // CSS selectors reach into open shadow roots as in Playwright: a selector of descendant parts
+  // ("#host button") matches when its parts match along the composed ancestor chain.
+  const splitDescendants = (selector) => {
+    const parts = [];
+    let depth = 0, quote = null, part = "";
+    for (const ch of selector.trim()) {
+      if (quote) { if (ch === quote) quote = null; part += ch; continue; }
+      if (ch === '"' || ch === "'") quote = ch;
+      else if (ch === "[" || ch === "(") depth++;
+      else if (ch === "]" || ch === ")") depth--;
+      else if (depth === 0 && /[>+~,]/.test(ch)) return null;
+      if (depth === 0 && /\\s/.test(ch)) { if (part) parts.push(part); part = ""; continue; }
+      part += ch;
+    }
+    if (part) parts.push(part);
+    return parts;
+  };
+  const composedParent = (node) => node.parentNode instanceof ShadowRoot ? node.parentNode.host : node.parentElement;
+  const cssDeep = (root, selector) => {
+    const found = [...root.querySelectorAll(selector)];
+    const shadowRoots = allElements(root).filter((el) => el.shadowRoot).map((el) => el.shadowRoot);
+    if (!shadowRoots.length) return found;
+    const parts = splitDescendants(selector);
+    const inside = new Set(found);
+    for (const shadow of shadowRoots) {
+      if (!parts) { for (const el of shadow.querySelectorAll(selector)) inside.add(el); continue; }
+      for (const el of shadow.querySelectorAll(parts[parts.length - 1])) {
+        let i = parts.length - 2;
+        for (let node = composedParent(el); node && i >= 0; node = composedParent(node)) {
+          if (node === root) break;
+          if (node.matches(parts[i])) i--;
+        }
+        if (i < 0) inside.add(el);
+      }
+    }
+    return [...inside];
   };
   const implicitRole = (el) => {
     const explicit = el.getAttribute("role");
@@ -138,7 +175,7 @@ export const LOCATOR_ENGINE = `function (steps) {
   const textOf = (el) => norm(el instanceof HTMLElement ? el.innerText : el.textContent);
   const labelText = (el) => {
     const ids = el.getAttribute("aria-labelledby");
-    if (ids) return ids.split(/\\s+/).map((id) => textOf(document.getElementById(id) ?? document.createElement("x"))).join(" ");
+    if (ids) return ids.split(/\\s+/).map((id) => { const ref = el.getRootNode().getElementById?.(id) ?? el.ownerDocument.getElementById(id); return ref ? textOf(ref) : ""; }).join(" ");
     if (el.getAttribute("aria-label")) return el.getAttribute("aria-label");
     const labels = el.labels ? [...el.labels].map(textOf).join(" ") : "";
     return labels;
@@ -176,9 +213,9 @@ export const LOCATOR_ENGINE = `function (steps) {
           if (step.selector.startsWith("text=")) next.push(...textMatches([root], step.selector.slice(5).replace(/^"|"$/g, ""), step.selector.slice(5).startsWith('"')));
           else if (step.selector.startsWith("xpath=") || step.selector.startsWith("//")) {
             const xp = step.selector.replace(/^xpath=/, "");
-            const result = document.evaluate(xp, root, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
+            const result = (root.ownerDocument ?? root).evaluate(xp, root, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
             for (let i = 0; i < result.snapshotLength; i++) next.push(result.snapshotItem(i));
-          } else next.push(...root.querySelectorAll(step.selector));
+          } else next.push(...cssDeep(root, step.selector));
         }
       } else if (step.kind === "role") {
         for (const root of roots) for (const el of allElements(root)) {
@@ -223,5 +260,5 @@ export const LOCATOR_ENGINE = `function (steps) {
     }
     return current;
   };
-  return run(steps, [document]);
+  return run(steps, [startRoot ?? document]);
 }`;

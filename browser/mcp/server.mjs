@@ -2,9 +2,9 @@
 // MCP stdio server with a persistent JavaScript REPL (`js`) whose `cua` global controls the user's
 // browser through the extension (see cua/ and browser-link.mjs).
 
-import { randomUUID } from "node:crypto";
 import { createInterface } from "node:readline";
 import { Worker } from "node:worker_threads";
+import { callBrowser, endSession, onBrowserEvent, sessionId } from "./browser-link.mjs";
 
 const SERVER_INFO = { name: "browser-control", version: "0.3.0" };
 
@@ -50,25 +50,45 @@ const TOOLS = [
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 // Time the worker gets beyond a call's timeout to report on its own before it is terminated.
-const TERMINATE_GRACE_MS = 3_000;
+const TERMINATE_GRACE_MS = 500;
+const TIMED_OUT_NOTE = "The REPL was reset because the call timed out: code still running from it was stopped. Bind tabs again with cua.getTab(id).";
 
-// Hosts the REPL worker. The session ID stays the same across worker restarts, so tabs opened before a
-// restart still belong to this session and are cleaned up when it ends.
+// Hosts the REPL worker and relays its browser calls and events through this thread's browser link.
+// A call that times out ends with the worker replaced, which stops everything the call left running.
 class ReplHost {
   constructor() {
-    this.sessionId = randomUUID();
     this.nextId = 1;
     this.pending = new Map();
+    onBrowserEvent((event) => this.worker.postMessage({ type: "browser-event", event }));
     this.start();
   }
 
   start() {
-    this.worker = new Worker(new URL("./repl-worker.mjs", import.meta.url), { workerData: { sessionId: this.sessionId }, stderr: false });
-    this.worker.on("message", ({ id, result }) => {
-      this.pending.get(id)?.(result);
-      this.pending.delete(id);
+    const worker = (this.worker = new Worker(new URL("./repl-worker.mjs", import.meta.url), { workerData: { sessionId }, stderr: false }));
+    worker.on("message", (message) => {
+      if (message.type === "browser-call") return this.relay(worker, message);
+      this.pending.get(message.id)?.(message.result);
+      this.pending.delete(message.id);
     });
-    this.worker.on("error", (error) => process.stderr.write(`[browser-control] REPL worker failed: ${error?.stack ?? error}\n`));
+    worker.on("error", (error) => process.stderr.write(`[browser-control] REPL worker failed: ${error?.stack ?? error}\n`));
+  }
+
+  async relay(worker, { callId, method, params }) {
+    let reply;
+    try {
+      reply = { type: "browser-reply", callId, result: await callBrowser(method, params) };
+    } catch (error) {
+      reply = { type: "browser-reply", callId, error: error?.message ?? String(error) };
+    }
+    // A replaced worker gets no replies.
+    if (worker === this.worker) worker.postMessage(reply);
+  }
+
+  async restart() {
+    const old = this.worker;
+    this.pending.clear();
+    this.start();
+    await old.terminate();
   }
 
   request(message, waitMs) {
@@ -85,23 +105,14 @@ class ReplHost {
 
   async run(code, timeoutMs = DEFAULT_TIMEOUT_MS) {
     const result = await this.request({ type: "run", code, timeoutMs }, timeoutMs + TERMINATE_GRACE_MS);
-    if (result !== undefined) return result;
-    // The code never yielded back; stop it by replacing the worker.
-    await this.worker.terminate();
-    this.pending.clear();
-    this.start();
-    return {
-      content: [{ type: "text", text: `Execution timed out after ${timeoutMs} ms and was stopped. The REPL was reset; bind tabs again with cua.getTab(id).` }],
-      isError: true,
-    };
+    if (result !== undefined && !result.timedOut) return result;
+    await this.restart();
+    const content = result?.content ?? [{ type: "text", text: `Execution timed out after ${timeoutMs} ms` }];
+    return { content: [...content, { type: "text", text: TIMED_OUT_NOTE }], isError: true };
   }
 
   reset() {
     return this.request({ type: "reset" });
-  }
-
-  end() {
-    return this.request({ type: "end" }, 5_000);
   }
 }
 
@@ -163,6 +174,6 @@ createInterface({ input: process.stdin, crlfDelay: Infinity })
   })
   // The client closed the session: close this session's unmarked agent tabs, then exit.
   .on("close", async () => {
-    await repl.end();
+    await endSession();
     process.exit(0);
   });

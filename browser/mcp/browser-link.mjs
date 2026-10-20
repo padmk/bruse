@@ -6,7 +6,6 @@
 import { createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import http from "node:http";
-import { workerData } from "node:worker_threads";
 import { EXTENSION_ORIGIN, EXTENSION_SECRET_PATH, PORT, PRODUCT_NAME, STATE_DIR, TOKEN_PATH } from "./config.mjs";
 import { acceptUpgrade, rejectUpgrade } from "./websocket.mjs";
 
@@ -37,9 +36,9 @@ function sameHex(a, b) {
   return typeof a === "string" && typeof b === "string" && a.length === b.length && timingSafeEqual(Buffer.from(a), Buffer.from(b));
 }
 
-// Identifies this agent session to the extension, which groups and cleans up its tabs. The server passes
-// it to the REPL worker so that it survives worker restarts.
-export const sessionId = workerData?.sessionId ?? randomUUID();
+// Identifies this agent session to the extension, which groups and cleans up its tabs. It lives in the
+// server's main thread, so it stays the same when the REPL worker is replaced.
+export const sessionId = randomUUID();
 
 const DRAIN_MS = 5_000;
 const eventListeners = new Set();
