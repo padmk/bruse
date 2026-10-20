@@ -1,0 +1,22 @@
+// MCP server settings. The extension keeps its own copy of the port.
+import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { homedir } from "node:os";
+import { join } from "node:path";
+
+// Must match HUB_URL in extension/service-worker.js.
+export const PORT = Number(process.env.BROWSER_CONTROL_PORT ?? 47615);
+
+export const STATE_DIR = process.env.BROWSER_CONTROL_STATE_DIR ?? join(homedir(), ".local/state/browser-control");
+
+// Secret that MCP servers present to the hub; web pages cannot read it, so they cannot drive the hub.
+export const TOKEN_PATH = join(STATE_DIR, "hub-token");
+
+// Chromium derives an extension's ID from the SHA-256 of its manifest key, written with letters a-p.
+function extensionId(manifestKey) {
+  const hash = createHash("sha256").update(Buffer.from(manifestKey, "base64")).digest("hex").slice(0, 32);
+  return [...hash].map((digit) => String.fromCharCode(97 + parseInt(digit, 16))).join("");
+}
+
+const manifest = JSON.parse(readFileSync(new URL("../extension/manifest.json", import.meta.url), "utf8"));
+export const EXTENSION_ORIGIN = `chrome-extension://${extensionId(manifest.key)}`;

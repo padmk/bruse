@@ -1,0 +1,193 @@
+// Executes requests from the local MCP hub, which reach it through the offscreen document: tab
+// lifecycle, agent tab groups, raw CDP commands, browser management, history and downloads. Page
+// logic lives in the MCP server.
+
+import { cdp, consoleLogs, detach, onCdpEvent, tabState } from "./cdp.js";
+import { agentTabs, endSession, groupAgentTab, markTab, nameSession } from "./sessions.js";
+
+const OFFSCREEN_ALARM = "offscreen-check";
+const MANAGEMENT_METHODS = {
+  windows: ["getAll", "get", "getCurrent", "getLastFocused", "create", "update", "remove"],
+  tabs: ["query", "get", "update", "move", "group", "ungroup", "remove", "reload", "duplicate", "discard"],
+  tabGroups: ["query", "get", "update", "move"],
+  bookmarks: ["search", "getTree", "getChildren", "getRecent", "get", "create", "update", "move", "remove", "removeTree"],
+};
+const LOAD_TIMEOUT_MS = 20_000;
+// CDP events the MCP server reacts to; the rest stay inside the extension.
+const FORWARDED_EVENTS = new Set(["Page.javascriptDialogOpening", "Page.javascriptDialogClosed", "Page.fileChooserOpened", "Page.windowOpen"]);
+
+function tabInfo(tab) {
+  return {
+    id: tab.id,
+    windowId: tab.windowId,
+    active: tab.active,
+    title: tab.title,
+    url: tab.url,
+    groupId: tab.groupId,
+    lastAccessed: tab.lastAccessed,
+    status: tab.status,
+  };
+}
+
+// Resolves with whether the tab finished loading; slow pages are returned as they are after the timeout.
+function waitForLoad(tabId, timeoutMs = LOAD_TIMEOUT_MS) {
+  return new Promise((resolve) => {
+    const done = (loaded) => {
+      clearTimeout(timer);
+      chrome.tabs.onUpdated.removeListener(listener);
+      resolve(loaded);
+    };
+    const listener = (id, change) => {
+      if (id === tabId && change.status === "complete") done(true);
+    };
+    const timer = setTimeout(() => done(false), timeoutMs);
+    chrome.tabs.onUpdated.addListener(listener);
+    chrome.tabs.get(tabId).then((tab) => tab.status === "complete" && done(true), () => done(false));
+  });
+}
+
+function browserName() {
+  const brands = navigator.userAgentData?.brands?.map((brand) => brand.brand) ?? [];
+  return brands.find((brand) => !/Chromium|Not.?A.?Brand/i.test(brand)) ?? "Chromium";
+}
+
+function waitForDownload(timeoutMs) {
+  return new Promise((resolve, reject) => {
+    let downloadId = null;
+    const cleanup = () => {
+      clearTimeout(timer);
+      chrome.downloads.onCreated.removeListener(onCreated);
+      chrome.downloads.onChanged.removeListener(onChanged);
+    };
+    const onCreated = (item) => {
+      downloadId ??= item.id;
+    };
+    const onChanged = async (delta) => {
+      if (delta.id !== downloadId || !delta.state) return;
+      if (delta.state.current === "complete") {
+        cleanup();
+        const [item] = await chrome.downloads.search({ id: downloadId });
+        resolve({ path: item.filename, url: item.finalUrl ?? item.url, mime: item.mime });
+      } else if (delta.state.current === "interrupted") {
+        cleanup();
+        reject(new Error("Download was interrupted"));
+      }
+    };
+    const timer = setTimeout(() => {
+      cleanup();
+      reject(new Error("No download completed in time"));
+    }, timeoutMs);
+    chrome.downloads.onCreated.addListener(onCreated);
+    chrome.downloads.onChanged.addListener(onChanged);
+  });
+}
+
+const handlers = {
+  "browser.info": async () => ({ name: browserName(), userAgent: navigator.userAgent }),
+
+  "tabs.list": async () => (await chrome.tabs.query({})).map(tabInfo),
+
+  "tabs.get": async ({ tabId }) => tabInfo(await chrome.tabs.get(tabId)),
+
+  "tabs.create": async ({ url, sessionId, sessionName }) => {
+    const window = await chrome.windows.getLastFocused({ windowTypes: ["normal"] });
+    const tab = await chrome.tabs.create({ url: url ?? "about:blank", windowId: window.id, active: false });
+    await groupAgentTab(tab.id, sessionId, sessionName);
+    if (url) await waitForLoad(tab.id);
+    return tabInfo(await chrome.tabs.get(tab.id));
+  },
+
+  // CDP navigation reports blocked or failed loads instead of silently keeping the old page.
+  "tabs.navigate": async ({ tabId, url }) => {
+    const { errorText } = await cdp(tabId, "Page.navigate", { url });
+    if (errorText) throw new Error(`Navigation to ${url} failed: ${errorText}`);
+    await waitForLoad(tabId);
+    return tabInfo(await chrome.tabs.get(tabId));
+  },
+
+  "tabs.history": async ({ tabId, direction }) => {
+    if (direction === "back") await chrome.tabs.goBack(tabId);
+    else if (direction === "forward") await chrome.tabs.goForward(tabId);
+    else await chrome.tabs.reload(tabId);
+    await waitForLoad(tabId);
+    return tabInfo(await chrome.tabs.get(tabId));
+  },
+
+  "tabs.waitForLoad": async ({ tabId, timeoutMs }) => ({ loaded: await waitForLoad(tabId, timeoutMs) }),
+
+  "tabs.close": async ({ tabId }) => {
+    await detach(tabId);
+    await chrome.tabs.remove(tabId);
+    return null;
+  },
+
+  "tabs.mark": ({ tabId, mark }) => markTab(tabId, mark),
+  "tabs.agent": () => agentTabs(),
+  "session.name": ({ sessionId, name }) => nameSession(sessionId, name),
+  "session.end": ({ sessionId }) => endSession(sessionId),
+
+  cdp: ({ tabId, method, params, sessionId }) => cdp(tabId, method, params, sessionId),
+  "page.state": ({ tabId }) => tabState(tabId),
+  "page.console": ({ tabId }) => consoleLogs(tabId),
+
+  "history.search": ({ text = "", startTime, endTime, maxResults = 100 }) =>
+    chrome.history.search({ text, startTime, endTime, maxResults }),
+
+  "downloads.wait": ({ timeoutMs = 120_000 }) => waitForDownload(timeoutMs),
+
+  // Browser organization through the WebExtensions APIs; only listed methods can be called.
+  "browser.manage": ({ namespace, method, args = [] }) => {
+    if (!MANAGEMENT_METHODS[namespace]?.includes(method)) throw new Error(`${namespace}.${method} is not available`);
+    return chrome[namespace][method](...args);
+  },
+
+  // Picks up edited extension files without visiting the extensions page.
+  "extension.reload": () => {
+    setTimeout(() => chrome.runtime.reload(), 100);
+    return null;
+  },
+};
+
+// Sends a message to the hub through the offscreen document that holds the connection.
+function send(message) {
+  chrome.runtime.sendMessage({ target: "offscreen", type: "send", data: JSON.stringify(message) }).catch(() => {});
+}
+
+async function handle(text) {
+  const { id, method, params } = JSON.parse(text);
+  if (id === undefined) return null; // keepalive
+  try {
+    const handler = handlers[method];
+    if (!handler) throw new Error(`Unknown method ${method}`);
+    return JSON.stringify({ id, result: (await handler(params ?? {})) ?? null });
+  } catch (error) {
+    return JSON.stringify({ id, error: error?.message ?? String(error) });
+  }
+}
+
+chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (message.target !== "worker" || message.type !== "hub-message") return false;
+  handle(message.data).then(sendResponse);
+  return true;
+});
+
+onCdpEvent((tabId, method, params, sessionId) => {
+  if (FORWARDED_EVENTS.has(method)) send({ type: "event", tabId, method, params, sessionId });
+});
+
+async function ensureOffscreenDocument() {
+  const existing = await chrome.runtime.getContexts({ contextTypes: ["OFFSCREEN_DOCUMENT"] });
+  if (existing.length) return;
+  await chrome.offscreen
+    .createDocument({ url: "offscreen.html", reasons: ["WORKERS"], justification: "Keeps the connection to local agent sessions open" })
+    .catch((error) => {
+      if (!/single offscreen/i.test(error.message)) throw error;
+    });
+}
+
+// The offscreen document reconnects on its own; this only recreates it if the browser closed it.
+chrome.alarms.create(OFFSCREEN_ALARM, { periodInMinutes: 0.5 });
+chrome.alarms.onAlarm.addListener(({ name }) => name === OFFSCREEN_ALARM && ensureOffscreenDocument());
+chrome.runtime.onStartup.addListener(ensureOffscreenDocument);
+chrome.runtime.onInstalled.addListener(ensureOffscreenDocument);
+ensureOffscreenDocument();

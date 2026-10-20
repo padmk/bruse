@@ -1,0 +1,8 @@
+{
+  "name": "cua",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local computer-use tools for agents: browser control through an own extension and native host",
+  "type": "module",
+  "engines": { "node": ">=22" }
+}
