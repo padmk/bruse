@@ -5,22 +5,22 @@ import { modifierMask } from "./keys.mjs";
 
 const BUTTONS = { left: "left", l: "left", right: "right", r: "right", middle: "middle", m: "middle" };
 
-export async function resolveObject(cdp, backendNodeId) {
-  const { object } = await cdp("DOM.resolveNode", { backendNodeId });
-  return object.objectId;
-}
-
 export async function callOn(cdp, backendNodeId, functionDeclaration, args = []) {
-  const objectId = await resolveObject(cdp, backendNodeId);
-  const { result, exceptionDetails } = await cdp("Runtime.callFunctionOn", {
-    objectId,
-    functionDeclaration,
-    arguments: args.map((value) => ({ value })),
-    returnByValue: true,
-    awaitPromise: true,
-  });
-  if (exceptionDetails) throw new Error(exceptionDetails.exception?.description?.split("\n")[0] ?? exceptionDetails.text);
-  return result.value;
+  const { object } = await cdp("DOM.resolveNode", { backendNodeId });
+  try {
+    const { result, exceptionDetails } = await cdp("Runtime.callFunctionOn", {
+      objectId: object.objectId,
+      functionDeclaration,
+      arguments: args.map((value) => ({ value })),
+      returnByValue: true,
+      awaitPromise: true,
+    });
+    if (exceptionDetails) throw new Error(exceptionDetails.exception?.description?.split("\n")[0] ?? exceptionDetails.text);
+    return result.value;
+  } finally {
+    // Remote handles pin their DOM nodes until released.
+    cdp("Runtime.releaseObject", { objectId: object.objectId }).catch(() => {});
+  }
 }
 
 export async function elementCenter(cdp, backendNodeId) {

@@ -8,8 +8,13 @@ import { LOCATOR_ENGINE, SET_VALUE } from "./page-scripts.mjs";
 const DEFAULT_TIMEOUT_MS = 10_000;
 const POLL_MS = 100;
 
+// Regular expressions created in the REPL come from another realm, so instanceof RegExp is false.
+export function isRegExp(value) {
+  return Object.prototype.toString.call(value) === "[object RegExp]";
+}
+
 export function serializeMatcher(matcher) {
-  return matcher instanceof RegExp ? { regex: matcher.source, flags: matcher.flags } : matcher;
+  return isRegExp(matcher) ? { regex: matcher.source, flags: matcher.flags } : matcher;
 }
 
 // Accepts a function, a function source string or an expression string.
@@ -80,20 +85,23 @@ export class Locator {
     return this.chain({ kind: "or", steps: other.steps });
   }
 
-  // Returns the backend node IDs currently matched.
+  // Returns the backend node IDs currently matched. Handles live in one object group released at the end.
   async resolveAll() {
     const cdp = this.tab.cdpSender();
-    const { result, exceptionDetails } = await cdp("Runtime.evaluate", {
-      expression: `(${LOCATOR_ENGINE})(${JSON.stringify(this.steps)})`,
-      returnByValue: false,
-    });
-    if (exceptionDetails) throw new Error(exceptionDetails.exception?.description?.split("\n")[0] ?? exceptionDetails.text);
-    const { result: properties } = await cdp("Runtime.getProperties", { objectId: result.objectId, ownProperties: true });
-    const elements = properties.filter((p) => /^\d+$/.test(p.name) && p.value?.objectId).sort((a, b) => Number(a.name) - Number(b.name));
-    const ids = [];
-    for (const element of elements) ids.push((await cdp("DOM.describeNode", { objectId: element.value.objectId })).node.backendNodeId);
-    await cdp("Runtime.releaseObject", { objectId: result.objectId }).catch(() => {});
-    return ids;
+    const objectGroup = `locator-${Math.random().toString(36).slice(2)}`;
+    try {
+      const { result, exceptionDetails } = await cdp("Runtime.evaluate", {
+        expression: `(${LOCATOR_ENGINE})(${JSON.stringify(this.steps)})`,
+        returnByValue: false,
+        objectGroup,
+      });
+      if (exceptionDetails) throw new Error(exceptionDetails.exception?.description?.split("\n")[0] ?? exceptionDetails.text);
+      const { result: properties } = await cdp("Runtime.getProperties", { objectId: result.objectId, ownProperties: true });
+      const elements = properties.filter((p) => /^\d+$/.test(p.name) && p.value?.objectId).sort((a, b) => Number(a.name) - Number(b.name));
+      return Promise.all(elements.map(async (element) => (await cdp("DOM.describeNode", { objectId: element.value.objectId })).node.backendNodeId));
+    } finally {
+      cdp("Runtime.releaseObjectGroup", { objectGroup }).catch(() => {});
+    }
   }
 
   async resolveOne({ timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {

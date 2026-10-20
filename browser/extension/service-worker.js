@@ -51,7 +51,8 @@ function browserName() {
   return brands.find((brand) => !/Chromium|Not.?A.?Brand/i.test(brand)) ?? "Chromium";
 }
 
-function waitForDownload(timeoutMs) {
+// Waits for the next download whose referrer is on the given origin (any download when none is given).
+function waitForDownload(timeoutMs, referrerOrigin) {
   return new Promise((resolve, reject) => {
     let downloadId = null;
     const cleanup = () => {
@@ -60,7 +61,15 @@ function waitForDownload(timeoutMs) {
       chrome.downloads.onChanged.removeListener(onChanged);
     };
     const onCreated = (item) => {
-      downloadId ??= item.id;
+      if (downloadId !== null) return;
+      const origin = (() => {
+        try {
+          return new URL(item.referrer || item.url).origin;
+        } catch {
+          return null;
+        }
+      })();
+      if (!referrerOrigin || referrerOrigin === "null" || origin === referrerOrigin) downloadId = item.id;
     };
     const onChanged = async (delta) => {
       if (delta.id !== downloadId || !delta.state) return;
@@ -134,7 +143,7 @@ const handlers = {
   "history.search": ({ text = "", startTime, endTime, maxResults = 100 }) =>
     chrome.history.search({ text, startTime, endTime, maxResults }),
 
-  "downloads.wait": ({ timeoutMs = 120_000 }) => waitForDownload(timeoutMs),
+  "downloads.wait": ({ timeoutMs = 120_000, referrerOrigin }) => waitForDownload(timeoutMs, referrerOrigin),
 
   // Browser organization through the WebExtensions APIs; only listed methods can be called.
   "browser.manage": ({ namespace, method, args = [] }) => {
@@ -149,14 +158,61 @@ const handlers = {
   },
 };
 
-// Sends a message to the hub through the offscreen document that holds the connection.
-function send(message) {
-  chrome.runtime.sendMessage({ target: "offscreen", type: "send", data: JSON.stringify(message) }).catch(() => {});
+// Hub authentication. On first use the extension pairs with the hub by sending it a random secret,
+// which the hub stores; later connections prove knowledge of that secret in both directions with
+// HMAC over fresh nonces, so neither a local process posing as the hub nor one posing as the extension
+// can take over. Requests are executed only on the authenticated connection.
+let hub = { gen: 0, verified: false, expectedHubMac: null };
+
+function hex(bytes) {
+  return [...new Uint8Array(bytes)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-async function handle(text) {
-  const { id, method, params } = JSON.parse(text);
+function randomHex(length = 32) {
+  return hex(crypto.getRandomValues(new Uint8Array(length)));
+}
+
+async function hmac(secret, message) {
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  return hex(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(message)));
+}
+
+async function answerChallenge(nonce) {
+  const { hubSecret } = await chrome.storage.local.get("hubSecret");
+  const ownNonce = randomHex();
+  if (!hubSecret) {
+    const secret = randomHex();
+    await chrome.storage.local.set({ hubSecret: secret });
+    hub.expectedHubMac = await hmac(secret, `hub:${ownNonce}`);
+    return { type: "pair", secret, nonce: ownNonce };
+  }
+  hub.expectedHubMac = await hmac(hubSecret, `hub:${ownNonce}`);
+  return { type: "auth", mac: await hmac(hubSecret, `extension:${nonce}`), nonce: ownNonce };
+}
+
+// Sends a message to the authenticated hub through the offscreen document.
+function send(message) {
+  if (!hub.verified) return;
+  chrome.runtime.sendMessage({ target: "offscreen", type: "send", gen: hub.gen, data: JSON.stringify(message) }).catch(() => {});
+}
+
+async function handle(gen, text) {
+  let message;
+  try {
+    message = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (!message || typeof message !== "object") return null;
+  if (gen !== hub.gen) hub = { gen, verified: false, expectedHubMac: null };
+  if (message.type === "challenge") return JSON.stringify(await answerChallenge(String(message.nonce)));
+  if (message.type === "auth-ok") {
+    hub.verified = Boolean(hub.expectedHubMac) && message.mac === hub.expectedHubMac;
+    return null;
+  }
+  const { id, method, params } = message;
   if (id === undefined) return null; // keepalive
+  if (!hub.verified) return JSON.stringify({ id, error: "The hub is not authenticated" });
   try {
     const handler = handlers[method];
     if (!handler) throw new Error(`Unknown method ${method}`);
@@ -167,8 +223,13 @@ async function handle(text) {
 }
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-  if (message.target !== "worker" || message.type !== "hub-message") return false;
-  handle(message.data).then(sendResponse);
+  if (message.target !== "worker") return false;
+  if (message.type === "hub-open" || message.type === "hub-closed") {
+    if (message.gen >= hub.gen) hub = { gen: message.gen, verified: false, expectedHubMac: null };
+    return false;
+  }
+  if (message.type !== "hub-message") return false;
+  handle(message.gen, message.data).then(sendResponse);
   return true;
 });
 

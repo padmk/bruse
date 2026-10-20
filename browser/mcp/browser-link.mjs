@@ -3,24 +3,48 @@
 // session) connects to the hub as a client. When the hub exits, the remaining servers elect a new one.
 // Browser events are broadcast to every session; each session filters them by tab.
 
-import { randomBytes, randomUUID } from "node:crypto";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import http from "node:http";
-import { EXTENSION_ORIGIN, PORT, STATE_DIR, TOKEN_PATH } from "./config.mjs";
+import { EXTENSION_ORIGIN, EXTENSION_SECRET_PATH, PORT, STATE_DIR, TOKEN_PATH } from "./config.mjs";
 import { acceptUpgrade, rejectUpgrade } from "./websocket.mjs";
 
 const REQUEST_TIMEOUT_MS = 90_000;
-// The extension retries on a 30-second alarm, so allow one full period for it to connect.
-const EXTENSION_WAIT_MS = 35_000;
+// The extension's offscreen document retries every 0.5 s; this also covers pairing and a slow worker start.
+const EXTENSION_WAIT_MS = 8_000;
+const AUTH_TIMEOUT_MS = 5_000;
 const KEEPALIVE_MS = 20_000;
-const NOT_CONNECTED =
-  "The browser extension did not connect. Make sure the browser is running and the Browser Control Bridge extension is enabled.";
+const NOT_CONNECTED = `The browser extension did not connect. Make sure the browser is running and the Browser Control Bridge extension is enabled. If the extension was reinstalled, remove ${EXTENSION_SECRET_PATH} so that it can pair again.`;
+
+// Requests may carry their own deadline (timeoutMs, e.g. waiting for a download); the transport allows a margin beyond it.
+function deadlineFor(params) {
+  return Math.max(REQUEST_TIMEOUT_MS, (Number(params?.timeoutMs) || 0) + 10_000);
+}
+
+function parse(text) {
+  try {
+    const value = JSON.parse(text);
+    return value && typeof value === "object" ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+const hmac = (secret, message) => createHmac("sha256", secret).update(message).digest("hex");
+
+function sameHex(a, b) {
+  return typeof a === "string" && typeof b === "string" && a.length === b.length && timingSafeEqual(Buffer.from(a), Buffer.from(b));
+}
 
 // Identifies this agent session to the extension, which groups and cleans up its tabs.
 export const sessionId = randomUUID();
 
+const DRAIN_MS = 5_000;
 const eventListeners = new Set();
+let hubPending = null; // requests in flight while this process is the hub
 let role = null; // Promise<{ send(method, params): Promise<unknown> }>
+// Whether this session ever reached the browser, and so may own tabs to clean up.
+let sessionUsed = false;
 
 export function onBrowserEvent(listener) {
   eventListeners.add(listener);
@@ -31,24 +55,44 @@ function emitEvent(event) {
   for (const listener of eventListeners) listener(event);
 }
 
-export function callBrowser(method, params = {}) {
+const HUB_GONE = "The browser hub went away; retry the call";
+// Requests that only read state; they are resent through a new hub when the old one exits mid-call.
+const READ_ONLY_METHODS = new Set(["browser.info", "tabs.list", "tabs.get", "tabs.agent", "tabs.waitForLoad", "page.state", "page.console", "page.network", "history.search"]);
+const READ_ONLY_CDP = /^(DOM\.(getDocument|describeNode|getContentQuads|getBoxModel|getFrameOwner|resolveNode)|Accessibility\.|Page\.(getFrameTree|getLayoutMetrics|captureScreenshot)|Runtime\.(getProperties|releaseObject|releaseObjectGroup))$/;
+
+function isReadOnly(method, params) {
+  return READ_ONLY_METHODS.has(method) || (method === "cdp" && READ_ONLY_CDP.test(params?.method ?? ""));
+}
+
+function link() {
   role ??= becomeHub().catch((error) => {
     if (error.code !== "EADDRINUSE") throw error;
     return becomeClient();
   });
-  return role.then(
-    (link) => link.send(method, params),
-    (error) => {
-      role = null;
-      throw error;
-    },
-  );
+  return role.catch((error) => {
+    role = null;
+    throw error;
+  });
 }
 
-// Closes this session's unmarked agent tabs; called when the MCP client goes away.
+export async function callBrowser(method, params = {}) {
+  for (let attempt = 0; ; attempt++) {
+    const current = await link();
+    sessionUsed = true;
+    try {
+      return await current.send(method, params);
+    } catch (error) {
+      if (error.message !== HUB_GONE || attempt > 0 || !isReadOnly(method, params)) throw error;
+    }
+  }
+}
+
+// Closes this session's unmarked agent tabs; called when the MCP client goes away. A hub also lets
+// requests of other sessions finish before the process exits.
 export async function endSession() {
-  if (!role) return;
-  await Promise.race([callBrowser("session.end", { sessionId }).catch(() => {}), new Promise((r) => setTimeout(r, 2_000))]);
+  if (sessionUsed) await Promise.race([callBrowser("session.end", { sessionId }).catch(() => {}), new Promise((r) => setTimeout(r, 2_000))]);
+  const deadline = Date.now() + DRAIN_MS;
+  while (hubPending && hubPending.size && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50));
 }
 
 function becomeHub() {
@@ -58,6 +102,7 @@ function becomeHub() {
     const extensionWaiters = new Set();
     const clients = new Set();
     const pending = new Map(); // hub request id -> settle(reply)
+    hubPending = pending;
     let nextId = 1;
 
     function forward(method, params, settle) {
@@ -65,7 +110,7 @@ function becomeHub() {
       const timer = setTimeout(() => {
         pending.delete(id);
         settle({ error: `${method} timed out` });
-      }, REQUEST_TIMEOUT_MS);
+      }, deadlineFor(params));
       pending.set(id, (reply) => {
         clearTimeout(timer);
         settle(reply);
@@ -98,12 +143,48 @@ function becomeHub() {
       }
     }
 
+    // The extension must prove the secret it paired with, and the hub proves it back; see the extension's
+    // service worker. Only an authenticated connection receives requests.
     function acceptExtension(req, socket) {
-      extension?.close();
       const peer = acceptUpgrade(req, socket);
-      extension = peer;
+      if (!peer) return;
+      const nonce = randomBytes(32).toString("hex");
+      let authenticated = false;
+      const authTimer = setTimeout(() => authenticated || peer.close(), AUTH_TIMEOUT_MS);
+      peer.send(JSON.stringify({ type: "challenge", nonce }));
+
+      const activate = (secret, extensionNonce) => {
+        authenticated = true;
+        clearTimeout(authTimer);
+        peer.send(JSON.stringify({ type: "auth-ok", mac: hmac(secret, `hub:${extensionNonce}`) }));
+        const previous = extension;
+        extension = peer;
+        previous?.close();
+        for (const waiter of [...extensionWaiters]) waiter();
+      };
+
       peer.on("message", (text) => {
-        const message = JSON.parse(text);
+        const message = parse(text);
+        if (!message) return;
+        if (!authenticated) {
+          if (message.type === "pair" && typeof message.secret === "string" && message.secret.length >= 32 && !existsSync(EXTENSION_SECRET_PATH)) {
+            try {
+              mkdirSync(STATE_DIR, { recursive: true, mode: 0o700 });
+              writeFileSync(EXTENSION_SECRET_PATH, message.secret, { mode: 0o600, flag: "wx" });
+              activate(message.secret, String(message.nonce));
+            } catch {
+              peer.close();
+            }
+          } else if (message.type === "auth" && existsSync(EXTENSION_SECRET_PATH)) {
+            const secret = readFileSync(EXTENSION_SECRET_PATH, "utf8").trim();
+            if (sameHex(message.mac, hmac(secret, `extension:${nonce}`))) activate(secret, String(message.nonce));
+            else peer.close();
+          } else {
+            if (message.type === "pair") process.stderr.write(`[browser-control] Refused to pair a new extension instance: ${EXTENSION_SECRET_PATH} already exists.\n`);
+            peer.close();
+          }
+          return;
+        }
         if (message.type === "event") {
           emitEvent(message);
           for (const client of clients) client.send(text);
@@ -113,20 +194,22 @@ function becomeHub() {
         pending.delete(message.id);
       });
       peer.on("close", () => {
+        clearTimeout(authTimer);
         if (extension !== peer) return;
         extension = null;
         for (const settle of pending.values()) settle({ error: "The browser extension disconnected" });
         pending.clear();
       });
-      for (const waiter of [...extensionWaiters]) waiter();
     }
 
     function acceptClient(req, socket) {
       const peer = acceptUpgrade(req, socket);
+      if (!peer) return;
       let clientSession = null;
       clients.add(peer);
       peer.on("message", (text) => {
-        const message = JSON.parse(text);
+        const message = parse(text);
+        if (!message) return;
         if (message.type === "hello") {
           clientSession = message.sessionId;
           return;
@@ -141,7 +224,13 @@ function becomeHub() {
 
     const server = http.createServer((_, response) => response.writeHead(426).end());
     server.on("upgrade", (req, socket) => {
-      const url = new URL(req.url, "http://localhost");
+      socket.on("error", () => {});
+      let url;
+      try {
+        url = new URL(req.url, "http://localhost");
+      } catch {
+        return rejectUpgrade(socket, "400 Bad Request");
+      }
       if (url.pathname === "/extension" && req.headers.origin === EXTENSION_ORIGIN) acceptExtension(req, socket);
       else if (url.pathname === "/client" && !req.headers.origin && url.searchParams.get("token") === token) acceptClient(req, socket);
       else rejectUpgrade(socket);
@@ -162,9 +251,26 @@ function becomeHub() {
   });
 }
 
-function becomeClient() {
+// A new hub writes its token right after binding the port, so a client that races it retries briefly.
+async function becomeClient() {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await connectClient();
+    } catch (error) {
+      if (attempt >= 10) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+  }
+}
+
+function connectClient() {
   return new Promise((resolve, reject) => {
-    const token = readFileSync(TOKEN_PATH, "utf8").trim();
+    let token;
+    try {
+      token = readFileSync(TOKEN_PATH, "utf8").trim();
+    } catch {
+      return reject(new Error("The browser hub token is not available yet"));
+    }
     const socket = new WebSocket(`ws://127.0.0.1:${PORT}/client?token=${token}`);
     const pending = new Map();
     let nextId = 1;
@@ -177,7 +283,7 @@ function becomeClient() {
             const timer = setTimeout(() => {
               pending.delete(id);
               rejectCall(new Error(`${method} timed out`));
-            }, REQUEST_TIMEOUT_MS + 5_000);
+            }, deadlineFor(params) + 5_000);
             pending.set(id, (reply) => {
               clearTimeout(timer);
               if (reply.error) rejectCall(new Error(reply.error));
@@ -188,7 +294,8 @@ function becomeClient() {
       });
     });
     socket.addEventListener("message", ({ data }) => {
-      const message = JSON.parse(data);
+      const message = parse(data);
+      if (!message) return;
       if (message.type === "event") return emitEvent(message);
       pending.get(message.id)?.(message);
       pending.delete(message.id);
@@ -197,7 +304,7 @@ function becomeClient() {
     socket.addEventListener("close", () => {
       // The hub exited; the next call elects a new one.
       role = null;
-      for (const settle of pending.values()) settle({ error: "The browser hub went away; retry the call" });
+      for (const settle of pending.values()) settle({ error: HUB_GONE });
       pending.clear();
     });
   });

@@ -103,12 +103,20 @@ function rawSend(tabId, method, params = {}, sessionId) {
   });
 }
 
-async function attach(tabId) {
+const attaching = new Map(); // tabId -> Promise<session> while the first attach is in flight
+
+// Concurrent commands for a tab share one attach.
+function attach(tabId) {
   const existing = sessions.get(tabId);
   if (existing) {
     existing.lastUsed = Date.now();
-    return existing;
+    return Promise.resolve(existing);
   }
+  if (!attaching.has(tabId)) attaching.set(tabId, attachNow(tabId).finally(() => attaching.delete(tabId)));
+  return attaching.get(tabId);
+}
+
+async function attachNow(tabId) {
   let reattached = false;
   try {
     await chrome.debugger.attach({ tabId }, PROTOCOL_VERSION);
@@ -119,8 +127,12 @@ async function attach(tabId) {
   }
   const session = { lastUsed: Date.now(), dialog: null, console: [], dialogWaiters: [], pageContexts: new Set(), frames: new Map(), requests: [] };
   sessions.set(tabId, session);
-  // Turning auto-attach off first makes the browser report frames that were attached before a restart.
-  if (reattached) await rawSend(tabId, "Target.setAutoAttach", { autoAttach: false, waitForDebuggerOnStart: false, flatten: true }).catch(() => {});
+  // After a service worker restart the session is still attached but its state is gone. Turning
+  // auto-attach and Runtime off first makes the browser report frames and execution contexts again.
+  if (reattached) {
+    await rawSend(tabId, "Target.setAutoAttach", { autoAttach: false, waitForDebuggerOnStart: false, flatten: true }).catch(() => {});
+    await rawSend(tabId, "Runtime.disable").catch(() => {});
+  }
   await rawSend(tabId, "Target.setAutoAttach", { autoAttach: true, waitForDebuggerOnStart: false, flatten: true }).catch(() => {});
   // Background tabs are throttled and may skip rendering; keep them live for input and screenshots.
   await Promise.all([
@@ -183,12 +195,22 @@ async function sendChecked(tabId, method, params, sessionId) {
   if (session.dialog && !DIALOG_SAFE_METHODS.has(method) && !method.startsWith("Input.")) {
     throw new Error(`A JavaScript ${session.dialog.type} dialog is open on this tab ("${session.dialog.message}"); handle it with getJsDialog() first`);
   }
-  if (!method.startsWith("Input.")) return rawSend(tabId, method, params, sessionId);
-  // Input that opens a modal dialog does not complete until the dialog closes; finish it when the dialog opens.
+  const isInput = method.startsWith("Input.");
+  // While a dialog is open the page handles no input; further events of the same action are skipped.
+  if (isInput && session.dialog) return {};
+  if (DIALOG_SAFE_METHODS.has(method)) return rawSend(tabId, method, params, sessionId);
+  // A command that makes the page open a modal dialog does not complete until the dialog closes. Input
+  // finishes when the dialog opens; other commands fail with a pointer to getJsDialog().
   let waiter;
   const dialogOpened = new Promise((resolve) => session.dialogWaiters.push((waiter = resolve)));
   try {
-    return await Promise.race([rawSend(tabId, method, params, sessionId), dialogOpened.then(() => ({}))]);
+    return await Promise.race([
+      rawSend(tabId, method, params, sessionId),
+      dialogOpened.then(() => {
+        if (isInput) return {};
+        throw new Error(`A JavaScript ${session.dialog?.type ?? ""} dialog opened while ${method} was running; handle it with getJsDialog()`);
+      }),
+    ]);
   } finally {
     session.dialogWaiters = session.dialogWaiters.filter((w) => w !== waiter);
   }

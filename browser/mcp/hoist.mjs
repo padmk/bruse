@@ -3,6 +3,9 @@
 // cells. Nested scopes are left alone. A small scanner skips strings, template literals, comments and
 // regular expressions to find statements at bracket depth 0.
 
+// A line break does not end a statement after these tokens, or before these tokens.
+const CONTINUES_AFTER = new Set(["=", ",", "?", ":", "+", "-", "*", "/", "%", "&", "|", "^", "!", "~", "<", ">", ".", "(", "[", "{", "=>", "new", "typeof", "instanceof", "in", "of", "await", "yield", "delete", "void"]);
+const CONTINUES_BEFORE = new Set([".", "?", ":", ",", ")", "]", "}", "=", "+", "-", "*", "/", "%", "&", "|", "^", "<", ">", "(", "[", "`", "=>", "in", "of", "instanceof"]);
 const KEYWORDS_BEFORE_REGEX = new Set(["return", "typeof", "instanceof", "in", "of", "new", "delete", "void", "throw", "case", "do", "else", "yield", "await"]);
 const IDENT = /[A-Za-z0-9_$\u0080-￿]/;
 
@@ -17,7 +20,11 @@ function scan(code) {
 
   const push = (start, end, kind) => {
     const text = code.slice(start, end);
-    tokens.push({ start, end, kind, text, depth: brackets.length, newlineBefore: newlineSinceLast, statementStart: statementStart || (newlineSinceLast && brackets.length === 0) });
+    const previous = tokens[tokens.length - 1];
+    // A line break at depth 0 ends the statement unless the surrounding tokens continue it.
+    const lineBoundary =
+      newlineSinceLast && brackets.length === 0 && !!previous && !CONTINUES_AFTER.has(previous.text) && !CONTINUES_BEFORE.has(text[0] === "`" ? "`" : text);
+    tokens.push({ start, end, kind, text, depth: brackets.length, lineBoundary, statementStart: statementStart || lineBoundary || !previous });
     lastSignificant = text;
     newlineSinceLast = false;
     statementStart = false;
@@ -89,8 +96,11 @@ function scan(code) {
 }
 
 export function hoistTopLevelDeclarations(code) {
+  // Cells run in sloppy mode so that rewritten names become globals; a leading directive would undo that.
+  code = code.replace(/^(\s*)(["'])use strict\2;?/, "$1");
   const tokens = scan(code);
   const edits = []; // { at, remove, insert }
+  const exportedFunctions = [];
   // A declaration turned into an assignment expression needs a ";" after its body.
   const terminate = (from) => {
     let d = from;
@@ -110,7 +120,7 @@ export function hoistTopLevelDeclarations(code) {
       edits.push({ at: token.start, remove: next.start - token.start, insert: "" });
       // Find the end of this declaration: ; or a newline at depth 0 that ends the statement.
       let end = t + 1;
-      while (end + 1 < tokens.length && !(tokens[end + 1].depth === 0 && (tokens[end + 1].text === ";" || tokens[end + 1].newlineBefore))) end++;
+      while (end + 1 < tokens.length && !(tokens[end + 1].depth === 0 && (tokens[end + 1].text === ";" || tokens[end + 1].lineBoundary))) end++;
       if (next.text === "{" || next.text === "[") {
         // A destructuring assignment must be parenthesized to parse as an expression.
         edits.push({ at: next.start, remove: 0, insert: "(" });
@@ -126,14 +136,13 @@ export function hoistTopLevelDeclarations(code) {
         }
       }
     } else if (token.text === "function" || (token.text === "async" && next.text === "function")) {
+      // Function declarations stay declarations (they are hoisted within the cell); the cell starts by
+      // publishing them as globals.
       const fnToken = token.text === "async" ? next : token;
       let nameIndex = tokens.indexOf(fnToken) + 1;
       if (tokens[nameIndex]?.text === "*") nameIndex++;
       const name = tokens[nameIndex];
-      if (name?.kind === "word") {
-        edits.push({ at: token.start, remove: 0, insert: `${name.text} = ` });
-        terminate(nameIndex);
-      }
+      if (name?.kind === "word") exportedFunctions.push(name.text);
     } else if (token.text === "class" && next.kind === "word" && next.text !== "extends") {
       edits.push({ at: token.start, remove: 0, insert: `${next.text} = ` });
       terminate(t + 1);
@@ -143,5 +152,6 @@ export function hoistTopLevelDeclarations(code) {
   for (const edit of edits.sort((a, b) => b.at - a.at)) {
     result = result.slice(0, edit.at) + edit.insert + result.slice(edit.at + edit.remove);
   }
-  return result;
+  const prologue = exportedFunctions.map((name) => `globalThis.${name} = ${name};`).join(" ");
+  return prologue ? `${prologue}\n${result}` : result;
 }

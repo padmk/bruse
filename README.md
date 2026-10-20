@@ -27,17 +27,24 @@ MCP server (hub) ◀──WebSocket 127.0.0.1:47615──▶ extension ──chr
 - `browser/mcp/`: MCP stdio server, no dependencies.
   - `server.mjs`: the `js` and `js_reset` tools; `repl.mjs`: the persistent REPL; `hoist.mjs`: turns
     top-level declarations of a cell into globals so they persist and can be redeclared.
-  - `browser-link.mjs`, `websocket.mjs`, `config.mjs`: hub election and transport. The first server to
-    bind the port becomes the hub; the others connect to it and a new hub is elected when it exits.
+  - `browser-link.mjs`, `websocket.mjs`, `config.mjs`: hub election, authentication and transport. The
+    first server to bind the port becomes the hub; the others connect to it. A hub that exits first lets
+    in-flight requests finish, read-only requests interrupted by a handover are resent, and a new hub
+    is elected on the next call.
   - `cua/`: the browser API. `index.mjs` (`cua` object, browser and management capability), `tab.mjs`
     (tab methods), `ax-tree.mjs` (accessibility snapshots across frames with stable element numbers and
     diffs), `locator.mjs` and `page-scripts.mjs` (locators and in-page helpers), `elements.mjs` (pointer
     input), `keys.mjs` (xdotool-style key chords), `content.mjs` (YouTube transcript and Google
     Workspace exports), `docs.mjs` (documentation shown to the agent), `output.mjs`.
 
-The hub accepts the extension only from its own origin (`chrome-extension://dcebpfjehgpkddgcdaipjemnndbdpmpc`,
-fixed by the manifest `key`) and peer servers only with the token in
-`~/.local/state/browser-control/hub-token`, so web pages cannot drive it.
+Security: the hub accepts peer MCP servers only with the token in `~/.local/state/browser-control/hub-token`
+(mode 0600), so web pages and other users cannot drive it. Hub and extension authenticate each other: on
+first connection the extension pairs by sending a random secret, which the hub stores in
+`~/.local/state/browser-control/extension-secret` (0600); every later connection proves that secret in
+both directions with HMAC over fresh nonces. The extension executes requests only on an authenticated
+connection, so a process posing as the hub on the port gets nothing, and one posing as the extension
+cannot replace it. After reinstalling the extension (it then has a new secret), remove
+`extension-secret` so that it can pair again.
 
 ### Install
 

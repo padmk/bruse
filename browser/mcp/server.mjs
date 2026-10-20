@@ -8,6 +8,15 @@ import { Repl } from "./repl.mjs";
 
 const SERVER_INFO = { name: "browser-control", version: "0.3.0" };
 
+// Agent code can leave promises unhandled (an un-awaited call that later fails). That must not end the
+// session, or the hub it may be serving for other sessions.
+process.on("unhandledRejection", (reason) => {
+  process.stderr.write(`[browser-control] Unhandled rejection: ${reason?.stack ?? reason}\n`);
+});
+process.on("uncaughtException", (error) => {
+  process.stderr.write(`[browser-control] Uncaught exception: ${error?.stack ?? error}\n`);
+});
+
 // The REPL's dynamic import support is flagged experimental; keep that notice out of the client's log.
 process.removeAllListeners("warning");
 process.on("warning", (warning) => {
