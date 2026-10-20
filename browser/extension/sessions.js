@@ -59,7 +59,29 @@ chrome.webNavigation.onCreatedNavigationTarget.addListener(({ sourceTabId, tabId
     if (!opener?.sessionId || state.tabs[tabId]) return;
     state.tabs[tabId] = { sessionId: opener.sessionId, mark: null };
     await save(state);
+    await keepInBackground(tabId, sourceTabId, opener.sessionId, state);
   });
+});
+
+// A popup window or foreground tab opened by an agent page would cover the user's work: it becomes a
+// background tab in the session's group, next to the opener, and the tab the user had active stays so.
+async function keepInBackground(tabId, sourceTabId, sessionId, state) {
+  const [tab, source] = await Promise.all([chrome.tabs.get(tabId), chrome.tabs.get(sourceTabId)]).catch(() => []);
+  if (!tab || !source) return;
+  if (tab.windowId !== source.windowId) await chrome.tabs.move(tabId, { windowId: source.windowId, index: -1 }).catch(() => {});
+  const groupId = state.groups[sessionId];
+  if (await groupExists(groupId)) await chrome.tabs.group({ tabIds: [tabId], groupId }).catch(() => {});
+  if (currentActive.get(source.windowId) !== tabId) return;
+  const previous = lastActive.get(source.windowId);
+  if (previous !== undefined) await chrome.tabs.update(previous, { active: true }).catch(() => {});
+}
+
+// The active tab of each window before the latest switch, so that a tab activated by a page can be undone.
+const lastActive = new Map(); // window id -> tab id
+const currentActive = new Map();
+chrome.tabs.onActivated.addListener(({ tabId, windowId }) => {
+  if (currentActive.has(windowId)) lastActive.set(windowId, currentActive.get(windowId));
+  currentActive.set(windowId, tabId);
 });
 
 async function groupExists(groupId) {

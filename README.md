@@ -35,6 +35,8 @@ MCP server (hub) ◀──WebSocket 127.0.0.1:47615──▶ extension ──chr
     thread and survives the replacement; the worker reaches it through `browser-port.mjs`.
   - `repl.mjs`: the persistent REPL; `hoist.mjs`: turns top-level declarations of a cell into globals so
     they persist and can be redeclared.
+  - `focus-guard.mjs`: gives the front back to the user's app when an agent action makes a page
+    open a tab (see Behavior).
   - `browser-link.mjs`, `websocket.mjs`, `config.mjs`: hub election, authentication and transport. The
     first server to bind the port becomes the hub; the others connect to it. A hub that exits first lets
     in-flight requests finish, read-only requests interrupted by a handover are resent, and a new hub
@@ -96,6 +98,10 @@ The full API is in `browser/mcp/cua/docs.mjs`, which the agent receives on its f
   `webNavigation.onCreatedNavigationTarget`, so tool results name the exact new tab);
   `markDeliverable()` and `markHandoff()` keep a tab. Tabs bound with `getTab` and
   other tabs in the group, such as ones the user moves there, stay untouched.
+- Agent work keeps the user's app in front. Brave brings its window forward when a page opens a tab
+  or window (`target=_blank`, `window.open`); tabs opened by agent pages become background tabs in
+  the agent group, popup windows included, and on macOS `focus-guard.mjs` returns the front to the
+  app that had it before the agent's input (Brave may show for a fraction of a second).
 - Password manager menus are frames of another extension, which make the browser cut off debugger
   access. Fields the agent clicks or focuses get the opt-out attributes password managers honor, any
   such frame that still appears is removed (only the frame, or a known password manager's wrapper)

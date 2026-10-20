@@ -5,6 +5,7 @@
 import { createInterface } from "node:readline";
 import { Worker } from "node:worker_threads";
 import { callBrowser, endSession, onBrowserEvent, sessionId } from "./browser-link.mjs";
+import { beforeInput, isOpeningInput, onEvent as guardFocus } from "./focus-guard.mjs";
 
 const SERVER_INFO = { name: "browser-control", version: "0.3.0" };
 
@@ -85,7 +86,10 @@ class ReplHost {
     this.nextId = 1;
     this.pending = new Map();
     this.buttons = new PressedButtons();
-    onBrowserEvent((event) => this.worker.postMessage({ type: "browser-event", event }));
+    onBrowserEvent((event) => {
+      guardFocus(event);
+      this.worker.postMessage({ type: "browser-event", event });
+    });
     this.start();
   }
 
@@ -119,6 +123,7 @@ class ReplHost {
     // A replaced worker may still be running until it is terminated; it reaches nothing anymore.
     if (worker !== this.worker) return;
     this.buttons.note(method, params);
+    if (isOpeningInput(method, params)) await beforeInput(params.tabId);
     let reply;
     try {
       reply = { type: "browser-reply", callId, result: await callBrowser(method, params) };
