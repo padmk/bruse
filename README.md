@@ -25,8 +25,10 @@ MCP server (hub) ◀──WebSocket 127.0.0.1:47615──▶ extension ──chr
   sessions of cross-origin frames, and tracks dialogs and console output. `sessions.js` keeps each agent
   session's tabs in its own tab group and closes the unmarked ones when the session ends.
 - `browser/mcp/`: MCP stdio server, no dependencies.
-  - `server.mjs`: the `js` and `js_reset` tools; `repl.mjs`: the persistent REPL; `hoist.mjs`: turns
-    top-level declarations of a cell into globals so they persist and can be redeclared.
+  - `server.mjs`: the `js` and `js_reset` tools. It runs the REPL in a worker thread (`repl-worker.mjs`)
+    and replaces the worker when a call exceeds its timeout, so even code that never yields is stopped.
+  - `repl.mjs`: the persistent REPL; `hoist.mjs`: turns top-level declarations of a cell into globals so
+    they persist and can be redeclared.
   - `browser-link.mjs`, `websocket.mjs`, `config.mjs`: hub election, authentication and transport. The
     first server to bind the port becomes the hub; the others connect to it. A hub that exits first lets
     in-flight requests finish, read-only requests interrupted by a handover are resent, and a new hub

@@ -1,9 +1,19 @@
 // Functions evaluated inside the page with Runtime.callFunctionOn / Runtime.evaluate. They are kept as
 // source text because they run in the page, not in Node.
 
+// Statement block run with `this` = an element the agent is about to focus. It adds the attributes
+// password managers honor to skip a field: their inline menus are frames of another extension, which
+// make the browser cut off debugger access to the tab.
+export const OPT_OUT_OF_PASSWORD_MANAGERS = `
+  if (this instanceof HTMLInputElement || this instanceof HTMLTextAreaElement || this.isContentEditable) {
+    for (const [name, value] of [["data-1p-ignore", ""], ["data-lpignore", "true"], ["data-bwignore", "true"], ["data-form-type", "other"]]) {
+      if (!this.hasAttribute(name)) this.setAttribute(name, value);
+    }
+  }`;
+
 // this = target element. Sets an input, textarea, select, contenteditable or checkable value and fires
 // the events frameworks listen for.
-export const SET_VALUE = `function (value) {
+export const SET_VALUE = `function (value) {${OPT_OUT_OF_PASSWORD_MANAGERS}
   const el = this;
   const fire = (type) => el.dispatchEvent(new Event(type, { bubbles: true }));
   if (el instanceof HTMLSelectElement) {
@@ -35,7 +45,7 @@ export const SET_VALUE = `function (value) {
 }`;
 
 // this = editable element. Selects the matching text, or places the caret before or after it.
-export const SELECT_TEXT = `function (text, prefix, suffix, selectionType) {
+export const SELECT_TEXT = `function (text, prefix, suffix, selectionType) {${OPT_OUT_OF_PASSWORD_MANAGERS}
   const el = this;
   const source = el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement ? el.value : el.textContent;
   const needle = (prefix ?? "") + text + (suffix ?? "");
@@ -65,7 +75,7 @@ export const SELECT_TEXT = `function (text, prefix, suffix, selectionType) {
 }`;
 
 // this = element. Dispatches a paste event carrying the given data; returns whether the page handled it.
-export const DISPATCH_PASTE = `function (mimeType, data) {
+export const DISPATCH_PASTE = `function (mimeType, data) {${OPT_OUT_OF_PASSWORD_MANAGERS}
   const transfer = new DataTransfer();
   transfer.setData(mimeType, data);
   if (mimeType !== "text/plain") transfer.setData("text/plain", data);

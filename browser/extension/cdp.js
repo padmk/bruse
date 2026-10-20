@@ -159,6 +159,9 @@ async function removeForeignExtensionFrames(tabId) {
   await chrome.scripting.executeScript({
     target: { tabId, allFrames: true },
     func: (ownOrigin) => {
+      // Without focus the password manager does not bring its menu back right away.
+      if (document.activeElement && document.activeElement !== document.body) document.activeElement.blur();
+      for (const host of document.querySelectorAll("com-1password-button, com-1password-menu")) host.remove();
       const roots = [document];
       for (let i = 0; i < roots.length; i++) {
         for (const el of roots[i].querySelectorAll("*")) {

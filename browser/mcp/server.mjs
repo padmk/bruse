@@ -2,20 +2,11 @@
 // MCP stdio server with a persistent JavaScript REPL (`js`) whose `cua` global controls the user's
 // browser through the extension (see cua/ and browser-link.mjs).
 
+import { randomUUID } from "node:crypto";
 import { createInterface } from "node:readline";
-import { endSession } from "./browser-link.mjs";
-import { Repl } from "./repl.mjs";
+import { Worker } from "node:worker_threads";
 
 const SERVER_INFO = { name: "browser-control", version: "0.3.0" };
-
-// Agent code can leave promises unhandled (an un-awaited call that later fails). That must not end the
-// session, or the hub it may be serving for other sessions.
-process.on("unhandledRejection", (reason) => {
-  process.stderr.write(`[browser-control] Unhandled rejection: ${reason?.stack ?? reason}\n`);
-});
-process.on("uncaughtException", (error) => {
-  process.stderr.write(`[browser-control] Uncaught exception: ${error?.stack ?? error}\n`);
-});
 
 // The REPL's dynamic import support is flagged experimental; keep that notice out of the client's log.
 process.removeAllListeners("warning");
@@ -57,7 +48,64 @@ const TOOLS = [
   },
 ];
 
-const repl = new Repl();
+const DEFAULT_TIMEOUT_MS = 30_000;
+// Time the worker gets beyond a call's timeout to report on its own before it is terminated.
+const TERMINATE_GRACE_MS = 3_000;
+
+// Hosts the REPL worker. The session ID stays the same across worker restarts, so tabs opened before a
+// restart still belong to this session and are cleaned up when it ends.
+class ReplHost {
+  constructor() {
+    this.sessionId = randomUUID();
+    this.nextId = 1;
+    this.pending = new Map();
+    this.start();
+  }
+
+  start() {
+    this.worker = new Worker(new URL("./repl-worker.mjs", import.meta.url), { workerData: { sessionId: this.sessionId }, stderr: false });
+    this.worker.on("message", ({ id, result }) => {
+      this.pending.get(id)?.(result);
+      this.pending.delete(id);
+    });
+    this.worker.on("error", (error) => process.stderr.write(`[browser-control] REPL worker failed: ${error?.stack ?? error}\n`));
+  }
+
+  request(message, waitMs) {
+    const id = this.nextId++;
+    return new Promise((resolve) => {
+      const timer = waitMs ? setTimeout(() => (this.pending.delete(id), resolve(undefined)), waitMs) : null;
+      this.pending.set(id, (result) => {
+        clearTimeout(timer);
+        resolve(result);
+      });
+      this.worker.postMessage({ ...message, id });
+    });
+  }
+
+  async run(code, timeoutMs = DEFAULT_TIMEOUT_MS) {
+    const result = await this.request({ type: "run", code, timeoutMs }, timeoutMs + TERMINATE_GRACE_MS);
+    if (result !== undefined) return result;
+    // The code never yielded back; stop it by replacing the worker.
+    await this.worker.terminate();
+    this.pending.clear();
+    this.start();
+    return {
+      content: [{ type: "text", text: `Execution timed out after ${timeoutMs} ms and was stopped. The REPL was reset; bind tabs again with cua.getTab(id).` }],
+      isError: true,
+    };
+  }
+
+  reset() {
+    return this.request({ type: "reset" });
+  }
+
+  end() {
+    return this.request({ type: "end" }, 5_000);
+  }
+}
+
+const repl = new ReplHost();
 // Calls share one REPL and one output sink, so they run one at a time.
 let queue = Promise.resolve();
 
@@ -85,7 +133,7 @@ async function handle(message) {
       if (name === "js") return serialized(() => repl.run(String(args.code ?? ""), args.timeout_ms));
       if (name === "js_reset") {
         return serialized(async () => {
-          repl.reset();
+          await repl.reset();
           return { content: [{ type: "text", text: "The REPL was reset." }] };
         });
       }
@@ -115,6 +163,6 @@ createInterface({ input: process.stdin, crlfDelay: Infinity })
   })
   // The client closed the session: close this session's unmarked agent tabs, then exit.
   .on("close", async () => {
-    await endSession();
+    await repl.end();
     process.exit(0);
   });
