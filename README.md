@@ -30,7 +30,7 @@ MCP server (hub) ◀──WebSocket 127.0.0.1:47615──▶ extension ──chr
   pairs downloads with the tabs that started them.
 - `browser/mcp/`: MCP stdio server, no dependencies.
   - `server.mjs`: the `js` and `js_reset` tools. It runs the REPL in a worker thread (`repl-worker.mjs`)
-    and replaces the worker whenever a call times out, so nothing the call left running (an endless
+    and replaces the worker whenever a call times out or the worker crashes, so nothing the call left running (an endless
     loop, a timer, a pending request) can act on a page later. The browser connection stays in the main
     thread and survives the replacement; the worker reaches it through `browser-port.mjs`.
   - `repl.mjs`: the persistent REPL; `hoist.mjs`: turns top-level declarations of a cell into globals so
@@ -51,7 +51,10 @@ first connection the extension pairs by sending a random secret, which the hub s
 `~/.local/state/browser-control/extension-secret` (0600); every later connection proves that secret in
 both directions with HMAC over fresh nonces. The extension executes requests only on an authenticated
 connection, so a process posing as the hub on the port gets nothing, and one posing as the extension
-cannot replace it. After reinstalling the extension (it then has a new secret), remove
+cannot replace it. Pairing itself trusts the first connection: while the extension has no secret
+(on first install or after a reinstall) it gives its new secret to whatever listens on the port, and
+while the hub has no `extension-secret` it accepts the first extension that pairs. Pair while the hub
+is your own session. After reinstalling the extension (it then has a new secret), remove
 `extension-secret` so that it can pair again.
 
 ### Install

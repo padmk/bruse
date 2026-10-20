@@ -10,7 +10,7 @@ const MAX_REQUESTS = 300;
 // Commands that still work while a JavaScript dialog blocks the page.
 const DIALOG_SAFE_METHODS = new Set(["Page.handleJavaScriptDialog", "Page.captureScreenshot", "Page.getLayoutMetrics"]);
 
-const sessions = new Map(); // tabId -> { lastUsed, dialog, console, requests, inflight (request keys still loading), frames }
+const sessions = new Map(); // tabId -> { lastUsed, dialog, console, requests, inflight (request id -> frame session that started it), frames }
 const eventListeners = new Set();
 
 // Returns a function that removes the listener.
@@ -45,6 +45,8 @@ chrome.debugger.onEvent.addListener(({ tabId, sessionId: source }, method, param
     }
   } else if (method === "Target.detachedFromTarget") {
     for (const [frameId, frame] of session.frames) if (frame.sessionId === params.sessionId) session.frames.delete(frameId);
+    // Requests of a frame that went away report no end.
+    for (const [requestId, owner] of session.inflight) if (owner === params.sessionId) session.inflight.delete(requestId);
   } else if (method === "Page.javascriptDialogOpening") {
     session.dialog = { type: params.type, message: params.message, defaultPrompt: params.defaultPrompt, url: params.url };
     for (const resolve of session.dialogWaiters.splice(0)) resolve();
@@ -66,7 +68,7 @@ chrome.debugger.onEvent.addListener(({ tabId, sessionId: source }, method, param
   } else if (method === "Network.requestWillBeSent") {
     // Keyed by request ID alone: a frame's document request can start in the parent's session and
     // finish in the session of the frame's new process.
-    session.inflight.add(params.requestId);
+    session.inflight.set(params.requestId, source ?? null);
     session.networkActivityAt = Date.now();
     session.requests.push({ id: params.requestId, method: params.request.method, url: params.request.url, type: params.type, timestamp: new Date().toISOString() });
     if (session.requests.length > MAX_REQUESTS) session.requests.shift();
@@ -136,7 +138,7 @@ async function attachNow(tabId) {
     if (!/already attached/i.test(error.message)) throw error;
     reattached = true;
   }
-  const session = { lastUsed: Date.now(), dialog: null, console: [], dialogWaiters: [], pageContexts: new Set(), frames: new Map(), requests: [], inflight: new Set(), attachedAt: Date.now(), networkActivityAt: null };
+  const session = { lastUsed: Date.now(), dialog: null, console: [], dialogWaiters: [], pageContexts: new Set(), frames: new Map(), requests: [], inflight: new Map(), attachedAt: Date.now(), networkActivityAt: null };
   sessions.set(tabId, session);
   // After a service worker restart the session is still attached but its state is gone. Turning
   // auto-attach and Runtime off first makes the browser report frames and execution contexts again.
@@ -193,7 +195,22 @@ const FOREIGN_FRAME_ERROR = /chrome-extension:\/\/ URL of different extension/;
 
 // Runs a CDP command on a tab, attaching first when needed. When another extension's frame blocks
 // debugger access, the frame is removed and the command retried once.
+const FILE_CHOOSER_INTERCEPT_MS = 60_000;
+const interceptTimers = new Map(); // tab id -> timer that switches file chooser interception off
+
 export async function cdp(tabId, method, params, sessionId) {
+  // File chooser interception that nobody switches off (the agent's code was stopped) would leave the
+  // tab's file inputs dead; it ends on its own after a while.
+  if (method === "Page.setInterceptFileChooserDialog" && !sessionId) {
+    clearTimeout(interceptTimers.get(tabId));
+    interceptTimers.delete(tabId);
+    if (params?.enabled) {
+      interceptTimers.set(tabId, setTimeout(() => {
+        interceptTimers.delete(tabId);
+        rawSend(tabId, method, { enabled: false }).catch(() => {});
+      }, FILE_CHOOSER_INTERCEPT_MS));
+    }
+  }
   try {
     return await sendChecked(tabId, method, params, sessionId);
   } catch (error) {

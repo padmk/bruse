@@ -51,6 +51,8 @@ const TOOLS = [
 const DEFAULT_TIMEOUT_MS = 30_000;
 // Time the worker gets beyond a call's timeout to report on its own before it is terminated.
 const TERMINATE_GRACE_MS = 500;
+// A reset the worker does not confirm in time (it is busy or stuck) replaces the worker instead.
+const RESET_WAIT_MS = 2_000;
 const TIMED_OUT_NOTE = "The REPL was reset because the call timed out: code still running from it was stopped. Bind tabs again with cua.getTab(id).";
 
 // Hosts the REPL worker and relays its browser calls and events through this thread's browser link.
@@ -65,12 +67,27 @@ class ReplHost {
 
   start() {
     const worker = (this.worker = new Worker(new URL("./repl-worker.mjs", import.meta.url), { workerData: { sessionId }, stderr: false }));
+    let failure = null;
     worker.on("message", (message) => {
       if (message.type === "browser-call") return this.relay(worker, message);
       this.pending.get(message.id)?.(message.result);
       this.pending.delete(message.id);
     });
-    worker.on("error", (error) => process.stderr.write(`[browser-control] REPL worker failed: ${error?.stack ?? error}\n`));
+    worker.on("error", (error) => {
+      failure = error;
+      process.stderr.write(`[browser-control] REPL worker failed: ${error?.stack ?? error}\n`);
+    });
+    // A worker that dies on its own (not replaced) fails its pending calls and is started again.
+    worker.on("exit", () => {
+      if (worker !== this.worker) return;
+      const reason = failure?.message ?? "it exited";
+      const settle = [...this.pending.values()];
+      this.pending.clear();
+      this.start();
+      for (const resolve of settle) {
+        resolve({ content: [{ type: "text", text: `The REPL crashed (${reason}) and was started again; its state is gone. Bind tabs again with cua.getTab(id).` }], isError: true });
+      }
+    });
   }
 
   async relay(worker, { callId, method, params }) {
@@ -91,6 +108,7 @@ class ReplHost {
     await old.terminate();
   }
 
+  // Waits for the worker's answer, or `waitMs` (undefined when it does not answer in time).
   request(message, waitMs) {
     const id = this.nextId++;
     return new Promise((resolve) => {
@@ -111,8 +129,8 @@ class ReplHost {
     return { content: [...content, { type: "text", text: TIMED_OUT_NOTE }], isError: true };
   }
 
-  reset() {
-    return this.request({ type: "reset" });
+  async reset() {
+    if ((await this.request({ type: "reset" }, RESET_WAIT_MS)) === undefined) await this.restart();
   }
 }
 
@@ -173,7 +191,15 @@ createInterface({ input: process.stdin, crlfDelay: Infinity })
     }
   })
   // The client closed the session: close this session's unmarked agent tabs, then exit.
-  .on("close", async () => {
-    await endSession();
-    process.exit(0);
-  });
+  .on("close", shutDown);
+
+// Clients may also stop the server with a signal; the session's tabs are cleaned up the same way.
+let shuttingDown = false;
+async function shutDown() {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  await endSession();
+  process.exit(0);
+}
+process.on("SIGTERM", shutDown);
+process.on("SIGHUP", shutDown);

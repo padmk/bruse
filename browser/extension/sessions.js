@@ -55,9 +55,14 @@ function normalizedUrl(url) {
   }
 }
 
-function takeFirst(list, url) {
+function expire(list) {
   const now = Date.now();
   for (let i = list.length - 1; i >= 0; i--) if (now - list[i].at > PAIRING_WINDOW_MS) list.splice(i, 1);
+}
+
+function takeFirst(list, url) {
+  expire(unpairedOpens);
+  expire(unpairedTabs);
   const index = list.findIndex((entry) => entry.url === url);
   return index < 0 ? null : list.splice(index, 1)[0];
 }

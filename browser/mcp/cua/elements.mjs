@@ -4,6 +4,8 @@
 import { modifierMask } from "./keys.mjs";
 import { OPT_OUT_OF_PASSWORD_MANAGERS } from "./page-scripts.mjs";
 
+// Long presses are capped well below a call's timeout, so the button is always released.
+const MAX_HOLD_MS = 5_000;
 const BUTTONS = { left: "left", l: "left", right: "right", r: "right", middle: "middle", m: "middle" };
 
 export const STALE_ELEMENT_MESSAGE = "The element is no longer on the page (it was removed or replaced); call getAXState() for current element numbers";
@@ -55,17 +57,49 @@ export async function elementCenter(cdp, backendNodeId) {
   return [(left + right) / 2, (top + bottom) / 2];
 }
 
-// Focuses an element in one call, after opting the field out of password manager menus.
-const FOCUS_ELEMENT = `function () {${OPT_OUT_OF_PASSWORD_MANAGERS}
-  this.scrollIntoView({ block: "nearest", inline: "nearest" });
-  this.focus({ preventScroll: true });
+// Focuses an element in one call, after opting the field out of password manager menus. An element
+// that cannot take focus itself (a wrapper of a field) passes it to its single field. Returns whether
+// focus is now on the element or inside it.
+const FOCUS_ELEMENT = `function () {
+  const el = this.nodeType === 1 ? this : this.parentElement;
+  const inside = () => {
+    let active = el.ownerDocument.activeElement;
+    while (active?.shadowRoot?.activeElement) active = active.shadowRoot.activeElement;
+    for (let node = active; node; node = node.parentNode ?? node.host) if (node === el) return true;
+    return false;
+  };
+  (function () {${OPT_OUT_OF_PASSWORD_MANAGERS}
+  }).call(el);
+  el.scrollIntoView({ block: "nearest", inline: "nearest" });
+  el.focus({ preventScroll: true });
+  if (inside()) return true;
+  // Text inside an editing host (a contenteditable region) is reached through the host's focus.
+  if (el.isContentEditable && el.ownerDocument.activeElement?.contains(el)) return true;
+  const fields = el.querySelectorAll('input:not([type="hidden"]), textarea, select, [contenteditable=""], [contenteditable="true"]');
+  if (fields.length === 1) {
+    (function () {${OPT_OUT_OF_PASSWORD_MANAGERS}
+    }).call(fields[0]);
+    fields[0].focus({ preventScroll: true });
+  }
+  return inside();
 }`;
 // Run before a click that may focus a field.
 const PREPARE_CLICK = `function () {${OPT_OUT_OF_PASSWORD_MANAGERS}
 }`;
 
-export async function focusNode(cdp, backendNodeId) {
-  await callOn(cdp, backendNodeId, FOCUS_ELEMENT).catch(() => cdp("DOM.focus", { backendNodeId }));
+// With `requireFocus` (for text input), fails when focus did not land on the element instead of letting
+// the input go to whatever was focused before. Key presses stay lenient: keyboard widgets often handle
+// keys on a focused container rather than on the item named.
+export async function focusNode(cdp, backendNodeId, { requireFocus = false } = {}) {
+  let focused;
+  try {
+    focused = await callOn(cdp, backendNodeId, FOCUS_ELEMENT);
+  } catch (error) {
+    if (error.message.includes(STALE_ELEMENT_MESSAGE)) throw error;
+    await cdp("DOM.focus", { backendNodeId });
+    return;
+  }
+  if (!focused && requireFocus) throw new Error("The element cannot take keyboard focus, so typed text would go elsewhere; use the element number of the text field itself, or click the element first");
 }
 
 export async function prepareClick(cdp, backendNodeId) {
@@ -99,10 +133,18 @@ const HIT_TEST = `function (x, y, mainSession) {
     return hit;
   };
   // The click reaches the element when the topmost element at the point is the element itself, inside
-  // it (also across shadow roots), or a label of it.
+  // it, or a label of it.
+  // Also through slots (slotted content), and when the hit is a shadow host whose closed or built-in
+  // shadow tree holds the element (for example the controls of a <video>).
   const reaches = (hit, el) => {
     if (!hit) return false;
-    for (let node = hit; node; node = node.parentNode ?? node.host) if (node === el) return true;
+    for (let node = hit; node; node = node.assignedSlot ?? node.parentNode ?? node.host) if (node === el) return true;
+    let crossed = false;
+    for (let node = el; node; ) {
+      if (node === hit && crossed) return true;
+      if (node.parentNode instanceof ShadowRoot) crossed = true;
+      node = node.parentNode instanceof ShadowRoot ? node.parentNode.host : node.parentNode;
+    }
     const label = hit.closest?.("label");
     return Boolean(label && label.control === el);
   };
@@ -135,7 +177,7 @@ export async function clickAt(cdp, [x, y], { mouseButton = "left", clickCount = 
   await cdp("Input.dispatchMouseEvent", { type: "mouseMoved", x, y, modifiers });
   for (let count = 1; count <= clickCount; count++) {
     await cdp("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button, clickCount: count, modifiers });
-    if (durationMs > 0) await new Promise((resolve) => setTimeout(resolve, Math.min(durationMs, 30_000)));
+    if (durationMs > 0) await new Promise((resolve) => setTimeout(resolve, Math.min(durationMs, MAX_HOLD_MS)));
     await cdp("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button, clickCount: count, modifiers });
   }
 }

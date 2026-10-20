@@ -152,6 +152,13 @@ async function answerChallenge(nonce) {
   return { type: "auth", mac: await hmac(hubSecret, `extension:${nonce}`), nonce: ownNonce };
 }
 
+let reconnectRequestedFor = 0;
+function requestReconnect(gen) {
+  if (reconnectRequestedFor === gen) return;
+  reconnectRequestedFor = gen;
+  chrome.runtime.sendMessage({ target: "offscreen", type: "reconnect", gen }).catch(() => {});
+}
+
 // Sends a message to the authenticated hub through the offscreen document.
 function send(message) {
   if (!hub.verified) return;
@@ -173,8 +180,11 @@ async function handle(gen, text) {
     return null;
   }
   const { id, method, params } = message;
+  // A restarted service worker has lost the authentication of an open connection; reconnecting makes
+  // the hub authenticate again.
+  if (!hub.verified) requestReconnect(gen);
   if (id === undefined) return null; // keepalive
-  if (!hub.verified) return JSON.stringify({ id, error: "The hub is not authenticated" });
+  if (!hub.verified) return JSON.stringify({ id, error: "The browser connection is being authenticated again; retry the call" });
   try {
     const handler = handlers[method];
     if (!handler) throw new Error(`Unknown method ${method}`);
@@ -195,9 +205,10 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   return true;
 });
 
+// Page.windowOpen goes out before the pairing that may answer it at once with tabs.opened.
 onCdpEvent((tabId, method, params, sessionId) => {
-  if (method === "Page.windowOpen") noteWindowOpen(tabId, params.url);
   if (FORWARDED_EVENTS.has(method)) send({ type: "event", tabId, method, params, sessionId });
+  if (method === "Page.windowOpen") noteWindowOpen(tabId, params.url);
 });
 
 // Tells sessions which tab a page opened, so that notifications name the exact tab.
@@ -212,6 +223,12 @@ async function ensureOffscreenDocument() {
       if (!/single offscreen/i.test(error.message)) throw error;
     });
 }
+
+// Debugger sessions this extension still holds from before a service worker restart have lost their
+// tracked state (and would never be detached when idle); start them over.
+chrome.debugger.getTargets().then((targets) => {
+  for (const target of targets) if (target.attached && target.tabId !== undefined) chrome.debugger.detach({ tabId: target.tabId }).catch(() => {});
+});
 
 // The offscreen document reconnects on its own; this only recreates it if the browser closed it.
 chrome.alarms.create(OFFSCREEN_ALARM, { periodInMinutes: 0.5 });
