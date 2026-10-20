@@ -82,14 +82,15 @@ export function createCua() {
   const context = { call, waitForEvent };
   const capabilities = createCapabilities(call);
 
-  // Page.windowOpen says a page opened a window; the extension follows up with tabs.opened naming the
-  // new tab. Notifications keep their order; an opening is reported once its tab is known.
+  // Page.windowOpen says a page opened a window; the browser's report of the new tab (tabs.opened, with
+  // the opening tab and URL) resolves it. Notifications keep their order; an opening is reported once
+  // its tab is known, and one that no tab answers was blocked.
   const stopEvents = onBrowserEvent((event) => {
     if (!tabs.has(String(event.tabId))) return;
     if (event.method === "Page.windowOpen") notifications.push({ opener: event.tabId, url: event.params.url, tabId: null });
     else if (event.method === "tabs.opened") {
       const unresolved = notifications.filter((n) => typeof n === "object" && n.opener === event.tabId && n.tabId === null);
-      const opening = unresolved.find((n) => sameUrl(n.url, event.params.url)) ?? unresolved[0];
+      const opening = unresolved.find((n) => sameUrl(n.url, event.params.url));
       if (opening) opening.tabId = event.params.tabId;
       else notifications.push({ opener: event.tabId, url: event.params.url, tabId: event.params.tabId });
     } else if (event.method === "Page.javascriptDialogOpening") {

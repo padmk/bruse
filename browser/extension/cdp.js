@@ -10,7 +10,7 @@ const MAX_REQUESTS = 300;
 // Commands that still work while a JavaScript dialog blocks the page.
 const DIALOG_SAFE_METHODS = new Set(["Page.handleJavaScriptDialog", "Page.captureScreenshot", "Page.getLayoutMetrics"]);
 
-const sessions = new Map(); // tabId -> { lastUsed, dialog, console, requests, inflight (request id -> frame session that started it), frames }
+const sessions = new Map(); // tabId -> { lastUsed, dialog, console, requests, inflight (request id -> { session, frameId }), frames }
 const eventListeners = new Set();
 
 // Returns a function that removes the listener.
@@ -45,8 +45,11 @@ chrome.debugger.onEvent.addListener(({ tabId, sessionId: source }, method, param
     }
   } else if (method === "Target.detachedFromTarget") {
     for (const [frameId, frame] of session.frames) if (frame.sessionId === params.sessionId) session.frames.delete(frameId);
-    // Requests of a frame that went away report no end.
-    for (const [requestId, owner] of session.inflight) if (owner === params.sessionId) session.inflight.delete(requestId);
+    // Requests of a frame that went away report no end. A cross-origin frame's target ID is its frame ID.
+    dropRequests(session, (r) => r.session === params.sessionId || r.frameId === params.targetId);
+  } else if (method === "Page.frameDetached") {
+    // A frame that moves to another process ("swap") keeps loading there.
+    if (params.reason !== "swap") dropRequests(session, (r) => r.frameId === params.frameId);
   } else if (method === "Page.javascriptDialogOpening") {
     session.dialog = { type: params.type, message: params.message, defaultPrompt: params.defaultPrompt, url: params.url };
     for (const resolve of session.dialogWaiters.splice(0)) resolve();
@@ -68,7 +71,7 @@ chrome.debugger.onEvent.addListener(({ tabId, sessionId: source }, method, param
   } else if (method === "Network.requestWillBeSent") {
     // Keyed by request ID alone: a frame's document request can start in the parent's session and
     // finish in the session of the frame's new process.
-    session.inflight.set(params.requestId, source ?? null);
+    session.inflight.set(params.requestId, { session: source ?? null, frameId: params.frameId });
     session.networkActivityAt = Date.now();
     session.requests.push({ id: params.requestId, method: params.request.method, url: params.request.url, type: params.type, timestamp: new Date().toISOString() });
     if (session.requests.length > MAX_REQUESTS) session.requests.shift();
@@ -88,6 +91,10 @@ chrome.debugger.onEvent.addListener(({ tabId, sessionId: source }, method, param
   }
   for (const listener of eventListeners) listener(tabId, method, params, source);
 });
+
+function dropRequests(session, matches) {
+  for (const [requestId, request] of session.inflight) if (matches(request)) session.inflight.delete(requestId);
+}
 
 function pushConsole(session, level, message, url) {
   session.console.push({ level, message, url, timestamp: new Date().toISOString() });
@@ -167,7 +174,8 @@ export async function detach(tabId) {
 }
 
 // Removes frames that other extensions injected into the page (for example password manager menus).
-// The browser refuses debugger access to a tab while such a frame is present.
+// The browser refuses debugger access to a tab while such a frame is present; this runs only after it
+// did, and removes no more than those frames.
 async function removeForeignExtensionFrames(tabId) {
   await chrome.scripting.executeScript({
     target: { tabId, allFrames: true },
@@ -181,8 +189,11 @@ async function removeForeignExtensionFrames(tabId) {
           const shadow = chrome.dom?.openOrClosedShadowRoot?.(el) ?? el.shadowRoot;
           if (shadow) roots.push(shadow);
           if (el.tagName === "IFRAME" && el.src.startsWith("chrome-extension://") && !el.src.startsWith(ownOrigin)) {
+            // Only the frame goes, and the wrapper element only of a known password manager menu,
+            // which would otherwise put the frame back.
             const host = el.getRootNode().host;
-            (host ?? el).remove();
+            if (host && /^(com-1password|com-bitwarden|bitwarden-|lastpass-|dashlane-|protonpass-)/i.test(host.localName)) host.remove();
+            else el.remove();
           }
         }
       }

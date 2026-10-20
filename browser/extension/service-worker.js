@@ -4,7 +4,7 @@
 
 import { cdp, consoleLogs, detach, networkRequests, onCdpEvent, tabState } from "./cdp.js";
 import { waitForDownload } from "./downloads.js";
-import { agentTabs, endSession, groupAgentTab, markTab, nameSession, noteWindowOpen, onTabOpened } from "./sessions.js";
+import { agentTabs, endSession, groupAgentTab, markTab, nameSession, onTabOpened } from "./sessions.js";
 
 const OFFSCREEN_ALARM = "offscreen-check";
 const MANAGEMENT_METHODS = {
@@ -205,10 +205,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   return true;
 });
 
-// Page.windowOpen goes out before the pairing that may answer it at once with tabs.opened.
 onCdpEvent((tabId, method, params, sessionId) => {
   if (FORWARDED_EVENTS.has(method)) send({ type: "event", tabId, method, params, sessionId });
-  if (method === "Page.windowOpen") noteWindowOpen(tabId, params.url);
 });
 
 // Tells sessions which tab a page opened, so that notifications name the exact tab.

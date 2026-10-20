@@ -2,18 +2,39 @@
 // (Page.downloadWillBegin); the downloads API then reports the item without saying which tab started
 // it. Each report is paired with the first unpaired item at that URL, in either order, so two tabs
 // downloading the same URL get one file each. A tab waiting for a download takes its own next one.
-// A download from a tab without the debugger (typically a tab the waiting page just opened for it) is
-// never reported; after a short grace it goes to the one waiting tab that opened a tab recently, or to
-// the only waiting tab.
+// A download that starts in a tab the waiting tab opened counts for the waiting tab. Such tabs are
+// attached as soon as they open so that they report their downloads; a tab that turns into a download
+// before that (a link to an attachment with target=_blank) is matched by the URL the browser reported
+// it was opened for. Downloads with no such evidence are never handed out.
 
 import { cdp, onCdpEvent } from "./cdp.js";
-import { onTabOpened } from "./sessions.js";
+import { onTabOpened, openerTab } from "./sessions.js";
 
-const UNREPORTED_GRACE_MS = 1_500;
-const OPENER_WINDOW_MS = 30_000;
 const MAX_REMEMBERED = 200;
-const openedAt = new Map(); // opener tab id -> when it last opened a tab
-onTabOpened((openerTabId) => openedAt.set(openerTabId, Date.now()));
+const MAX_OPENER_CHAIN = 5;
+
+// The tab waiting for a download from `tabId`: the tab itself or a tab that opened it (directly or
+// not), or null when none of them waits.
+function waitingTab(tabId) {
+  for (let tab = tabId, i = 0; tab !== undefined && i <= MAX_OPENER_CHAIN; tab = openerTab(tab), i++) {
+    for (const waiter of waiters) if (waiter.claimed === null && waiter.tabId === tab) return tab;
+  }
+  return null;
+}
+
+const openedTabs = []; // { tabId, url, at } tabs opened by waiting tabs, for downloads they never report
+
+onTabOpened((openerTabId, tabId, url) => {
+  if (waitingTab(openerTabId) === null) return;
+  cdp(tabId, "Page.enable", {}).catch(() => {});
+  expire(openedTabs);
+  openedTabs.push({ tabId, url, at: Date.now() });
+  const index = unpairedItems.findIndex((item) => item.urls.includes(url));
+  if (index >= 0) {
+    openedTabs.pop();
+    assign(unpairedItems.splice(index, 1)[0].id, tabId);
+  }
+});
 
 function remember(map, key, value) {
   map.set(key, value);
@@ -32,7 +53,8 @@ function expire(list) {
   for (let i = list.length - 1; i >= 0; i--) if (now - list[i].at > PAIRING_WINDOW_MS) list.splice(i, 1);
 }
 
-function assign(downloadId, tabId) {
+function assign(downloadId, sourceTabId) {
+  const tabId = waitingTab(sourceTabId) ?? sourceTabId;
   remember(owners, downloadId, tabId);
   for (const waiter of waiters) {
     if (waiter.claimed === null && waiter.tabId === tabId) {
@@ -41,17 +63,6 @@ function assign(downloadId, tabId) {
     }
   }
   update(downloadId);
-}
-
-function assignUnreported(downloadId) {
-  const index = unpairedItems.findIndex((item) => item.id === downloadId);
-  if (index < 0) return;
-  const open = [...waiters].filter((waiter) => waiter.claimed === null);
-  const openers = open.filter((waiter) => Date.now() - (openedAt.get(waiter.tabId) ?? 0) < OPENER_WINDOW_MS);
-  const tabs = new Set((openers.length ? openers : open).map((waiter) => waiter.tabId));
-  if (tabs.size !== 1) return;
-  unpairedItems.splice(index, 1);
-  assign(downloadId, [...tabs][0]);
 }
 
 function update(downloadId) {
@@ -70,11 +81,11 @@ chrome.downloads.onCreated.addListener((item) => {
   expire(reports);
   const urls = [item.url, item.finalUrl].filter(Boolean);
   const index = reports.findIndex((report) => urls.includes(report.url));
-  if (index >= 0) assign(item.id, reports.splice(index, 1)[0].tabId);
-  else {
-    unpairedItems.push({ id: item.id, urls, at: Date.now() });
-    setTimeout(() => assignUnreported(item.id), UNREPORTED_GRACE_MS);
-  }
+  if (index >= 0) return assign(item.id, reports.splice(index, 1)[0].tabId);
+  expire(openedTabs);
+  const opened = openedTabs.findIndex((tab) => urls.includes(tab.url));
+  if (opened >= 0) return assign(item.id, openedTabs.splice(opened, 1)[0].tabId);
+  unpairedItems.push({ id: item.id, urls, at: Date.now() });
 });
 
 chrome.downloads.onChanged.addListener((delta) => {

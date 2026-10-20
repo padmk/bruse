@@ -62,8 +62,9 @@ export async function elementCenter(cdp, backendNodeId) {
 // focus is now on the element or inside it.
 const FOCUS_ELEMENT = `function () {
   const el = this.nodeType === 1 ? this : this.parentElement;
+  // Focus is read from the element's own root, which also covers closed shadow trees.
   const inside = () => {
-    let active = el.ownerDocument.activeElement;
+    let active = el.getRootNode().activeElement ?? el.ownerDocument.activeElement;
     while (active?.shadowRoot?.activeElement) active = active.shadowRoot.activeElement;
     for (let node = active; node; node = node.parentNode ?? node.host) if (node === el) return true;
     return false;
@@ -74,7 +75,7 @@ const FOCUS_ELEMENT = `function () {
   el.focus({ preventScroll: true });
   if (inside()) return true;
   // Text inside an editing host (a contenteditable region) is reached through the host's focus.
-  if (el.isContentEditable && el.ownerDocument.activeElement?.contains(el)) return true;
+  if (el.isContentEditable && el.getRootNode().activeElement?.contains(el)) return true;
   const fields = el.querySelectorAll('input:not([type="hidden"]), textarea, select, [contenteditable=""], [contenteditable="true"]');
   if (fields.length === 1) {
     (function () {${OPT_OUT_OF_PASSWORD_MANAGERS}
@@ -157,10 +158,13 @@ const HIT_TEST = `function (x, y, mainSession) {
     const hit = deepHit(el.ownerDocument);
     if (!reaches(hit, el)) return describe(hit);
     if (el !== target) {
+      // Into the frame's own coordinates, undoing a scale of the frame element.
       const rect = el.getBoundingClientRect();
       const style = getComputedStyle(el);
-      x -= rect.left + parseFloat(style.borderLeftWidth) + parseFloat(style.paddingLeft);
-      y -= rect.top + parseFloat(style.borderTopWidth) + parseFloat(style.paddingTop);
+      const sx = el.offsetWidth ? rect.width / el.offsetWidth : 1;
+      const sy = el.offsetHeight ? rect.height / el.offsetHeight : 1;
+      x = (x - rect.left) / sx - parseFloat(style.borderLeftWidth) - parseFloat(style.paddingLeft);
+      y = (y - rect.top) / sy - parseFloat(style.borderTopWidth) - parseFloat(style.paddingTop);
     }
   }
   return null;
