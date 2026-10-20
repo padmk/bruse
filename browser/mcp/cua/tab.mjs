@@ -25,6 +25,9 @@ const WAIT_FOR_QUIET_DOM = `(quietMs, maxMs) => new Promise((resolve) => {
 })`;
 const SCROLL_PAGE_FRACTION = 0.85;
 const NETWORK_IDLE_MS = 500;
+const DOWNLOAD_WAIT_MS = 30_000;
+// Shorter than a call's default timeout, so the wait ends (and stops intercepting) within the call.
+const FILE_CHOOSER_WAIT_MS = 20_000;
 // How long a click by element number waits for something covering the element (an animation, a toast) to go away.
 const COVERED_WAIT_MS = 1_000;
 const DIRECTIONS = { up: [0, -1], u: [0, -1], down: [0, 1], d: [0, 1], left: [-1, 0], l: [-1, 0], right: [1, 0], r: [1, 0] };
@@ -54,8 +57,8 @@ export class Tab {
     this.playwright = this.createPlaywright();
     this.dev = { logs: (options) => this.logs(options), requests: (options) => this.requests(options) };
     this.clipboard = {
-      readText: () => this.evaluateInPage("navigator.clipboard.readText()"),
-      writeText: (text) => this.evaluateInPage(`navigator.clipboard.writeText(${JSON.stringify(text)})`),
+      readText: () => this.evaluateInPage("navigator.clipboard.readText()", { userGesture: true }),
+      writeText: (text) => this.evaluateInPage(`navigator.clipboard.writeText(${JSON.stringify(text)})`, { userGesture: true }),
     };
     this.content = createContentApi(this);
     this.capabilities = {
@@ -92,8 +95,10 @@ export class Tab {
     this.lastActionAt = Date.now();
   }
 
-  async evaluateInPage(expression) {
-    const { result, exceptionDetails } = await this.cdpSender()("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true, userGesture: true });
+  // `userGesture` lets the code use APIs that need user activation (the clipboard). State reads run
+  // without it, so a page cannot use the agent's reads to open popups or pickers.
+  async evaluateInPage(expression, { userGesture = false } = {}) {
+    const { result, exceptionDetails } = await this.cdpSender()("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true, userGesture });
     if (exceptionDetails) throw new Error(exceptionDetails.exception?.description?.split("\n")[0] ?? exceptionDetails.text);
     return result.value;
   }
@@ -221,12 +226,14 @@ export class Tab {
   // --- Input ---
 
   async click(target, options = {}) {
+    await this.ensureNoDialog();
     await clickAt(this.cdpSender(), await this.pointFor(target, { hitTest: true, force: options.force }), options);
     await this.afterInput();
   }
 
   // Moves the pointer over an element or point, e.g. to open hover menus.
   async hover(target) {
+    await this.ensureNoDialog();
     const [x, y] = await this.pointFor(target);
     await this.cdpSender()("Input.dispatchMouseEvent", { type: "mouseMoved", x, y });
     await this.afterInput();
@@ -234,6 +241,7 @@ export class Tab {
 
   // Drags between element numbers or viewport points.
   async drag(from, to) {
+    await this.ensureNoDialog();
     await dragBetween(this.cdpSender(), await this.pointFor(from), await this.pointFor(to));
     await this.afterInput();
   }
@@ -241,6 +249,7 @@ export class Tab {
   async scroll(target, direction, pages = 1) {
     const vector = DIRECTIONS[direction];
     if (!vector) throw new Error(`Unknown direction ${direction}`);
+    await this.ensureNoDialog();
     const cdp = this.cdpSender();
     const metrics = await cdp("Page.getLayoutMetrics");
     const viewport = metrics.cssVisualViewport ?? metrics.cssLayoutViewport;
@@ -280,32 +289,43 @@ export class Tab {
     throw new Error(`Unsupported secondary action "${action}". Supported: Press, Expand, Collapse, ShowMenu, Increment, Decrement, Cancel, Focus, ScrollToVisible`);
   }
 
-  async focusTarget(elementIndex) {
+  async focusTarget(elementIndex, options) {
     if (elementIndex === null || elementIndex === undefined) return;
     const { backendNodeId, sessionId } = await this.nodeFor(elementIndex);
-    await focusNode(this.cdpSender(sessionId), backendNodeId);
+    await focusNode(this.cdpSender(sessionId), backendNodeId, options);
+  }
+
+  // Input events are dropped while a JavaScript dialog blocks the page, so input that would be lost
+  // fails instead of reporting success.
+  async ensureNoDialog() {
+    const { dialog } = await this.context.call("page.state", { tabId: this.tabId });
+    if (dialog) throw new Error(`A JavaScript ${dialog.type} dialog is open on this tab (${JSON.stringify(dialog.message)}); handle it with getJsDialog() first`);
   }
 
   async typeText(elementIndex, text) {
-    await this.focusTarget(elementIndex);
+    await this.ensureNoDialog();
+    await this.focusTarget(elementIndex, { requireFocus: true });
     await this.cdpSender()("Input.insertText", { text });
     await this.afterInput();
   }
 
   async pressKey(elementIndex, key, options = {}) {
+    await this.ensureNoDialog();
     await this.focusTarget(elementIndex);
     await pressChord(this.cdpSender(), key, options);
     await this.afterInput();
   }
 
   async paste(elementIndex, text, { format = "text" } = {}) {
-    await this.focusTarget(elementIndex);
+    await this.ensureNoDialog();
+    await this.focusTarget(elementIndex, { requireFocus: true });
     const cdp = this.cdpSender();
     const mimeType = format === "html" ? "text/html" : "text/plain";
     const { result } = await cdp("Runtime.evaluate", { expression: "document.activeElement", returnByValue: false });
     let handled = false;
     if (result.objectId) {
       const { node } = await cdp("DOM.describeNode", { objectId: result.objectId });
+      cdp("Runtime.releaseObject", { objectId: result.objectId }).catch(() => {});
       handled = await callOn(cdp, node.backendNodeId, DISPATCH_PASTE, [mimeType, text]);
     }
     if (!handled) {
@@ -386,7 +406,7 @@ export class Tab {
       getByTestId: (id) => root.getByTestId(id),
       frameLocator: (selector) => root.frameLocator(selector),
       async evaluate(fn, arg) {
-        return tab.evaluateInPage(`(${functionSource(fn, "arg")})(${JSON.stringify(arg ?? null)})`);
+        return tab.evaluateInPage(`(${functionSource(fn, "arg")})(${JSON.stringify(arg ?? null)})`, { userGesture: true });
       },
       // ARIA snapshot of the page in Playwright's format; it does not change element numbers.
       async domSnapshot() {
@@ -437,10 +457,10 @@ export class Tab {
         await tab.context.call("tabs.waitForLoad", { tabId: tab.tabId, timeoutMs: Math.max(1, deadline - Date.now()) });
         return result;
       },
-      async waitForEvent(event, { timeoutMs = 30_000 } = {}) {
+      async waitForEvent(event, { timeoutMs } = {}) {
         if (event === "download") {
           // Only a download this tab starts counts, not unrelated ones elsewhere in the browser.
-          const download = tab.context.call("downloads.wait", { tabId: tab.tabId, timeoutMs });
+          const download = tab.context.call("downloads.wait", { tabId: tab.tabId, timeoutMs: timeoutMs ?? DOWNLOAD_WAIT_MS });
           download.catch(() => {}); // the caller may never ask for the path
           return { path: async () => (await download).path };
         }
@@ -449,17 +469,16 @@ export class Tab {
           await cdp("Page.setInterceptFileChooserDialog", { enabled: true });
           let opened;
           try {
-            opened = await tab.context.waitForEvent((e) => e.tabId === tab.tabId && e.method === "Page.fileChooserOpened", timeoutMs);
-          } catch (error) {
-            // Leave the user's own file pickers working.
+            opened = await tab.context.waitForEvent((e) => e.tabId === tab.tabId && e.method === "Page.fileChooserOpened", timeoutMs ?? FILE_CHOOSER_WAIT_MS);
+          } finally {
+            // Leave the user's own file pickers working; setFiles needs no interception.
             await cdp("Page.setInterceptFileChooserDialog", { enabled: false }).catch(() => {});
-            throw error;
           }
           return {
             isMultiple: () => opened.params.mode === "selectMultiple",
             setFiles: async (files) => {
               await tab.cdpSender()("DOM.setFileInputFiles", { backendNodeId: opened.params.backendNodeId, files: Array.isArray(files) ? files : [files] });
-              await tab.cdpSender()("Page.setInterceptFileChooserDialog", { enabled: false });
+              await tab.afterInput();
             },
           };
         }

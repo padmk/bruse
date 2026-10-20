@@ -56,7 +56,10 @@ function emitEvent(event) {
   for (const listener of eventListeners) listener(event);
 }
 
-const HUB_GONE = "The browser hub went away; retry the call";
+// A hub that is shutting down takes no new requests; they were not run, so every one is resent.
+const HUB_CLOSING = "The browser hub is shutting down";
+let draining = false;
+const HUB_GONE = "The browser hub went away while the request was in flight, so it may or may not have taken effect; check the page before repeating an action";
 // Requests that only read state; they are resent through a new hub when the old one exits mid-call.
 const READ_ONLY_METHODS = new Set(["browser.info", "tabs.list", "tabs.get", "tabs.agent", "tabs.waitForLoad", "page.state", "page.console", "page.network", "history.search"]);
 const READ_ONLY_CDP = /^(DOM\.(getDocument|describeNode|getContentQuads|getBoxModel|getFrameOwner|resolveNode)|Accessibility\.|Page\.(getFrameTree|getLayoutMetrics|captureScreenshot)|Runtime\.(getProperties|releaseObject|releaseObjectGroup))$/;
@@ -77,13 +80,19 @@ function link() {
 }
 
 export async function callBrowser(method, params = {}) {
-  for (let attempt = 0; ; attempt++) {
+  const closingDeadline = Date.now() + DRAIN_MS + 1_000;
+  for (let attempt = 0; ; ) {
     const current = await link();
     sessionUsed = true;
     try {
       return await current.send(method, params);
     } catch (error) {
-      if (error.message !== HUB_GONE || attempt > 0 || !isReadOnly(method, params)) throw error;
+      // Until the closing hub is gone and a new one is elected.
+      if (error.message === HUB_CLOSING && Date.now() < closingDeadline) {
+        await new Promise((r) => setTimeout(r, 200));
+        continue;
+      }
+      if (attempt++ > 0 || error.message !== HUB_GONE || !isReadOnly(method, params)) throw error;
     }
   }
 }
@@ -92,6 +101,7 @@ export async function callBrowser(method, params = {}) {
 // requests of other sessions finish before the process exits.
 export async function endSession() {
   if (sessionUsed) await Promise.race([callBrowser("session.end", { sessionId }).catch(() => {}), new Promise((r) => setTimeout(r, 2_000))]);
+  draining = true;
   const deadline = Date.now() + DRAIN_MS;
   while (hubPending && hubPending.size && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50));
 }
@@ -136,6 +146,7 @@ function becomeHub() {
     }
 
     async function request(method, params, settle) {
+      if (draining) return settle({ error: HUB_CLOSING });
       try {
         await whenExtensionConnected();
         forward(method, params, settle);

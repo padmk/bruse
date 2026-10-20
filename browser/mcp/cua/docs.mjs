@@ -103,7 +103,8 @@ interface PlaywrightAPI {             // locators: getByRole/getByText/getByLabe
   \`await nodeRepl.emitImage(bytes)\` for anything else.
 - REPL state persists across calls: \`const tab = …\` at the top level stays available. \`js_reset\` clears it.
 - Agent tabs open in the background inside the agent tab group and close when the session ends unless
-  marked with \`markDeliverable()\` or \`markHandoff()\`. Tabs bound with \`getTab\` belong to the user and stay.
+  marked with \`markDeliverable()\` or \`markHandoff()\`; so do tabs that agent tabs open (popups), even
+  when bound with \`getTab\`. Other tabs bound with \`getTab\` belong to the user and stay.
 - A JavaScript dialog blocks the page; handle it with \`getJsDialog()\`. Notifications about dialogs and new
   tabs opened by the page are appended to the tool result.
 

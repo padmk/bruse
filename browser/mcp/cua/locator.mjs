@@ -116,18 +116,30 @@ export class Locator {
       if (!root) return (${consume})([], arg);
       return (${consume})((${LOCATOR_ENGINE})(steps, root), arg);
     }`;
+    // A frame's document resolves in the frame's own context, so this also works for a cross-origin
+    // frame that shares the parent's process (same site), whose contentDocument the parent cannot read.
+    const objectGroup = options.objectGroup ?? `engine-${Math.random().toString(36).slice(2)}`;
     let objectId;
-    if (rootId) objectId = (await cdp("DOM.resolveNode", { backendNodeId: rootId, objectGroup: options.objectGroup })).object.objectId;
-    else objectId = (await cdp("Runtime.evaluate", { expression: "document", objectGroup: options.objectGroup })).result.objectId;
-    const { result, exceptionDetails } = await cdp("Runtime.callFunctionOn", {
-      objectId,
-      functionDeclaration: call,
-      arguments: [{ value: steps }, { value: arg ?? null }],
-      awaitPromise: true,
-      ...options,
-    });
-    if (exceptionDetails) throw new Error(exceptionDetails.exception?.description?.split("\n")[0] ?? exceptionDetails.text);
-    return result;
+    if (rootId) {
+      const { node } = await cdp("DOM.describeNode", { backendNodeId: rootId });
+      const documentId = node.contentDocument?.backendNodeId ?? rootId;
+      objectId = (await cdp("DOM.resolveNode", { backendNodeId: documentId, objectGroup })).object.objectId;
+    } else objectId = (await cdp("Runtime.evaluate", { expression: "document", objectGroup })).result.objectId;
+    try {
+      const { result, exceptionDetails } = await cdp("Runtime.callFunctionOn", {
+        objectId,
+        functionDeclaration: call,
+        arguments: [{ value: steps }, { value: arg ?? null }],
+        awaitPromise: true,
+        ...options,
+        objectGroup,
+      });
+      if (exceptionDetails) throw new Error(exceptionDetails.exception?.description?.split("\n")[0] ?? exceptionDetails.text);
+      return result;
+    } finally {
+      // Without a group of the caller's, nothing from this call is needed afterwards.
+      if (!options.objectGroup) cdp("Runtime.releaseObjectGroup", { objectGroup }).catch(() => {});
+    }
   }
 
   // Backend node IDs matched by `steps` in a scope. Handles live in one object group released at the end.
@@ -246,7 +258,7 @@ export class Locator {
   // Key and text input goes to the tab; the browser routes it to the focused frame.
   async pressSequentially(text, { timeoutMs } = {}) {
     const { id, cdp } = await this.resolveOne({ timeoutMs });
-    await focusNode(cdp, id);
+    await focusNode(cdp, id, { requireFocus: true });
     for (const char of text) await this.tab.cdpSender()("Input.insertText", { text: char });
     await this.tab.afterInput();
   }

@@ -35,6 +35,8 @@ function connect() {
 chrome.runtime.onMessage.addListener((message) => {
   if (message.target !== "offscreen") return;
   if (message.type === "send" && message.gen === generation && socket?.readyState === WebSocket.OPEN) socket.send(message.data);
+  // The service worker lost this connection's authentication (it restarted); a new connection redoes it.
+  if (message.type === "reconnect" && message.gen === generation) socket?.close();
 });
 
 connect();

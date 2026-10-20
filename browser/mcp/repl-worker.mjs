@@ -4,9 +4,13 @@
 import { parentPort } from "node:worker_threads";
 import { Repl } from "./repl.mjs";
 
-// Agent code can leave promises unhandled (an un-awaited call that later fails); that must not end the worker.
+// Agent code can leave promises unhandled (an un-awaited call that later fails) or throw from a timer
+// callback; neither may end the worker.
 process.on("unhandledRejection", (reason) => {
   process.stderr.write(`[browser-control] Unhandled rejection: ${reason?.stack ?? reason}\n`);
+});
+process.on("uncaughtException", (error) => {
+  process.stderr.write(`[browser-control] Uncaught exception in REPL code: ${error?.stack ?? error}\n`);
 });
 
 // Dynamic import support in the vm is flagged experimental; keep that notice out of the client's log.

@@ -47,6 +47,14 @@ const createCapabilities = (call) => ({
   },
 });
 
+function sameUrl(a, b) {
+  try {
+    return new URL(a).href === new URL(b).href;
+  } catch {
+    return a === b;
+  }
+}
+
 function tabSummary(tab) {
   return {
     id: String(tab.id),
@@ -80,7 +88,8 @@ export function createCua() {
     if (!tabs.has(String(event.tabId))) return;
     if (event.method === "Page.windowOpen") notifications.push({ opener: event.tabId, url: event.params.url, tabId: null });
     else if (event.method === "tabs.opened") {
-      const opening = notifications.find((n) => typeof n === "object" && n.opener === event.tabId && n.tabId === null);
+      const unresolved = notifications.filter((n) => typeof n === "object" && n.opener === event.tabId && n.tabId === null);
+      const opening = unresolved.find((n) => sameUrl(n.url, event.params.url)) ?? unresolved[0];
       if (opening) opening.tabId = event.params.tabId;
       else notifications.push({ opener: event.tabId, url: event.params.url, tabId: event.params.tabId });
     } else if (event.method === "Page.javascriptDialogOpening") {

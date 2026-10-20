@@ -144,7 +144,9 @@ export const LOCATOR_ENGINE = `function (steps, startRoot) {
         if (i < 0) inside.add(el);
       }
     }
-    return [...inside];
+    // In tree order across shadow roots, so first() and nth() pick what Playwright would.
+    const order = new Map(allElements(root).map((el, i) => [el, i]));
+    return [...inside].sort((a, b) => order.get(a) - order.get(b));
   };
   const implicitRole = (el) => {
     const explicit = el.getAttribute("role");
