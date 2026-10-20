@@ -92,8 +92,13 @@ chrome.debugger.onEvent.addListener(({ tabId, sessionId: source }, method, param
   for (const listener of eventListeners) listener(tabId, method, params, source);
 });
 
+// Dropping requests counts as network activity, so the quiet period starts over.
 function dropRequests(session, matches) {
-  for (const [requestId, request] of session.inflight) if (matches(request)) session.inflight.delete(requestId);
+  for (const [requestId, request] of session.inflight) {
+    if (!matches(request)) continue;
+    session.inflight.delete(requestId);
+    session.networkActivityAt = Date.now();
+  }
 }
 
 function pushConsole(session, level, message, url) {
@@ -209,7 +214,17 @@ const FOREIGN_FRAME_ERROR = /chrome-extension:\/\/ URL of different extension/;
 const FILE_CHOOSER_INTERCEPT_MS = 60_000;
 const interceptTimers = new Map(); // tab id -> timer that switches file chooser interception off
 
+const agentInputAt = new Map(); // tab id -> when the agent last sent input to it
+
+// Milliseconds since the agent last sent input to the tab (Infinity if never).
+export function sinceAgentInput(tabId) {
+  return agentInputAt.has(tabId) ? Date.now() - agentInputAt.get(tabId) : Infinity;
+}
+
+chrome.tabs.onRemoved.addListener((tabId) => agentInputAt.delete(tabId));
+
 export async function cdp(tabId, method, params, sessionId) {
+  if (method.startsWith("Input.")) agentInputAt.set(tabId, Date.now());
   // File chooser interception that nobody switches off (the agent's code was stopped) would leave the
   // tab's file inputs dead; it ends on its own after a while.
   if (method === "Page.setInterceptFileChooserDialog" && !sessionId) {

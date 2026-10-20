@@ -109,6 +109,9 @@ export async function prepareClick(cdp, backendNodeId) {
   });
 }
 
+// What the hit test reports when no element is at the click point.
+export const OFF_PAGE = "off-page";
+
 // this = the element about to be clicked, (x, y) = the click point in its frame session's viewport.
 // Checks every document from the session root down to the element's own: the point must hit the next
 // frame's owner and finally the element. Returns null when the click reaches the element (or the check
@@ -138,7 +141,7 @@ const HIT_TEST = `function (x, y, mainSession) {
   // Also through slots (slotted content), and when the hit is a shadow host whose closed or built-in
   // shadow tree holds the element (for example the controls of a <video>).
   const reaches = (hit, el) => {
-    if (!hit) return false;
+    if (!hit) return false; // the point is outside the document
     for (let node = hit; node; node = node.assignedSlot ?? node.parentNode ?? node.host) if (node === el) return true;
     let crossed = false;
     for (let node = el; node; ) {
@@ -150,22 +153,25 @@ const HIT_TEST = `function (x, y, mainSession) {
     return Boolean(label && label.control === el);
   };
   const describe = (hit) => {
-    if (!hit) return "no element (the point is outside the page)";
     const classes = typeof hit.className === "string" ? hit.className.trim().split(/\\s+/).filter(Boolean).slice(0, 2) : [];
     return "<" + hit.localName + (hit.id ? "#" + hit.id : "") + classes.map((c) => "." + c).join("") + ">";
   };
-  for (const el of [...owners, target]) {
-    const hit = deepHit(el.ownerDocument);
-    if (!reaches(hit, el)) return describe(hit);
-    if (el !== target) {
-      // Into the frame's own coordinates, undoing a scale of the frame element.
-      const rect = el.getBoundingClientRect();
-      const style = getComputedStyle(el);
-      const sx = el.offsetWidth ? rect.width / el.offsetWidth : 1;
-      const sy = el.offsetHeight ? rect.height / el.offsetHeight : 1;
-      x = (x - rect.left) / sx - parseFloat(style.borderLeftWidth) - parseFloat(style.paddingLeft);
-      y = (y - rect.top) / sy - parseFloat(style.borderTopWidth) - parseFloat(style.paddingTop);
-    }
+  // The session root is checked at the click point. Inside same-process frames, whose transforms this
+  // script cannot invert in general (rotation, perspective), the check uses the center of the visible
+  // part of the next element in its own document: under such transforms that is the same spot.
+  const visibleCenter = (el) => {
+    const r = el.getBoundingClientRect();
+    const view = el.ownerDocument.defaultView;
+    const left = Math.max(r.left, 0), top = Math.max(r.top, 0);
+    const right = Math.min(r.right, view.innerWidth), bottom = Math.min(r.bottom, view.innerHeight);
+    return right > left && bottom > top ? [(left + right) / 2, (top + bottom) / 2] : [r.left + r.width / 2, r.top + r.height / 2];
+  };
+  const chain = [...owners, target];
+  for (let i = 0; i < chain.length; i++) {
+    if (i > 0) [x, y] = visibleCenter(chain[i]);
+    const hit = deepHit(chain[i].ownerDocument);
+    if (!hit) return ${JSON.stringify(OFF_PAGE)};
+    if (!reaches(hit, chain[i])) return describe(hit);
   }
   return null;
 }`;
