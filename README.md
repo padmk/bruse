@@ -1,6 +1,9 @@
-# cua
+# Bruse
 
-Local computer-use tools for agents, independent of any vendor's runtime.
+<img src="browser/extension/icons/icon-128.png" width="96" alt="Bruse icon" align="right">
+
+**Bruse** (browser use, with a nod to Bruce Lee) gives local AI agents fast, background control of the
+user's real browser, independent of any vendor's runtime.
 
 ## Browser
 
@@ -55,7 +58,7 @@ cannot replace it. After reinstalling the extension (it then has a new secret), 
 2. Register the MCP server (Node 22 or newer):
 
    ```sh
-   claude mcp add -s user browser -- /opt/homebrew/opt/node@24/bin/node ~/dev/cua/browser/mcp/server.mjs
+   claude mcp add -s user bruse -- /opt/homebrew/opt/node@24/bin/node ~/dev/bruse/browser/mcp/server.mjs
    ```
 
 After editing extension files, reload the extension in `brave://extensions`, or let it reload itself:
