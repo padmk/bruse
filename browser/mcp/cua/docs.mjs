@@ -1,8 +1,10 @@
 // Documentation shown to the agent the first time it selects a browser or tab in a REPL session.
 
+import { PRODUCT_NAME } from "../config.mjs";
+
 export const BROWSER_DOCUMENTATION = `## Browser control
 
-The \`cua\` global drives the user's real browser through the Browser Control Bridge extension. Tabs are
+The \`cua\` global drives the user's real browser through the ${PRODUCT_NAME} browser extension. Tabs are
 operated in the background: input does not move the user's cursor or focus the browser window.
 
 \`\`\`typescript

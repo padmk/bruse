@@ -1,8 +1,10 @@
 {
-  "name": "cua",
+  "name": "bruse",
   "version": "0.1.0",
   "private": true,
-  "description": "Local computer-use tools for agents: browser control through an own extension and native host",
+  "description": "Browser use for local AI agents: an extension and MCP server that read and operate the user's browser tabs",
   "type": "module",
-  "engines": { "node": ">=22" }
+  "engines": {
+    "node": ">=22"
+  }
 }

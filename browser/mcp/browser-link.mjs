@@ -7,7 +7,7 @@ import { createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypt
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import { workerData } from "node:worker_threads";
-import { EXTENSION_ORIGIN, EXTENSION_SECRET_PATH, PORT, STATE_DIR, TOKEN_PATH } from "./config.mjs";
+import { EXTENSION_ORIGIN, EXTENSION_SECRET_PATH, PORT, PRODUCT_NAME, STATE_DIR, TOKEN_PATH } from "./config.mjs";
 import { acceptUpgrade, rejectUpgrade } from "./websocket.mjs";
 
 const REQUEST_TIMEOUT_MS = 90_000;
@@ -15,7 +15,7 @@ const REQUEST_TIMEOUT_MS = 90_000;
 const EXTENSION_WAIT_MS = 8_000;
 const AUTH_TIMEOUT_MS = 5_000;
 const KEEPALIVE_MS = 20_000;
-const NOT_CONNECTED = `The browser extension did not connect. Make sure the browser is running and the Browser Control Bridge extension is enabled. If the extension was reinstalled, remove ${EXTENSION_SECRET_PATH} so that it can pair again.`;
+const NOT_CONNECTED = `The browser extension did not connect. Make sure the browser is running and the ${PRODUCT_NAME} extension is enabled. If the extension was reinstalled, remove ${EXTENSION_SECRET_PATH} so that it can pair again.`;
 
 // Requests may carry their own deadline (timeoutMs, e.g. waiting for a download); the transport allows a margin beyond it.
 function deadlineFor(params) {
