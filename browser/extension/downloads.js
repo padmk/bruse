@@ -59,7 +59,9 @@ chrome.tabs.onCreated.addListener((tab) => {
 
 chrome.webNavigation.onCreatedNavigationTarget.addListener(({ sourceTabId, tabId, url }) => {
   if (waitingTab(sourceTabId) === null || sinceAgentInput(sourceTabId) > EARLY_INPUT_MS) return;
-  popups.set(tabId, { url, at: Date.now(), endedAt: null });
+  const popup = { url, at: Date.now(), endedAt: null, referrer: null };
+  popups.set(tabId, popup);
+  chrome.tabs.get(sourceTabId).then((source) => (popup.referrer = source.url), () => {});
   intercept(tabId);
 });
 
@@ -89,26 +91,43 @@ onCdpEvent((tabId, method, params) => {
 
 // When the held response was missed (the server answered before interception started), a popup the
 // agent opened counts as the source of a download only if all of this holds: the download's URL is the
-// URL the popup was opened for, the download was created after the popup, the popup's navigation ended
-// without showing a page within moments of the download, and exactly one download and one popup fit.
+// URL the popup was opened for, its referrer is the page that opened the popup, it was created after
+// the popup, the popup's navigation ended without showing a page within moments of the download, and
+// exactly one download and one popup fit.
 // Anything ambiguous stays unassigned.
 const FALLBACK_MATCH_MS = 1_000;
-const popups = new Map(); // popup tab id -> { url, at, endedAt }
+const popups = new Map(); // popup tab id -> { url, at, endedAt, referrer }
+const endedPopups = []; // popups whose navigation ended, kept for a while to judge ambiguity
 
 function popupEnded(tabId) {
   const popup = popups.get(tabId);
   if (!popup || popup.endedAt !== null) return;
   popup.endedAt = Date.now();
+  endedPopups.push(popup);
   // Wait a moment for a download item that comes right after the navigation ended.
   setTimeout(() => matchPopup(tabId), FALLBACK_MATCH_MS);
+}
+
+// A referrer may be cut to the origin by the page's referrer policy.
+function referredBy(referrer, page) {
+  if (!referrer || !page) return false;
+  try {
+    return referrer === page || referrer === `${new URL(page).origin}/`;
+  } catch {
+    return false;
+  }
 }
 
 function matchPopup(tabId) {
   const popup = popups.get(tabId);
   popups.delete(tabId);
+  for (let i = endedPopups.length - 1; i >= 0; i--) if (Date.now() - endedPopups[i].endedAt > 3 * FALLBACK_MATCH_MS) endedPopups.splice(i, 1);
   if (!popup || agentOpened.get(tabId) === false) return;
-  const items = unpairedItems.filter((item) => item.urls.includes(popup.url) && item.at >= popup.at && Math.abs(item.at - popup.endedAt) < FALLBACK_MATCH_MS);
-  const rivals = [...popups.values()].filter((other) => other.url === popup.url && other.endedAt !== null && Math.abs(other.endedAt - popup.endedAt) < FALLBACK_MATCH_MS);
+  // The download was asked for by the page that opened the popup.
+  const items = unpairedItems.filter(
+    (item) => item.urls.includes(popup.url) && item.at >= popup.at && Math.abs(item.at - popup.endedAt) < FALLBACK_MATCH_MS && referredBy(item.referrer, popup.referrer),
+  );
+  const rivals = endedPopups.filter((other) => other !== popup && other.url === popup.url && Math.abs(other.endedAt - popup.endedAt) < FALLBACK_MATCH_MS);
   if (items.length !== 1 || rivals.length) return;
   unpairedItems.splice(unpairedItems.indexOf(items[0]), 1);
   assign(items[0].id, tabId);
@@ -158,7 +177,12 @@ function assign(downloadId, sourceTabId) {
   update(downloadId);
 }
 
+const pairedAt = new Map(); // download id -> when a report paired it
+
 function update(downloadId) {
+  const wait = (pairedAt.get(downloadId) ?? 0) + AMBIGUITY_MS - Date.now();
+  if (wait > 0) return void setTimeout(() => update(downloadId), wait);
+  pairedAt.delete(downloadId);
   for (const waiter of waiters) if (waiter.claimed === downloadId && finished.has(downloadId)) waiter.settle(downloadId, finished.get(downloadId));
 }
 
@@ -175,13 +199,36 @@ onCdpEvent((tabId, method, params) => {
   if (method === "Page.downloadWillBegin") reportDownload(tabId, params.url);
 });
 
+// A report pairs with the first item at its URL created after it; the tab's own item follows its report
+// within moments. If a second item at that URL comes within AMBIGUITY_MS of the report without a report
+// of its own, either could be the tab's: the pairing is withdrawn and the waiting call fails instead of
+// returning someone else's file. Paired downloads are handed out only after that window.
+const AMBIGUITY_MS = 150;
+const recentPairs = []; // { urls, at, itemId } report pairings still open to doubt
+
 chrome.downloads.onCreated.addListener((item) => {
   expire(reports);
+  const now = Date.now();
   const urls = [item.url, item.finalUrl].filter(Boolean);
-  const index = reports.findIndex((report) => urls.includes(report.url) && Date.now() - report.at < REPORT_MATCH_MS);
-  if (index >= 0) return assign(item.id, reports.splice(index, 1)[0].tabId);
-  unpairedItems.push({ id: item.id, urls, at: Date.now() });
+  for (let i = recentPairs.length - 1; i >= 0; i--) if (now - recentPairs[i].at > AMBIGUITY_MS) recentPairs.splice(i, 1);
+  const index = reports.findIndex((report) => urls.includes(report.url) && now - report.at < REPORT_MATCH_MS);
+  if (index >= 0) {
+    const [report] = reports.splice(index, 1);
+    recentPairs.push({ urls, at: report.at, itemId: item.id });
+    pairedAt.set(item.id, report.at);
+    return assign(item.id, report.tabId);
+  }
+  const doubted = recentPairs.find((pair) => pair.urls.some((url) => urls.includes(url)));
+  if (doubted) withdraw(doubted.itemId);
+  unpairedItems.push({ id: item.id, urls, at: now, referrer: item.referrer });
 });
+
+function withdraw(downloadId) {
+  owners.delete(downloadId);
+  for (const waiter of waiters) {
+    if (waiter.claimed === downloadId) waiter.fail(new Error("Another download of the same URL started at the same moment, so it is unclear which file came from this tab; check the downloads folder"));
+  }
+}
 
 chrome.downloads.onChanged.addListener((delta) => {
   if (delta.state?.current !== "complete" && delta.state?.current !== "interrupted") return;
@@ -214,11 +261,12 @@ export function waitForDownload(tabId, timeoutMs) {
       reject(new Error("The tab started no download that completed in time"));
     }, timeoutMs);
     for (const older of waiters) if (older.tabId === tabId && older.claimed === null) older.supersede();
-    waiter.supersede = () => {
+    waiter.fail = (error) => {
       clearTimeout(timer);
       waiters.delete(waiter);
-      reject(new Error("A newer wait for a download on this tab replaced this one"));
+      reject(error);
     };
+    waiter.supersede = () => waiter.fail(new Error("A newer wait for a download on this tab replaced this one"));
     waiters.add(waiter);
   });
 }
