@@ -10,8 +10,6 @@ import { createCua } from "./cua/index.mjs";
 import { hoistTopLevelDeclarations } from "./hoist.mjs";
 import { useOutput } from "./cua/output.mjs";
 
-const DEFAULT_TIMEOUT_MS = 30_000;
-
 function imagePayload(image, mimeType) {
   if (image instanceof Uint8Array || Buffer.isBuffer(image)) return { data: Buffer.from(image).toString("base64"), mimeType: mimeType ?? "image/png" };
   if (image && typeof image === "object" && image.bytes) return imagePayload(image.bytes, image.mimeType);
@@ -91,8 +89,8 @@ export class Repl {
     else this.items.push({ type: "text", text });
   }
 
-  // Runs one `js` call and returns MCP content items plus whether it failed.
-  async run(code, timeoutMs = DEFAULT_TIMEOUT_MS) {
+  // Runs one `js` call and returns MCP content items plus whether it failed. The server sets the timeout.
+  async run(code, timeoutMs) {
     this.items = [];
     useOutput({
       text: (text) => this.pushText(text),
