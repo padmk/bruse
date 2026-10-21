@@ -111,6 +111,8 @@ chrome.webNavigation.onCreatedNavigationTarget.addListener(async ({ sourceTabId,
   });
 });
 
+const KEEP_BACKGROUND_CHECKS = 7;
+
 // A popup window or foreground tab opened by an agent page would cover the user's work: it becomes a
 // background tab in the session's group, next to the opener, and the tab the user had active stays so.
 async function keepInBackground(tabId, sourceTabId, sessionId, state) {
@@ -132,7 +134,6 @@ async function keepInBackground(tabId, sourceTabId, sessionId, state) {
     await new Promise((resolve) => setTimeout(resolve, 150));
   }
 }
-const KEEP_BACKGROUND_CHECKS = 7;
 
 // The active tab of each window before the latest switch, so that a tab activated by a page can be undone.
 const lastActive = new Map(); // window id -> tab id

@@ -13,7 +13,7 @@ export function isRegExp(value) {
   return Object.prototype.toString.call(value) === "[object RegExp]";
 }
 
-export function serializeMatcher(matcher) {
+function serializeMatcher(matcher) {
   return isRegExp(matcher) ? { regex: matcher.source, flags: matcher.flags } : matcher;
 }
 

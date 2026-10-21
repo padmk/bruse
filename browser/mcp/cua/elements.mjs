@@ -18,7 +18,7 @@ export function pageException(exceptionDetails) {
   return new Error(exceptionDetails.exception?.description?.split("\n")[0] ?? exceptionDetails.text);
 }
 
-export const STALE_ELEMENT_MESSAGE = "The element is no longer on the page (it was removed or replaced); call getAXState() for current element numbers";
+const STALE_ELEMENT_MESSAGE = "The element is no longer on the page (it was removed or replaced); call getAXState() for current element numbers";
 
 // Calls a function with `this` = the node. A node that left the document fails instead of being
 // changed without any effect on the page.
