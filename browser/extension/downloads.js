@@ -35,14 +35,32 @@ function stopIntercepting(tabId) {
   cdp(tabId, "Fetch.disable", {}).catch(() => {});
 }
 
-// Interception starts as soon as the browser reports the new tab, before it is known whether the
-// agent opened it, because the response may come within milliseconds; a tab that turns out to be the
-// user's is let go and its report ignored.
-chrome.webNavigation.onCreatedNavigationTarget.addListener(({ sourceTabId, tabId }) => {
-  if (waitingTab(sourceTabId) === null || sinceAgentInput(sourceTabId) > EARLY_INPUT_MS) return;
-  undecided.set(tabId, []);
+// Interception starts as early as possible, before it is known whether the agent opened the tab,
+// because the response may come within milliseconds: when the tab is created, if a waiting tab's page
+// just reported an opening after the agent's input, or at the latest when the browser reports the tab
+// with its opener. A tab that turns out to be the user's is let go and its report ignored.
+const pageOpenedAt = new Map(); // waiting tab id -> when its page last reported an opening
+
+onCdpEvent((tabId, method) => {
+  if (method === "Page.windowOpen" && waitingTab(tabId) !== null) pageOpenedAt.set(tabId, Date.now());
+});
+
+function intercept(tabId) {
+  if (intercepting.has(tabId)) return;
+  undecided.set(tabId, undecided.get(tabId) ?? []);
   intercepting.set(tabId, setTimeout(() => stopIntercepting(tabId), INTERCEPT_MS));
   cdp(tabId, "Fetch.enable", { patterns: [{ urlPattern: "*", resourceType: "Document", requestStage: "Response" }] }).catch(() => intercepting.delete(tabId));
+}
+
+chrome.tabs.onCreated.addListener((tab) => {
+  const opening = [...pageOpenedAt].some(([source, at]) => Date.now() - at < EARLY_INPUT_MS && sinceAgentInput(source) < EARLY_INPUT_MS);
+  if (opening) intercept(tab.id);
+});
+
+chrome.webNavigation.onCreatedNavigationTarget.addListener(({ sourceTabId, tabId, url }) => {
+  if (waitingTab(sourceTabId) === null || sinceAgentInput(sourceTabId) > EARLY_INPUT_MS) return;
+  popups.set(tabId, { url, at: Date.now(), endedAt: null });
+  intercept(tabId);
 });
 
 const agentOpened = new Map(); // tab id -> whether the agent opened it, once known
@@ -69,7 +87,39 @@ onCdpEvent((tabId, method, params) => {
   if (!redirect) stopIntercepting(tabId);
 });
 
+// When the held response was missed (the server answered before interception started), a popup the
+// agent opened counts as the source of a download only if all of this holds: the download's URL is the
+// URL the popup was opened for, the download was created after the popup, the popup's navigation ended
+// without showing a page within moments of the download, and exactly one download and one popup fit.
+// Anything ambiguous stays unassigned.
+const FALLBACK_MATCH_MS = 1_000;
+const popups = new Map(); // popup tab id -> { url, at, endedAt }
+
+function popupEnded(tabId) {
+  const popup = popups.get(tabId);
+  if (!popup || popup.endedAt !== null) return;
+  popup.endedAt = Date.now();
+  // Wait a moment for a download item that comes right after the navigation ended.
+  setTimeout(() => matchPopup(tabId), FALLBACK_MATCH_MS);
+}
+
+function matchPopup(tabId) {
+  const popup = popups.get(tabId);
+  popups.delete(tabId);
+  if (!popup || agentOpened.get(tabId) === false) return;
+  const items = unpairedItems.filter((item) => item.urls.includes(popup.url) && item.at >= popup.at && Math.abs(item.at - popup.endedAt) < FALLBACK_MATCH_MS);
+  const rivals = [...popups.values()].filter((other) => other.url === popup.url && other.endedAt !== null && Math.abs(other.endedAt - popup.endedAt) < FALLBACK_MATCH_MS);
+  if (items.length !== 1 || rivals.length) return;
+  unpairedItems.splice(unpairedItems.indexOf(items[0]), 1);
+  assign(items[0].id, tabId);
+}
+
+chrome.webNavigation.onCommitted.addListener(({ tabId, frameId }) => frameId === 0 && popups.delete(tabId));
+chrome.webNavigation.onErrorOccurred.addListener(({ tabId, frameId }) => frameId === 0 && popupEnded(tabId));
+
 chrome.tabs.onRemoved.addListener((tabId) => {
+  popupEnded(tabId);
+  pageOpenedAt.delete(tabId);
   clearTimeout(intercepting.get(tabId));
   intercepting.delete(tabId);
   agentOpened.delete(tabId);
@@ -83,8 +133,6 @@ function remember(map, key, value) {
 
 const PAIRING_WINDOW_MS = 30_000;
 const REPORT_MATCH_MS = 2_000;
-// Tolerance for an item that the browser reports as created just before its report arrives.
-const REPORT_RACE_MS = 30;
 const reports = []; // { tabId, url, at } not yet paired with an item
 const unpairedItems = []; // { id, urls, at }
 const owners = new Map(); // download id -> tab id
@@ -116,14 +164,11 @@ function update(downloadId) {
 
 // A tab's own report that it downloads a URL. A report and its item come within moments of each
 // other; an older item at the URL is someone else's.
-// The browser reports a download (Page.downloadWillBegin, or a response the extension holds) before it
-// creates the item, so only items created after a report can be the reporting tab's; an existing
-// item at the URL is someone else's.
+// A tab's own report that it downloads a URL. The browser reports a download (Page.downloadWillBegin,
+// or a response the extension holds) before it creates the item, so a report only pairs with an item
+// created after it; an item that already exists is someone else's, however close in time.
 function reportDownload(tabId, url) {
-  expire(unpairedItems);
-  const index = unpairedItems.findIndex((item) => item.urls.includes(url) && Date.now() - item.at < REPORT_RACE_MS);
-  if (index >= 0) assign(unpairedItems.splice(index, 1)[0].id, tabId);
-  else reports.push({ tabId, url, at: Date.now() });
+  reports.push({ tabId, url, at: Date.now() });
 }
 
 onCdpEvent((tabId, method, params) => {
