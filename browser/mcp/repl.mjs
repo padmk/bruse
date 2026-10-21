@@ -100,6 +100,7 @@ export class Repl {
     });
     let isError = false;
     let timedOut = false;
+    let timer;
     try {
       const script = new vm.Script(`(async () => {\n${hoistTopLevelDeclarations(code)}\n})()`, {
         filename: "repl.js",
@@ -107,7 +108,6 @@ export class Repl {
         // Lets code use import("node:fs") and other modules.
         importModuleDynamically: vm.constants.USE_MAIN_CONTEXT_DEFAULT_LOADER,
       });
-      let timer;
       const timeout = new Promise((_, reject) => {
         timer = setTimeout(() => {
           timedOut = true;
@@ -115,13 +115,16 @@ export class Repl {
         }, timeoutMs);
       });
       // The vm timeout interrupts synchronous code (e.g. an endless loop before the first await).
-      await Promise.race([script.runInContext(this.context, { timeout: timeoutMs }), timeout]).finally(() => clearTimeout(timer));
+      await Promise.race([script.runInContext(this.context, { timeout: timeoutMs }), timeout]);
     } catch (error) {
       isError = true;
       // Errors thrown in the vm come from another realm, so instanceof Error does not apply.
       const text = typeof error?.stack === "string" ? error.stack : error?.message ?? String(error);
       this.pushText(text.split("\n").filter((line) => !line.includes("node:internal")).slice(0, 6).join("\n"));
       if (/Script execution timed out/.test(text)) timedOut = true;
+    } finally {
+      // Also when the vm timeout threw before the race began, so the timer does not reject unobserved.
+      clearTimeout(timer);
     }
     const notifications = await this.cuaSession.takeNotifications();
     if (notifications.length) this.pushText(`Notifications:\n${notifications.map((n) => `- ${n}`).join("\n")}`);
