@@ -28,6 +28,8 @@ MCP server (hub) ◀──WebSocket 127.0.0.1:47615──▶ extension ──chr
   sessions of cross-origin frames, and tracks dialogs and console output. `sessions.js` keeps each agent
   session's tabs in its own tab group and closes the unmarked ones when the session ends. `downloads.js`
   pairs downloads with the tabs that started them.
+- `installer/`: `install.mjs` (the installer), `Install.command` (its double-click entry point on macOS,
+  which finds Node.js) and `package.mjs` (builds the zip package).
 - `browser/mcp/`: MCP stdio server, no dependencies.
   - `server.mjs`: the `js` and `js_reset` tools. It runs the REPL in a worker thread (`repl-worker.mjs`)
     and replaces the worker whenever a call times out or the worker crashes, so nothing the call left running (an endless
@@ -61,13 +63,24 @@ is your own session. After reinstalling the extension (it then has a new secret)
 
 ### Install
 
-1. In `brave://extensions` (or `chrome://extensions`), enable Developer mode, choose **Load unpacked** and
-   select `browser/extension`.
-2. Register the MCP server (Node 22 or newer):
+Requires Node.js 22 or newer and a Chromium browser (Brave, Chrome, Edge).
 
-   ```sh
-   claude mcp add -s user bruse -- /opt/homebrew/opt/node@24/bin/node ~/dev/bruse/browser/mcp/server.mjs
-   ```
+1. Build the package with `node installer/package.mjs`; it writes `dist/Bruse-<version>.zip` (about 100 KB).
+2. Unzip it and double-click **Install Bruse.command** (or run `node installer/install.mjs` from a checkout).
+   The installer:
+   - copies the extension and the MCP server to `~/Library/Application Support/Bruse/browser`
+     (`~/.local/share/bruse/browser` on Linux), replacing a previous version;
+   - registers the MCP server as `bruse` with Claude Code (user scope) and Codex, whichever is installed;
+   - when the extension is not connected yet, shows its folder in Finder and opens the browser's extensions
+     page (the first time, macOS asks to let the terminal control the browser);
+   - waits until the extension connects, which also pairs it (see Security), or reloads an extension that
+     is already connected so that it runs the new files.
+3. The one manual step, on first install only: on the extensions page turn on Developer mode and drag the
+   `extension` folder onto the page (or choose **Load unpacked**). Chromium browsers on macOS install other
+   extensions only from the Chrome Web Store, so this step remains until the extension is published there.
+
+A package downloaded from the internet is quarantined: macOS refuses to open the unsigned
+`Install Bruse.command` until it is allowed in System Settings › Privacy & Security (**Open Anyway**).
 
 After editing extension files, reload the extension in `brave://extensions`, or let it reload itself:
 
