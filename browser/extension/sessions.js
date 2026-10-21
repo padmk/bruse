@@ -2,6 +2,7 @@
 // session ends. State lives in chrome.storage.session so it survives service worker restarts.
 
 import { onCdpEvent, sinceAgentInput } from "./cdp.js";
+import { AGENT_INPUT_WINDOW_MS } from "./shared.js";
 
 const DEFAULT_GROUP_TITLE = "Claude";
 const GROUP_COLOR = "orange";
@@ -47,7 +48,6 @@ const agentAncestorsOf = new Map(); // tab id -> tabs whose agent actions led to
 // the agent pressed a button or key in that tab just before, and that tab is not the one the user is
 // looking at (the active tab of the focused window, where a click may be the user's). Other tabs
 // opened from agent pages stay the user's.
-const AGENT_OPEN_WINDOW_MS = 1_500;
 const WINDOW_OPEN_MATCH_MS = 2_000;
 const pageOpens = new Map(); // tab id -> [{ url, at }] openings its page reported
 
@@ -90,7 +90,7 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 chrome.webNavigation.onCreatedNavigationTarget.addListener(async ({ sourceTabId, tabId, url }) => {
   const source = await chrome.tabs.get(sourceTabId).catch(() => null);
   const sourceInFront = source?.active && (await chrome.windows.get(source.windowId).catch(() => null))?.focused;
-  const recentInput = sinceAgentInput(sourceTabId) < AGENT_OPEN_WINDOW_MS && !sourceInFront;
+  const recentInput = sinceAgentInput(sourceTabId) < AGENT_INPUT_WINDOW_MS && !sourceInFront;
   // The page's report may arrive just after the browser's.
   let reported = takePageOpen(sourceTabId, url);
   if (!reported && recentInput) {

@@ -2,6 +2,8 @@
 // for the same DOM node across snapshots of one document, so later snapshots can be reported as a
 // diff (~ changed, + added, removed ranges). Child frames that share the page's process are included.
 
+import { PASSWORD_MANAGER_ELEMENTS } from "../../extension/shared.js";
+
 const MAX_LINES = 3000;
 const MAX_TEXT = 300;
 const SKIPPED_ROLES = new Set(["InlineTextBox", "LineBreak", "ListMarker"]);
@@ -53,7 +55,7 @@ const ROLE_LABELS = {
   tree: "outline",
   treeitem: "row",
 };
-const EXTENSION_UI_TAGS = /^(com-1password|com-bitwarden|bitwarden-|lastpass-|dashlane-|protonpass-)/i;
+const EXTENSION_UI_TAGS = new RegExp(PASSWORD_MANAGER_ELEMENTS, "i");
 const EXTENSION_UI_IDS = /^(1p-|op-button|__lpform|bit-notification|protonpass-)/i;
 const STRUCTURAL_ROLES = new Set(["row", "cell", "gridcell", "generic", "group", "list", "listitem", "LayoutTable", "LayoutTableRow", "LayoutTableCell", "paragraph", "section", "region", "rowgroup", "table"]);
 const SETTABLE_ROLES = new Set(["textbox", "searchbox", "combobox", "spinbutton", "slider", "checkbox", "radio", "switch", "listbox", "ComboBoxMenuButton"]);

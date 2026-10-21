@@ -3,8 +3,9 @@
 // passed to the service worker, which authenticates the hub and executes its requests. Each socket has
 // a generation number so that a reply never reaches a newer hub than the one that asked.
 
-// Must match PORT in mcp/config.mjs.
-const HUB_URL = "ws://127.0.0.1:47615/extension";
+import { HUB_PORT } from "./shared.js";
+
+const HUB_URL = `ws://127.0.0.1:${HUB_PORT}/extension`;
 const RETRY_MS = 500;
 
 let socket = null;

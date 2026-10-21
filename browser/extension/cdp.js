@@ -2,6 +2,8 @@
 // detached after a quiet period, which also removes the browser's "started debugging" bar. The module
 // also tracks per-tab state that CDP only reports as events: open JavaScript dialogs and console output.
 
+import { PASSWORD_MANAGER_ELEMENTS, isPressInput, unresponsivePageError } from "./shared.js";
+
 const PROTOCOL_VERSION = "1.3";
 const IDLE_DETACH_MS = 120_000;
 const COMMAND_TIMEOUT_MS = 30_000;
@@ -121,7 +123,7 @@ function rawSend(tabId, method, params = {}, sessionId, timeoutMs) {
   return new Promise((resolve, reject) => {
     const limit = timeoutMs ?? (method.startsWith("Input.") ? INPUT_TIMEOUT_MS : COMMAND_TIMEOUT_MS);
     const timer = setTimeout(
-      () => reject(new Error(limit < COMMAND_TIMEOUT_MS ? `The page did not respond within ${limit / 1000} s (${method}); it may be busy, for example running an endless script` : `${method} timed out`)),
+      () => reject(new Error(limit < COMMAND_TIMEOUT_MS ? unresponsivePageError(method, limit / 1000) : `${method} timed out`)),
       limit,
     );
     const target = sessionId ? { tabId, sessionId } : { tabId };
@@ -190,7 +192,7 @@ export async function detach(tabId) {
 async function removeForeignExtensionFrames(tabId) {
   await chrome.scripting.executeScript({
     target: { tabId, allFrames: true },
-    func: (ownOrigin) => {
+    func: (ownOrigin, passwordManagerElements) => {
       // Without focus the password manager does not bring its menu back right away.
       if (document.activeElement && document.activeElement !== document.body) document.activeElement.blur();
       for (const host of document.querySelectorAll("com-1password-button, com-1password-menu")) host.remove();
@@ -203,13 +205,13 @@ async function removeForeignExtensionFrames(tabId) {
             // Only the frame goes, and the wrapper element only of a known password manager menu,
             // which would otherwise put the frame back.
             const host = el.getRootNode().host;
-            if (host && /^(com-1password|com-bitwarden|bitwarden-|lastpass-|dashlane-|protonpass-)/i.test(host.localName)) host.remove();
+            if (host && new RegExp(passwordManagerElements, "i").test(host.localName)) host.remove();
             else el.remove();
           }
         }
       }
     },
-    args: [`chrome-extension://${chrome.runtime.id}/`],
+    args: [`chrome-extension://${chrome.runtime.id}/`, PASSWORD_MANAGER_ELEMENTS],
   });
 }
 
@@ -231,9 +233,7 @@ chrome.tabs.onRemoved.addListener((tabId) => agentInputAt.delete(tabId));
 
 // `timeoutMs` shortens the wait for commands that should be quick, so a stuck page fails them early.
 export async function cdp(tabId, method, params, sessionId, timeoutMs) {
-  // Only presses can make a page open something; pointer moves and inserted text cannot.
-  const type = params?.type;
-  if ((method === "Input.dispatchMouseEvent" && type === "mousePressed") || (method === "Input.dispatchKeyEvent" && (type === "keyDown" || type === "rawKeyDown"))) agentInputAt.set(tabId, Date.now());
+  if (isPressInput(method, params)) agentInputAt.set(tabId, Date.now());
   // File chooser interception that nobody switches off (the agent's code was stopped) would leave the
   // tab's file inputs dead; it ends on its own after a while.
   if (method === "Page.setInterceptFileChooserDialog" && !sessionId) {
