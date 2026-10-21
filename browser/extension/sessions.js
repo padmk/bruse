@@ -44,8 +44,10 @@ const agentAncestorsOf = new Map(); // tab id -> tabs whose agent actions led to
 
 // A page opened a tab from an agent action when both hold: the page itself reported the opening
 // (Page.windowOpen: a link click or window.open, unlike the browser's own context menu commands) and
-// the agent gave that tab input just before. Other tabs opened from agent pages stay the user's.
-const AGENT_OPEN_WINDOW_MS = 3_000;
+// the agent pressed a button or key in that tab just before, and that tab is not the one the user is
+// looking at (the active tab of the focused window, where a click may be the user's). Other tabs
+// opened from agent pages stay the user's.
+const AGENT_OPEN_WINDOW_MS = 1_500;
 const WINDOW_OPEN_MATCH_MS = 2_000;
 const pageOpens = new Map(); // tab id -> [{ url, at }] openings its page reported
 
@@ -86,7 +88,9 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 });
 
 chrome.webNavigation.onCreatedNavigationTarget.addListener(async ({ sourceTabId, tabId, url }) => {
-  const recentInput = sinceAgentInput(sourceTabId) < AGENT_OPEN_WINDOW_MS;
+  const source = await chrome.tabs.get(sourceTabId).catch(() => null);
+  const sourceInFront = source?.active && (await chrome.windows.get(source.windowId).catch(() => null))?.focused;
+  const recentInput = sinceAgentInput(sourceTabId) < AGENT_OPEN_WINDOW_MS && !sourceInFront;
   // The page's report may arrive just after the browser's.
   let reported = takePageOpen(sourceTabId, url);
   if (!reported && recentInput) {
@@ -115,14 +119,28 @@ async function keepInBackground(tabId, sourceTabId, sessionId, state) {
   if (tab.windowId !== source.windowId) await chrome.tabs.move(tabId, { windowId: source.windowId, index: -1 }).catch(() => {});
   const groupId = state.groups[sessionId];
   if (await groupExists(groupId)) await chrome.tabs.group({ tabIds: [tabId], groupId }).catch(() => {});
-  if (currentActive.get(source.windowId) !== tabId) return;
-  const previous = lastActive.get(source.windowId);
-  if (previous !== undefined) await chrome.tabs.update(previous, { active: true }).catch(() => {});
+  // The browser may activate the new tab before or after it is reported; for a moment, any activation of
+  // it is undone in favor of the tab the user had.
+  const windowId = source.windowId;
+  const previous = currentActive.get(windowId) === tabId ? lastActive.get(windowId) : currentActive.get(windowId);
+  if (previous === undefined || previous === tabId) return;
+  for (let i = 0; i < KEEP_BACKGROUND_CHECKS; i++) {
+    if ((await chrome.tabs.get(tabId).catch(() => null))?.active) {
+      await chrome.tabs.update(previous, { active: true }).catch(() => {});
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 150));
+  }
 }
+const KEEP_BACKGROUND_CHECKS = 7;
 
 // The active tab of each window before the latest switch, so that a tab activated by a page can be undone.
 const lastActive = new Map(); // window id -> tab id
 const currentActive = new Map();
+// The service worker may start long after the last switch; begin with the tabs active now.
+chrome.tabs.query({ active: true }).then((tabs) => {
+  for (const tab of tabs) if (!currentActive.has(tab.windowId)) currentActive.set(tab.windowId, tab.id);
+});
 chrome.tabs.onActivated.addListener(({ tabId, windowId }) => {
   if (currentActive.has(windowId)) lastActive.set(windowId, currentActive.get(windowId));
   currentActive.set(windowId, tabId);
@@ -191,15 +209,24 @@ export function endSession(sessionId) {
 async function endSessionNow(sessionId) {
   const state = await load();
   const toClose = [];
+  const kept = new Set(); // marked tabs, which stay in the group
   for (const [tabId, entry] of Object.entries(state.tabs)) {
     if (entry.sessionId !== sessionId) continue;
-    if (!KEPT_MARKS.has(entry.mark)) toClose.push(Number(tabId));
+    if (KEPT_MARKS.has(entry.mark)) kept.add(Number(tabId));
+    else toClose.push(Number(tabId));
     delete state.tabs[tabId];
   }
+  const groupId = state.groups[sessionId];
   delete state.groups[sessionId];
   delete state.names[sessionId];
   await save(state);
   // One by one, so a tab that is already gone does not keep the others open.
   await Promise.all(toClose.map((tabId) => chrome.tabs.remove(tabId).catch(() => {})));
+  // Tabs the browser put into the group that are not the session's (a duplicate, a tab the user opened
+  // from an agent page) leave it, so no group of a finished session remains around them.
+  if (await groupExists(groupId)) {
+    const strays = (await chrome.tabs.query({ groupId })).map((tab) => tab.id).filter((id) => !kept.has(id) && !toClose.includes(id));
+    if (strays.length) await chrome.tabs.ungroup(strays).catch(() => {});
+  }
   return { closed: toClose.length };
 }

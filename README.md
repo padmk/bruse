@@ -132,6 +132,11 @@ The full API is in `browser/mcp/cua/docs.mjs`, which the agent receives on its f
   document response (CDP `Fetch`) and saw a file. Two tabs downloading the same URL each get their own
   file, and a download nothing ties to the tab is never handed out.
 - CSS locators reach into open shadow roots, as in Playwright.
+- A page that stops responding (an endless script) makes the tool's own commands fail after 8 s with
+  a message saying so, instead of hanging; reading whole pages, screenshots and the agent's own code
+  in the page may take up to 30 s.
+- The `management` capability organizes tabs but cannot navigate them; pages are opened and driven
+  through tab objects.
 - The first call of a new session connects within about 0.5 s. While no session runs, the offscreen
   document retries twice a second; the browser logs the refused connections on the extension's card
   under **Errors**, which is expected.

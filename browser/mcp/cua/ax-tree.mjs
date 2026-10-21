@@ -182,6 +182,8 @@ export async function fetchPageTree(cdpFor, outOfProcessFrames = []) {
   return {
     loaderId: frameTree.frame.loaderId,
     url: frameTree.frame.url,
+    // A frame session's ID changes when the debugger attaches again; its frame ID does not.
+    sessionFrames: new Map(outOfProcessFrames.map((frame) => [frame.sessionId, frame.frameId])),
     trees,
     attributes,
     unavailableFrames: [...new Map(unavailableFrames.filter((f) => !included.has(f.id)).map((f) => [f.id, f.url])).values()],
@@ -231,13 +233,16 @@ export function simplifyTree(page) {
     });
     return [entry(node, frameId, children)];
   };
+  // Element keys name a frame session by its frame, so element numbers survive a new debugger session.
+  const frameKey = (sessionId) => (sessionId ? (page.sessionFrames.get(sessionId) ?? sessionId) : "main");
   const entry = (node, frameId, children) => {
     const { sessionId } = frameInfo.get(frameId);
     return {
       // Nodes without a DOM node get a key from their position when the tree is rendered.
-      key: node.backendDOMNodeId !== undefined ? `b${sessionKey(sessionId)}:${node.backendDOMNodeId}` : null,
+      key: node.backendDOMNodeId !== undefined ? `b${frameKey(sessionId)}:${node.backendDOMNodeId}` : null,
       node,
       sessionId,
+      frameId: sessionId ? page.sessionFrames.get(sessionId) : null,
       attrs: page.attributes.get(`${sessionKey(sessionId)}:${node.backendDOMNodeId}`) ?? {},
       children,
     };
@@ -335,7 +340,7 @@ export class AXTracker {
       }
       const index = this.indexFor(element.key, depth === 0);
       const line = `${index} ${describe(element, pageHost)}`;
-      if (element.node.backendDOMNodeId !== undefined) this.backendByIndex.set(index, { backendNodeId: element.node.backendDOMNodeId, sessionId: element.sessionId });
+      if (element.node.backendDOMNodeId !== undefined) this.backendByIndex.set(index, { backendNodeId: element.node.backendDOMNodeId, sessionId: element.sessionId, frameId: element.frameId });
       const previousSibling = lastChildOf.get(parentKey) ?? null;
       lastChildOf.set(parentKey, element.key);
       current.set(element.key, { index, depth, line, parent: parentKey, previousSibling });
@@ -380,7 +385,7 @@ export class AXTracker {
     return newNeighbourExisted && oldNeighbourRemains;
   }
 
-  // Returns { backendNodeId, sessionId } for an element number of the latest snapshot.
+  // Returns { backendNodeId, sessionId, frameId } for an element number of the latest snapshot.
   nodeRef(index) {
     const id = this.backendByIndex.get(index);
     if (id === undefined) throw new Error(`Element ${index} is not in the latest accessibility state of this tab; call getAXState() again`);

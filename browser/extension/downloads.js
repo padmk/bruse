@@ -5,7 +5,7 @@
 // A download that starts in a tab the waiting tab opened from the agent's input counts for the waiting
 // tab. Downloads that no tab reported are never handed out.
 
-import { cdp, onCdpEvent } from "./cdp.js";
+import { cdp, onCdpEvent, sinceAgentInput } from "./cdp.js";
 import { agentOpenerChain, onTabOpened } from "./sessions.js";
 
 const MAX_REMEMBERED = 200;
@@ -24,6 +24,7 @@ function waitingTab(tabId) {
 // held for a moment instead: when it is a file rather than a page, the tab reports that download itself,
 // like Page.downloadWillBegin does, and the response goes on. Nothing is matched by URL alone.
 const INTERCEPT_MS = 15_000;
+const EARLY_INPUT_MS = 1_500;
 const intercepting = new Map(); // tab id -> timer that ends the interception
 const RENDERED_TYPES = /^(text\/|image\/|audio\/|video\/|application\/(xhtml\+xml|xml|json|pdf|javascript))/i;
 
@@ -34,10 +35,27 @@ function stopIntercepting(tabId) {
   cdp(tabId, "Fetch.disable", {}).catch(() => {});
 }
 
-onTabOpened((openerTabId, tabId, url, byAgent) => {
-  if (!byAgent || waitingTab(openerTabId) === null) return;
+// Interception starts as soon as the browser reports the new tab, before it is known whether the
+// agent opened it, because the response may come within milliseconds; a tab that turns out to be the
+// user's is let go and its report ignored.
+chrome.webNavigation.onCreatedNavigationTarget.addListener(({ sourceTabId, tabId }) => {
+  if (waitingTab(sourceTabId) === null || sinceAgentInput(sourceTabId) > EARLY_INPUT_MS) return;
+  undecided.set(tabId, []);
   intercepting.set(tabId, setTimeout(() => stopIntercepting(tabId), INTERCEPT_MS));
   cdp(tabId, "Fetch.enable", { patterns: [{ urlPattern: "*", resourceType: "Document", requestStage: "Response" }] }).catch(() => intercepting.delete(tabId));
+});
+
+const agentOpened = new Map(); // tab id -> whether the agent opened it, once known
+const undecided = new Map(); // new tab id -> download ids that wait for that decision
+onTabOpened((openerTabId, tabId, url, byAgent) => {
+  agentOpened.set(tabId, byAgent);
+  const held = undecided.get(tabId) ?? [];
+  undecided.delete(tabId);
+  if (byAgent) for (const downloadId of held) assign(downloadId, tabId);
+  if (!byAgent) {
+    stopIntercepting(tabId);
+    for (let i = reports.length - 1; i >= 0; i--) if (reports[i].tabId === tabId) reports.splice(i, 1);
+  }
 });
 
 onCdpEvent((tabId, method, params) => {
@@ -45,7 +63,7 @@ onCdpEvent((tabId, method, params) => {
   const header = (name) => params.responseHeaders?.find((h) => h.name.toLowerCase() === name)?.value ?? "";
   const isFile = /attachment/i.test(header("content-disposition")) || (params.responseStatusCode < 300 && !RENDERED_TYPES.test(header("content-type")));
   const redirect = params.responseStatusCode >= 300 && params.responseStatusCode < 400;
-  if (isFile) reportDownload(tabId, params.request.url);
+  if (isFile && agentOpened.get(tabId) !== false) reportDownload(tabId, params.request.url);
   cdp(tabId, "Fetch.continueResponse", { requestId: params.requestId }).catch(() => {});
   // A redirect is followed by the response that decides.
   if (!redirect) stopIntercepting(tabId);
@@ -54,6 +72,8 @@ onCdpEvent((tabId, method, params) => {
 chrome.tabs.onRemoved.addListener((tabId) => {
   clearTimeout(intercepting.get(tabId));
   intercepting.delete(tabId);
+  agentOpened.delete(tabId);
+  undecided.delete(tabId);
 });
 
 function remember(map, key, value) {
@@ -63,6 +83,8 @@ function remember(map, key, value) {
 
 const PAIRING_WINDOW_MS = 30_000;
 const REPORT_MATCH_MS = 2_000;
+// Tolerance for an item that the browser reports as created just before its report arrives.
+const REPORT_RACE_MS = 30;
 const reports = []; // { tabId, url, at } not yet paired with an item
 const unpairedItems = []; // { id, urls, at }
 const owners = new Map(); // download id -> tab id
@@ -75,6 +97,8 @@ function expire(list) {
 }
 
 function assign(downloadId, sourceTabId) {
+  // A new tab whose opening is still being judged gets its downloads once that is decided.
+  if (undecided.has(sourceTabId)) return undecided.get(sourceTabId).push(downloadId);
   const tabId = waitingTab(sourceTabId) ?? sourceTabId;
   remember(owners, downloadId, tabId);
   for (const waiter of waiters) {
@@ -92,9 +116,12 @@ function update(downloadId) {
 
 // A tab's own report that it downloads a URL. A report and its item come within moments of each
 // other; an older item at the URL is someone else's.
+// The browser reports a download (Page.downloadWillBegin, or a response the extension holds) before it
+// creates the item, so only items created after a report can be the reporting tab's; an existing
+// item at the URL is someone else's.
 function reportDownload(tabId, url) {
   expire(unpairedItems);
-  const index = unpairedItems.findIndex((item) => item.urls.includes(url) && Date.now() - item.at < REPORT_MATCH_MS);
+  const index = unpairedItems.findIndex((item) => item.urls.includes(url) && Date.now() - item.at < REPORT_RACE_MS);
   if (index >= 0) assign(unpairedItems.splice(index, 1)[0].id, tabId);
   else reports.push({ tabId, url, at: Date.now() });
 }

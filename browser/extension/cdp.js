@@ -5,10 +5,12 @@
 const PROTOCOL_VERSION = "1.3";
 const IDLE_DETACH_MS = 120_000;
 const COMMAND_TIMEOUT_MS = 30_000;
+// A page that does not take input within this time is stuck; waiting longer only blocks the agent.
+const INPUT_TIMEOUT_MS = 5_000;
 const MAX_CONSOLE_ENTRIES = 500;
 const MAX_REQUESTS = 300;
 // Commands that still work while a JavaScript dialog blocks the page.
-const DIALOG_SAFE_METHODS = new Set(["Page.handleJavaScriptDialog", "Page.captureScreenshot", "Page.getLayoutMetrics"]);
+const DIALOG_SAFE_METHODS = new Set(["Page.handleJavaScriptDialog", "Page.captureScreenshot", "Page.getLayoutMetrics", "Fetch.continueResponse", "Fetch.disable"]);
 
 const sessions = new Map(); // tabId -> { lastUsed, dialog, console, requests, inflight (request id -> { session, frameId }), frames }
 const eventListeners = new Set();
@@ -115,9 +117,13 @@ chrome.alarms.onAlarm.addListener(async ({ name }) => {
   }
 });
 
-function rawSend(tabId, method, params = {}, sessionId) {
+function rawSend(tabId, method, params = {}, sessionId, timeoutMs) {
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`${method} timed out`)), COMMAND_TIMEOUT_MS);
+    const limit = timeoutMs ?? (method.startsWith("Input.") ? INPUT_TIMEOUT_MS : COMMAND_TIMEOUT_MS);
+    const timer = setTimeout(
+      () => reject(new Error(limit < COMMAND_TIMEOUT_MS ? `The page did not respond within ${limit / 1000} s (${method}); it may be busy, for example running an endless script` : `${method} timed out`)),
+      limit,
+    );
     const target = sessionId ? { tabId, sessionId } : { tabId };
     chrome.debugger.sendCommand(target, method, params, (result) => {
       clearTimeout(timer);
@@ -214,17 +220,20 @@ const FOREIGN_FRAME_ERROR = /chrome-extension:\/\/ URL of different extension/;
 const FILE_CHOOSER_INTERCEPT_MS = 60_000;
 const interceptTimers = new Map(); // tab id -> timer that switches file chooser interception off
 
-const agentInputAt = new Map(); // tab id -> when the agent last sent input to it
+const agentInputAt = new Map(); // tab id -> when the agent last pressed a button or key in it
 
-// Milliseconds since the agent last sent input to the tab (Infinity if never).
+// Milliseconds since the agent last pressed a mouse button or key in the tab (Infinity if never).
 export function sinceAgentInput(tabId) {
   return agentInputAt.has(tabId) ? Date.now() - agentInputAt.get(tabId) : Infinity;
 }
 
 chrome.tabs.onRemoved.addListener((tabId) => agentInputAt.delete(tabId));
 
-export async function cdp(tabId, method, params, sessionId) {
-  if (method.startsWith("Input.")) agentInputAt.set(tabId, Date.now());
+// `timeoutMs` shortens the wait for commands that should be quick, so a stuck page fails them early.
+export async function cdp(tabId, method, params, sessionId, timeoutMs) {
+  // Only presses can make a page open something; pointer moves and inserted text cannot.
+  const type = params?.type;
+  if ((method === "Input.dispatchMouseEvent" && type === "mousePressed") || (method === "Input.dispatchKeyEvent" && (type === "keyDown" || type === "rawKeyDown"))) agentInputAt.set(tabId, Date.now());
   // File chooser interception that nobody switches off (the agent's code was stopped) would leave the
   // tab's file inputs dead; it ends on its own after a while.
   if (method === "Page.setInterceptFileChooserDialog" && !sessionId) {
@@ -238,16 +247,16 @@ export async function cdp(tabId, method, params, sessionId) {
     }
   }
   try {
-    return await sendChecked(tabId, method, params, sessionId);
+    return await sendChecked(tabId, method, params, sessionId, timeoutMs);
   } catch (error) {
     if (!FOREIGN_FRAME_ERROR.test(error.message)) throw error;
     await removeForeignExtensionFrames(tabId).catch(() => {});
     await detach(tabId);
-    return sendChecked(tabId, method, params, sessionId);
+    return sendChecked(tabId, method, params, sessionId, timeoutMs);
   }
 }
 
-async function sendChecked(tabId, method, params, sessionId) {
+async function sendChecked(tabId, method, params, sessionId, timeoutMs) {
   const session = await attach(tabId);
   if (session.dialog && !DIALOG_SAFE_METHODS.has(method) && !method.startsWith("Input.")) {
     throw new Error(`A JavaScript ${session.dialog.type} dialog is open on this tab ("${session.dialog.message}"); handle it with getJsDialog() first`);
@@ -255,14 +264,14 @@ async function sendChecked(tabId, method, params, sessionId) {
   const isInput = method.startsWith("Input.");
   // While a dialog is open the page handles no input; further events of the same action are skipped.
   if (isInput && session.dialog) return {};
-  if (DIALOG_SAFE_METHODS.has(method)) return rawSend(tabId, method, params, sessionId);
+  if (DIALOG_SAFE_METHODS.has(method)) return rawSend(tabId, method, params, sessionId, timeoutMs);
   // A command that makes the page open a modal dialog does not complete until the dialog closes. Input
   // finishes when the dialog opens; other commands fail with a pointer to getJsDialog().
   let waiter;
   const dialogOpened = new Promise((resolve) => session.dialogWaiters.push((waiter = resolve)));
   try {
     return await Promise.race([
-      rawSend(tabId, method, params, sessionId),
+      rawSend(tabId, method, params, sessionId, timeoutMs),
       dialogOpened.then(() => {
         if (isInput) return {};
         throw new Error(`A JavaScript ${session.dialog?.type ?? ""} dialog opened while ${method} was running; handle it with getJsDialog()`);

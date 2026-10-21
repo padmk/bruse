@@ -91,8 +91,9 @@ export function createCua() {
     else if (event.method === "tabs.opened") {
       const unresolved = notifications.filter((n) => typeof n === "object" && n.opener === event.tabId && n.tabId === null);
       const opening = unresolved.find((n) => sameUrl(n.url, event.params.url));
-      if (opening) opening.tabId = event.params.tabId;
-      else notifications.push({ opener: event.tabId, url: event.params.url, tabId: event.params.tabId });
+      // A tab the user opened from this page (its context menu) is none of the agent's business.
+      if (opening) Object.assign(opening, { tabId: event.params.tabId, byAgent: event.params.byAgent });
+      else if (event.params.byAgent) notifications.push({ opener: event.tabId, url: event.params.url, tabId: event.params.tabId, byAgent: true });
     } else if (event.method === "Page.javascriptDialogOpening") {
       notifications.push(`Tab ${event.tabId} opened a JavaScript ${event.params.type} dialog: ${JSON.stringify(event.params.message)}. Handle it with getJsDialog().`);
     }
@@ -106,7 +107,9 @@ export function createCua() {
     return notifications.splice(0).map((n) => {
       if (typeof n === "string") return n;
       return n.tabId !== null
-        ? `Tab ${n.opener} opened a new tab ${n.tabId} (${n.url}); bind it with \`await cua.getTab("${n.tabId}")\`.`
+        ? n.byAgent === false
+          ? `Tab ${n.opener} opened a new tab ${n.tabId} (${n.url}) on its own, not from the agent's input; it is the user's tab, not part of this session.`
+          : `Tab ${n.opener} opened a new tab ${n.tabId} (${n.url}); bind it with \`await cua.getTab("${n.tabId}")\`.`
         : `Tab ${n.opener} tried to open ${n.url}, but no new tab appeared (the browser may have blocked the popup); check with cua.listTabs().`;
     });
   }

@@ -6,6 +6,7 @@ import { pressChord } from "./keys.mjs";
 import { LOCATOR_ENGINE, SET_VALUE } from "./page-scripts.mjs";
 
 const DEFAULT_TIMEOUT_MS = 10_000;
+const PAGE_CODE_MS = 30_000;
 const POLL_MS = 100;
 
 // Regular expressions created in the REPL come from another realm, so instanceof RegExp is false.
@@ -109,8 +110,8 @@ export class Locator {
 
   // Runs the locator engine on `steps` in a scope and passes its result to `consume` (a function source
   // taking the matched elements and `arg`). Returns the CDP result object.
-  async runEngine({ sessionId, rootId }, steps, consume, arg, options) {
-    const cdp = this.tab.cdpSender(sessionId);
+  async runEngine({ sessionId, rootId }, steps, consume, arg, options, timeoutMs) {
+    const cdp = this.tab.cdpSender(sessionId, timeoutMs ? { timeoutMs } : undefined);
     const call = `function (steps, arg) {
       const root = this.nodeType === 9 ? this : this.contentDocument;
       if (!root) return (${consume})([], arg);
@@ -182,13 +183,14 @@ export class Locator {
     return Array.from({ length: n }, (_, i) => this.nth(i));
   }
 
+  // The agent's own code may take its time; it gets the long command limit.
   async evaluate(fn, arg, { timeoutMs } = {}) {
-    const { id, cdp } = await this.resolveOne({ timeoutMs });
-    return callOn(cdp, id, `function (arg) { return (${functionSource(fn, "element, arg")})(this, arg); }`, [arg]);
+    const { id, sessionId } = await this.resolveOne({ timeoutMs });
+    return callOn(this.tab.cdpSender(sessionId, { timeoutMs: PAGE_CODE_MS }), id, `function (arg) { return (${functionSource(fn, "element, arg")})(this, arg); }`, [arg]);
   }
   async evaluateAll(fn, arg) {
     const scope = await this.scope();
-    return (await this.runEngine(scope, scope.steps, functionSource(fn, "elements, arg"), arg, { returnByValue: true })).value;
+    return (await this.runEngine(scope, scope.steps, functionSource(fn, "elements, arg"), arg, { returnByValue: true }, PAGE_CODE_MS)).value;
   }
 
   async textContent(options) {
