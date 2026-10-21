@@ -130,7 +130,8 @@ The full API is in `browser/mcp/cua/docs.mjs`, which the agent receives on its f
   as a `target=_blank` link to an attachment): a download counts only when that tab reported it, either
   through the debugger (`Page.downloadWillBegin`) or because the extension held the tab's first
   document response (CDP `Fetch`) and saw a file. Two tabs downloading the same URL each get their own
-  file, and a download nothing ties to the tab is never handed out.
+  file, a download nothing ties to the tab is never handed out, and when another download of the same
+  URL starts at the same moment the wait fails rather than guess.
 - CSS locators reach into open shadow roots, as in Playwright.
 - A page that stops responding (an endless script) makes the tool's own commands fail after 8 s with
   a message saying so, instead of hanging; reading whole pages, screenshots and the agent's own code
