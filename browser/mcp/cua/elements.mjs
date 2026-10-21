@@ -10,6 +10,14 @@ import { OPT_OUT_OF_PASSWORD_MANAGERS } from "./page-scripts.mjs";
 const MAX_HOLD_MS = 5_000;
 const BUTTONS = { left: "left", l: "left", right: "right", r: "right", middle: "middle", m: "middle" };
 
+// Commands that read whole pages or run the agent's code in them may take this long.
+export const PAGE_CODE_MS = 30_000;
+
+// The error a page threw in Runtime.evaluate or Runtime.callFunctionOn, without its stack.
+export function pageException(exceptionDetails) {
+  return new Error(exceptionDetails.exception?.description?.split("\n")[0] ?? exceptionDetails.text);
+}
+
 export const STALE_ELEMENT_MESSAGE = "The element is no longer on the page (it was removed or replaced); call getAXState() for current element numbers";
 
 // Calls a function with `this` = the node. A node that left the document fails instead of being
@@ -27,7 +35,7 @@ export async function callOn(cdp, backendNodeId, functionDeclaration, args = [])
       returnByValue: true,
       awaitPromise: true,
     });
-    if (exceptionDetails) throw new Error(exceptionDetails.exception?.description?.split("\n")[0] ?? exceptionDetails.text);
+    if (exceptionDetails) throw pageException(exceptionDetails);
     return result.value;
   } finally {
     // Remote handles pin their DOM nodes until released.

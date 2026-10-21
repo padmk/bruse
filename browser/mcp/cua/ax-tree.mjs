@@ -61,7 +61,7 @@ const STRUCTURAL_ROLES = new Set(["row", "cell", "gridcell", "generic", "group",
 const SETTABLE_ROLES = new Set(["textbox", "searchbox", "combobox", "spinbutton", "slider", "checkbox", "radio", "switch", "listbox", "ComboBoxMenuButton"]);
 const STATE_NAMES = { disabled: "disabled", checked: "checked", selected: "selected", pressed: "pressed", required: "required", readonly: "read only", invalid: "invalid" };
 
-function clip(text, max = MAX_TEXT) {
+export function clip(text, max = MAX_TEXT) {
   const flat = String(text).replace(/\s+/g, " ").trim();
   return flat.length > max ? `${flat.slice(0, max)}…` : flat;
 }

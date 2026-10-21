@@ -5,7 +5,7 @@ import { ariaSnapshot } from "./aria-snapshot.mjs";
 import { squareToQuad } from "./geometry.mjs";
 import { AXTracker, fetchPageTree } from "./ax-tree.mjs";
 import { createContentApi } from "./content.mjs";
-import { OFF_PAGE, callOn, clickAt, coveringElement, dragBetween, elementCenter, focusNode, prepareClick } from "./elements.mjs";
+import { OFF_PAGE, PAGE_CODE_MS, callOn, clickAt, coveringElement, dragBetween, elementCenter, focusNode, pageException, prepareClick } from "./elements.mjs";
 import { pressChord } from "./keys.mjs";
 import { Locator, functionSource, isRegExp } from "./locator.mjs";
 import { emitImage, emitText } from "./output.mjs";
@@ -27,8 +27,9 @@ const WAIT_FOR_QUIET_DOM = `(quietMs, maxMs) => new Promise((resolve) => {
 const SCROLL_PAGE_FRACTION = 0.85;
 const NETWORK_IDLE_MS = 500;
 const QUICK_COMMAND_MS = 8_000;
-const PAGE_CODE_MS = 30_000;
 const DOWNLOAD_WAIT_MS = 30_000;
+// Default timeout of waits for loads, URLs and navigations, as in Playwright.
+const NAVIGATION_TIMEOUT_MS = 30_000;
 // Shorter than a call's default timeout, so the wait ends (and stops intercepting) within the call.
 const FILE_CHOOSER_WAIT_MS = 20_000;
 // How long a click by element number waits for something covering the element (an animation, a toast) to go away.
@@ -83,6 +84,18 @@ export class Tab {
     return this.context.call("tabs.get", { tabId: this.tabId });
   }
 
+  // { dialog, frames, inflightRequests, networkQuietMs } as the extension tracks them.
+  async pageState() {
+    return this.context.call("page.state", { tabId: this.tabId });
+  }
+
+  // The out-of-process frame that matches, from the extension's current list.
+  async frameWhere(matches) {
+    const frame = (await this.pageState()).frames.find(matches);
+    if (!frame) throw new Error("The frame of this element is gone; call getAXState() again");
+    return frame;
+  }
+
   // Waits for a loading page and, after a recent action, until the DOM has been quiet for a moment.
   // Returns whether anything may have changed while waiting.
   async settle(info) {
@@ -104,7 +117,7 @@ export class Tab {
   // without it, so a page cannot use the agent's reads to open popups or pickers.
   async evaluateInPage(expression, { userGesture = false } = {}) {
     const { result, exceptionDetails } = await this.cdpSender(null, { timeoutMs: PAGE_CODE_MS })("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true, userGesture });
-    if (exceptionDetails) throw new Error(exceptionDetails.exception?.description?.split("\n")[0] ?? exceptionDetails.text);
+    if (exceptionDetails) throw pageException(exceptionDetails);
     return result.value;
   }
 
@@ -113,9 +126,7 @@ export class Tab {
   async nodeFor(index) {
     const ref = this.tracker.nodeRef(index);
     if (!ref.frameId) return ref;
-    const { frames } = await this.context.call("page.state", { tabId: this.tabId });
-    const frame = frames.find((f) => f.frameId === ref.frameId);
-    if (!frame) throw new Error("The frame of this element is gone; call getAXState() again");
+    const frame = await this.frameWhere((f) => f.frameId === ref.frameId);
     return { ...ref, sessionId: frame.sessionId };
   }
 
@@ -123,9 +134,7 @@ export class Tab {
   // there and the frame's viewport size, which together map points into the parent (also through CSS
   // transforms such as scale).
   async frameOwner(sessionId) {
-    const { frames } = await this.context.call("page.state", { tabId: this.tabId });
-    const frame = frames.find((f) => f.sessionId === sessionId);
-    if (!frame) throw new Error("The frame of this element is gone; call getAXState() again");
+    const frame = await this.frameWhere((f) => f.sessionId === sessionId);
     const parent = this.cdpSender(frame.parentSessionId);
     const { backendNodeId } = await parent("DOM.getFrameOwner", { frameId: frame.frameId });
     const [{ model }, { result }] = await Promise.all([
@@ -181,8 +190,8 @@ export class Tab {
   // --- Observation ---
 
   async renderState(options = {}) {
-    let [info, state] = await Promise.all([this.info(), this.context.call("page.state", { tabId: this.tabId })]);
-    if (await this.settle(info)) [info, state] = await Promise.all([this.info(), this.context.call("page.state", { tabId: this.tabId })]);
+    let [info, state] = await Promise.all([this.info(), this.pageState()]);
+    if (await this.settle(info)) [info, state] = await Promise.all([this.info(), this.pageState()]);
     const header = `Browser tab: ${this.id}, Title: ${JSON.stringify(info.title ?? "")}, URL: ${JSON.stringify(info.url ?? "")}.`;
     if (state.dialog) {
       const { type, message } = state.dialog;
@@ -316,7 +325,7 @@ export class Tab {
   // Input events are dropped while a JavaScript dialog blocks the page, so input that would be lost
   // fails instead of reporting success.
   async ensureNoDialog() {
-    const { dialog } = await this.context.call("page.state", { tabId: this.tabId });
+    const { dialog } = await this.pageState();
     if (dialog) throw new Error(`A JavaScript ${dialog.type} dialog is open on this tab (${JSON.stringify(dialog.message)}); handle it with getJsDialog() first`);
   }
 
@@ -386,7 +395,7 @@ export class Tab {
   }
 
   async getJsDialog() {
-    const { dialog } = await this.context.call("page.state", { tabId: this.tabId });
+    const { dialog } = await this.pageState();
     if (!dialog) return undefined;
     const handle = (accept, promptText) => this.cdpSender()("Page.handleJavaScriptDialog", { accept, ...(promptText !== undefined ? { promptText } : {}) });
     const result = { type: dialog.type, message: dialog.message, dismiss: () => handle(false) };
@@ -429,12 +438,12 @@ export class Tab {
       // ARIA snapshot of the page in Playwright's format; it does not change element numbers.
       async domSnapshot() {
         await tab.settle();
-        const { frames } = await tab.context.call("page.state", { tabId: tab.tabId });
+        const { frames } = await tab.pageState();
         return ariaSnapshot(await fetchPageTree((sessionId) => tab.cdpSender(sessionId, { timeoutMs: PAGE_CODE_MS }), frames));
       },
       waitForTimeout: (ms) => sleep(ms),
       // "networkidle" waits until the tab has had no request in flight for NETWORK_IDLE_MS.
-      async waitForLoadState({ state = "load", timeoutMs = 30_000 } = {}) {
+      async waitForLoadState({ state = "load", timeoutMs = NAVIGATION_TIMEOUT_MS } = {}) {
         const deadline = Date.now() + timeoutMs;
         const timedOut = (what) => new Error(`The page did not reach ${what} within ${timeoutMs} ms`);
         if (state === "domcontentloaded") {
@@ -448,13 +457,13 @@ export class Tab {
         if (!loaded) throw timedOut("load");
         if (state !== "networkidle") return;
         for (;;) {
-          const { inflightRequests, networkQuietMs } = await tab.context.call("page.state", { tabId: tab.tabId });
+          const { inflightRequests, networkQuietMs } = await tab.pageState();
           if (networkQuietMs >= NETWORK_IDLE_MS) return;
           if (Date.now() > deadline) throw new Error(`The network did not become idle within ${timeoutMs} ms (${inflightRequests} requests still loading)`);
           await sleep(Math.max(50, Math.min(NETWORK_IDLE_MS - networkQuietMs, 100)));
         }
       },
-      async waitForURL(pattern, { timeoutMs = 30_000 } = {}) {
+      async waitForURL(pattern, { timeoutMs = NAVIGATION_TIMEOUT_MS } = {}) {
         const deadline = Date.now() + timeoutMs;
         while (!urlMatches(await tab.url(), pattern)) {
           if (Date.now() > deadline) throw new Error(`URL did not match ${pattern} within ${timeoutMs} ms`);
@@ -463,7 +472,7 @@ export class Tab {
         await tab.context.call("tabs.waitForLoad", { tabId: tab.tabId, timeoutMs: Math.max(1, deadline - Date.now()) });
       },
       // Waits for a new document, so a reload or a submission back to the same URL also counts.
-      async expectNavigation(action, { timeoutMs = 30_000, url } = {}) {
+      async expectNavigation(action, { timeoutMs = NAVIGATION_TIMEOUT_MS, url } = {}) {
         const loaderId = async () => (await tab.cdpSender()("Page.getFrameTree")).frameTree.frame.loaderId;
         const before = await loaderId();
         const result = await action();

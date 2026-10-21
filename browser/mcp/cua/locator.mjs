@@ -1,12 +1,11 @@
 // Playwright-style locators evaluated with the in-page locator engine. Single-element actions are
 // strict: they wait for exactly one match and fail on ambiguity.
 
-import { callOn, clickAt, dragBetween, focusNode } from "./elements.mjs";
+import { PAGE_CODE_MS, callOn, clickAt, dragBetween, focusNode, pageException } from "./elements.mjs";
 import { pressChord } from "./keys.mjs";
 import { LOCATOR_ENGINE, SET_VALUE } from "./page-scripts.mjs";
 
 const DEFAULT_TIMEOUT_MS = 10_000;
-const PAGE_CODE_MS = 30_000;
 const POLL_MS = 100;
 
 // Regular expressions created in the REPL come from another realm, so instanceof RegExp is false.
@@ -100,7 +99,7 @@ export class Locator {
       // Several or no matching frames are left to the in-page engine, which can only enter same-origin ones.
       if (owners.length !== 1) return { sessionId, rootId, steps };
       const { node } = await this.tab.cdpSender(sessionId)("DOM.describeNode", { backendNodeId: owners[0] });
-      const { frames } = await this.tab.context.call("page.state", { tabId: this.tab.tabId });
+      const { frames } = await this.tab.pageState();
       const frame = frames.find((f) => f.frameId === node.frameId);
       if (frame) [sessionId, rootId] = [frame.sessionId, null];
       else rootId = owners[0];
@@ -135,7 +134,7 @@ export class Locator {
         ...options,
         objectGroup,
       });
-      if (exceptionDetails) throw new Error(exceptionDetails.exception?.description?.split("\n")[0] ?? exceptionDetails.text);
+      if (exceptionDetails) throw pageException(exceptionDetails);
       return result;
     } finally {
       // Without a group of the caller's, nothing from this call is needed afterwards.
