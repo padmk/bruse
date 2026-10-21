@@ -56,24 +56,33 @@ const TERMINATE_GRACE_MS = 500;
 const RESET_WAIT_MS = 2_000;
 const TIMED_OUT_NOTE = "The REPL was reset because the call timed out: code still running from it was stopped. Bind tabs again with cua.getTab(id).";
 
-// Mouse buttons the REPL's code holds pressed. A worker replaced in the middle of a long press would
-// leave the button down in the page; the host releases it.
-class PressedButtons {
+// Mouse buttons and keys the REPL's code holds pressed. A worker replaced in the middle of a long press
+// would leave them down in the page; the host releases them.
+class PressedInput {
   constructor() {
-    this.pressed = new Map(); // "tab:button" -> mousePressed params with the tab
+    this.pressed = new Map(); // "tab:mouse:button" or "tab:key:code" -> the press's cdp call
   }
 
   note(method, params) {
-    if (method !== "cdp" || params?.method !== "Input.dispatchMouseEvent") return;
-    const { type, button } = params.params ?? {};
-    const key = `${params.tabId}:${button}`;
-    if (type === "mousePressed") this.pressed.set(key, params);
-    else if (type === "mouseReleased") this.pressed.delete(key);
+    if (method !== "cdp") return;
+    const { type, button, code, key } = params?.params ?? {};
+    if (params.method === "Input.dispatchMouseEvent") {
+      const id = `${params.tabId}:mouse:${button}`;
+      if (type === "mousePressed") this.pressed.set(id, params);
+      else if (type === "mouseReleased") this.pressed.delete(id);
+    } else if (params.method === "Input.dispatchKeyEvent") {
+      const id = `${params.tabId}:key:${code ?? key}`;
+      if (type === "keyDown" || type === "rawKeyDown") this.pressed.set(id, params);
+      else if (type === "keyUp") this.pressed.delete(id);
+    }
   }
 
   releaseAll() {
-    for (const { tabId, sessionId, params } of this.pressed.values()) {
-      callBrowser("cdp", { tabId, sessionId, method: "Input.dispatchMouseEvent", params: { ...params, type: "mouseReleased", clickCount: 1 } }).catch(() => {});
+    // Newest first, so a chord's key goes up before its modifiers.
+    for (const { tabId, sessionId, method, params } of [...this.pressed.values()].reverse()) {
+      const { key, code, windowsVirtualKeyCode, modifiers } = params;
+      const release = method === "Input.dispatchMouseEvent" ? { ...params, type: "mouseReleased", clickCount: 1 } : { type: "keyUp", key, code, windowsVirtualKeyCode, modifiers };
+      callBrowser("cdp", { tabId, sessionId, method, params: release }).catch(() => {});
     }
     this.pressed.clear();
   }
@@ -85,7 +94,7 @@ class ReplHost {
   constructor() {
     this.nextId = 1;
     this.pending = new Map();
-    this.buttons = new PressedButtons();
+    this.pressed = new PressedInput();
     onBrowserEvent((event) => {
       guardFocus(event);
       this.worker.postMessage({ type: "browser-event", event });
@@ -111,7 +120,7 @@ class ReplHost {
       const reason = failure?.message ?? "it exited";
       const settle = [...this.pending.values()];
       this.pending.clear();
-      this.buttons.releaseAll();
+      this.pressed.releaseAll();
       this.start();
       for (const resolve of settle) {
         resolve({ content: [{ type: "text", text: `The REPL crashed (${reason}) and was started again; its state is gone. Bind tabs again with cua.getTab(id).` }], isError: true });
@@ -127,7 +136,7 @@ class ReplHost {
       // The worker may have been replaced meanwhile; its input must not arrive after the reset.
       if (worker !== this.worker) return;
     }
-    this.buttons.note(method, params);
+    this.pressed.note(method, params);
     let reply;
     try {
       reply = { type: "browser-reply", callId, result: await callBrowser(method, params) };
@@ -140,7 +149,7 @@ class ReplHost {
   async restart() {
     const old = this.worker;
     this.pending.clear();
-    this.buttons.releaseAll();
+    this.pressed.releaseAll();
     this.start();
     await old.terminate();
   }
