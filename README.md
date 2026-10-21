@@ -27,7 +27,10 @@ MCP server (hub) ◀──WebSocket 127.0.0.1:47615──▶ extension ──chr
   downloads. `cdp.js` relays DevTools Protocol commands through `chrome.debugger`, including the
   sessions of cross-origin frames, and tracks dialogs and console output. `sessions.js` keeps each agent
   session's tabs in its own tab group and closes the unmarked ones when the session ends. `downloads.js`
-  pairs downloads with the tabs that started them.
+  pairs downloads with the tabs that started them. `shared.js` is the one owner of what the extension
+  and the MCP server must agree on (hub port, management method allow-list, which input counts as the
+  agent's press and for how long, password manager element names, the unresponsive-page error); it uses
+  no browser or Node APIs, so the MCP server imports it from the extension directory.
 - `installer/`: `install.mjs` (the installer), `Install.command` (its double-click entry point on macOS,
   which finds Node.js), `agent-instructions.md` (installation steps for an agent, shipped as the
   package's `AGENTS.md` with a `CLAUDE.md` that imports it) and `package.mjs` (builds the zip package).

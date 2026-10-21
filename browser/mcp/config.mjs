@@ -1,14 +1,14 @@
-// MCP server settings. The extension keeps its own copy of the port and of the product name (manifest).
+// MCP server settings. The extension's manifest carries its own copy of the product name.
 import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { HUB_PORT } from "../extension/shared.js";
 
 // User-visible product name; the extension's manifest carries the same name.
 export const PRODUCT_NAME = "Bruse";
 
-// Must match HUB_URL in extension/offscreen.js.
-export const PORT = 47615;
+export const PORT = HUB_PORT;
 
 export const STATE_DIR = process.env.BROWSER_CONTROL_STATE_DIR ?? join(homedir(), ".local/state/browser-control");
 

@@ -1,5 +1,6 @@
 // The `cua` object exposed in the REPL: browser inventory, browser selection and tab binding.
 
+import { MANAGEMENT_METHODS } from "../../extension/shared.js";
 import { callBrowser, onBrowserEvent, sessionId } from "../browser-port.mjs";
 import { BROWSER_DOCUMENTATION } from "./docs.mjs";
 import { emitText } from "./output.mjs";
@@ -23,27 +24,24 @@ function waitForEvent(predicate, timeoutMs) {
   });
 }
 
-// Browser organization through allow-listed WebExtensions methods, e.g. management.tabs.query({}).
-function managementNamespace(call, namespace, methods) {
-  return Object.fromEntries(methods.map((method) => [method, (...args) => call("browser.manage", { namespace, method, args })]));
-}
-
 const MANAGEMENT_DOCUMENTATION = `management: Chrome-compatible windows, tabs, tabGroups and bookmarks methods for organizing the
 browser when the user asks for it. Arguments and results follow the chrome.* APIs.
-- windows: getAll, get, getCurrent, getLastFocused, create, update, remove
-- tabs: query, get, update, move, group, ungroup, remove, reload, duplicate, discard
-- tabGroups: query, get, update, move
-- bookmarks: search, getTree, getChildren, getRecent, get, create, update, move, remove, removeTree
+${Object.entries(MANAGEMENT_METHODS)
+  .map(([namespace, methods]) => `- ${namespace}: ${methods.join(", ")}`)
+  .join("\n")}
 Change only what the user asked for, confirm before deleting bookmarks or closing user tabs, and report what changed.`;
 
+// Browser organization through the allow-listed WebExtensions methods, e.g. management.tabs.query({}).
 const createCapabilities = (call) => ({
   management: {
     description: "Organize windows, tabs, tab groups and bookmarks.",
     documentation: async () => MANAGEMENT_DOCUMENTATION,
-    windows: managementNamespace(call, "windows", ["getAll", "get", "getCurrent", "getLastFocused", "create", "update", "remove"]),
-    tabs: managementNamespace(call, "tabs", ["query", "get", "update", "move", "group", "ungroup", "remove", "reload", "duplicate", "discard"]),
-    tabGroups: managementNamespace(call, "tabGroups", ["query", "get", "update", "move"]),
-    bookmarks: managementNamespace(call, "bookmarks", ["search", "getTree", "getChildren", "getRecent", "get", "create", "update", "move", "remove", "removeTree"]),
+    ...Object.fromEntries(
+      Object.entries(MANAGEMENT_METHODS).map(([namespace, methods]) => [
+        namespace,
+        Object.fromEntries(methods.map((method) => [method, (...args) => call("browser.manage", { namespace, method, args })])),
+      ]),
+    ),
   },
 });
 

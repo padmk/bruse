@@ -1,6 +1,7 @@
 // Element-level operations shared by accessibility indexes and locators: resolving nodes, finding
 // a clickable point, and mouse input. `cdp` is a tab-bound CDP sender.
 
+import { isUnresponsivePageError } from "../../extension/shared.js";
 import { modifierMask } from "./keys.mjs";
 import { quadToSquare } from "./geometry.mjs";
 import { OPT_OUT_OF_PASSWORD_MANAGERS } from "./page-scripts.mjs";
@@ -106,8 +107,8 @@ export async function focusNode(cdp, backendNodeId, { requireFocus = false } = {
   if (!focused && requireFocus) throw new Error("The element cannot take keyboard focus, so typed text would go elsewhere; use the element number of the text field itself, or click the element first");
 }
 
-// A page that does not respond (the extension's message for a timed-out quick command).
-export const isUnresponsive = (error) => /did not respond within/.test(error?.message ?? "");
+// A page that does not respond (the extension's error for a timed-out quick command).
+const isUnresponsive = (error) => isUnresponsivePageError(error?.message);
 
 export async function prepareClick(cdp, backendNodeId) {
   await callOn(cdp, backendNodeId, PREPARE_CLICK).catch((error) => {

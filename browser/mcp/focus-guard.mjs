@@ -4,8 +4,8 @@
 // just gave input to opens something and the browser took the front, it gives the front back. macOS only.
 
 import { execFile } from "node:child_process";
+import { AGENT_INPUT_WINDOW_MS, isPressInput } from "../extension/shared.js";
 
-const INPUT_WINDOW_MS = 1_500; // how long after the agent's input an opening counts as caused by it (as in the extension)
 const CHECK_DELAYS_MS = [20, 50, 80, 120, 180, 260, 400, 700, 1_000, 1_500];
 const FRONT_CACHE_MS = 500;
 const enabled = process.platform === "darwin";
@@ -38,7 +38,7 @@ const BROWSER_BUNDLE = /^(com\.brave\.Browser|com\.google\.Chrome|org\.chromium\
 export function onEvent(event) {
   if (!enabled || (event.method !== "Page.windowOpen" && event.method !== "tabs.opened")) return;
   const input = inputs.get(event.tabId);
-  if (!input?.app || BROWSER_BUNDLE.test(input.app) || Date.now() - input.at > INPUT_WINDOW_MS) return;
+  if (!input?.app || BROWSER_BUNDLE.test(input.app) || Date.now() - input.at > AGENT_INPUT_WINDOW_MS) return;
   if (input.guarding) return;
   input.guarding = true;
   // The browser takes the front once per opening, within moments. One restore undoes it; after that,
@@ -58,9 +58,7 @@ export function onEvent(event) {
   setTimeout(() => check(0), CHECK_DELAYS_MS[0]);
 }
 
-// Input events that can make a page open a tab: a pressed mouse button or key.
+// Browser calls whose input can make a page open a tab.
 export function isOpeningInput(method, params) {
-  if (method !== "cdp") return false;
-  const type = params?.params?.type;
-  return (params.method === "Input.dispatchMouseEvent" && type === "mousePressed") || (params.method === "Input.dispatchKeyEvent" && (type === "keyDown" || type === "rawKeyDown"));
+  return method === "cdp" && isPressInput(params?.method, params?.params);
 }

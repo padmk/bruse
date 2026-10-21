@@ -7,6 +7,7 @@
 
 import { cdp, onCdpEvent, sinceAgentInput } from "./cdp.js";
 import { agentOpenerChain, onTabOpened } from "./sessions.js";
+import { AGENT_INPUT_WINDOW_MS } from "./shared.js";
 
 const MAX_REMEMBERED = 200;
 
@@ -24,7 +25,6 @@ function waitingTab(tabId) {
 // held for a moment instead: when it is a file rather than a page, the tab reports that download itself,
 // like Page.downloadWillBegin does, and the response goes on. Nothing is matched by URL alone.
 const INTERCEPT_MS = 15_000;
-const EARLY_INPUT_MS = 1_500;
 const intercepting = new Map(); // tab id -> timer that ends the interception
 const RENDERED_TYPES = /^(text\/|image\/|audio\/|video\/|application\/(xhtml\+xml|xml|json|pdf|javascript))/i;
 
@@ -53,12 +53,12 @@ function intercept(tabId) {
 }
 
 chrome.tabs.onCreated.addListener((tab) => {
-  const opening = [...pageOpenedAt].some(([source, at]) => Date.now() - at < EARLY_INPUT_MS && sinceAgentInput(source) < EARLY_INPUT_MS);
+  const opening = [...pageOpenedAt].some(([source, at]) => Date.now() - at < AGENT_INPUT_WINDOW_MS && sinceAgentInput(source) < AGENT_INPUT_WINDOW_MS);
   if (opening) intercept(tab.id);
 });
 
 chrome.webNavigation.onCreatedNavigationTarget.addListener(({ sourceTabId, tabId, url }) => {
-  if (waitingTab(sourceTabId) === null || sinceAgentInput(sourceTabId) > EARLY_INPUT_MS) return;
+  if (waitingTab(sourceTabId) === null || sinceAgentInput(sourceTabId) > AGENT_INPUT_WINDOW_MS) return;
   const popup = { url, at: Date.now(), endedAt: null, referrer: null };
   popups.set(tabId, popup);
   chrome.tabs.get(sourceTabId).then((source) => (popup.referrer = source.url), () => {});

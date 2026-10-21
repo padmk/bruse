@@ -5,14 +5,9 @@
 import { cdp, consoleLogs, detach, networkRequests, onCdpEvent, tabState } from "./cdp.js";
 import { waitForDownload } from "./downloads.js";
 import { agentTabs, endSession, groupAgentTab, markTab, nameSession, onTabOpened } from "./sessions.js";
+import { MANAGEMENT_METHODS } from "./shared.js";
 
 const OFFSCREEN_ALARM = "offscreen-check";
-const MANAGEMENT_METHODS = {
-  windows: ["getAll", "get", "getCurrent", "getLastFocused", "create", "update", "remove"],
-  tabs: ["query", "get", "update", "move", "group", "ungroup", "remove", "reload", "duplicate", "discard"],
-  tabGroups: ["query", "get", "update", "move"],
-  bookmarks: ["search", "getTree", "getChildren", "getRecent", "get", "create", "update", "move", "remove", "removeTree"],
-};
 const LOAD_TIMEOUT_MS = 20_000;
 // CDP events the MCP server reacts to; the rest stay inside the extension.
 const FORWARDED_EVENTS = new Set(["Page.javascriptDialogOpening", "Page.javascriptDialogClosed", "Page.fileChooserOpened", "Page.windowOpen"]);
