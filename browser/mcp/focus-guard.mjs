@@ -5,8 +5,8 @@
 
 import { execFile } from "node:child_process";
 
-const INPUT_WINDOW_MS = 4_000; // how long after the agent's input an opening counts as caused by it
-const CHECK_DELAYS_MS = [20, 50, 80, 120, 180, 260, 400, 700, 1_000, 1_500, 2_200, 3_000];
+const INPUT_WINDOW_MS = 1_500; // how long after the agent's input an opening counts as caused by it (as in the extension)
+const CHECK_DELAYS_MS = [20, 50, 80, 120, 180, 260, 400, 700, 1_000, 1_500];
 const FRONT_CACHE_MS = 500;
 const enabled = process.platform === "darwin";
 
@@ -41,18 +41,19 @@ export function onEvent(event) {
   if (!input?.app || BROWSER_BUNDLE.test(input.app) || Date.now() - input.at > INPUT_WINDOW_MS) return;
   if (input.guarding) return;
   input.guarding = true;
-  const deadline = Date.now() + CHECK_DELAYS_MS[CHECK_DELAYS_MS.length - 1];
+  // The browser takes the front once per opening, within moments. One restore undoes it; after that,
+  // the browser in front is the user's own choice.
   const check = async (index) => {
     const front = await frontmostApp();
-    // The user's own switch to another app ends the guard.
-    if (front && front !== input.app && !BROWSER_BUNDLE.test(front)) return;
     if (front && BROWSER_BUNDLE.test(front)) {
       cached = { app: null, at: 0 };
-      await run("open", ["-b", input.app]);
+      // Only an app that still runs; `open` would launch one the user quit.
+      if ((await run("lsappinfo", ["find", `bundleid=${input.app}`])).trim()) await run("open", ["-b", input.app]);
+      return;
     }
-    // After a restore, a popup window may still take the front once more; keep watching until the deadline.
-    if (index + 1 < CHECK_DELAYS_MS.length && Date.now() < deadline) setTimeout(() => check(index + 1), CHECK_DELAYS_MS[index + 1] - CHECK_DELAYS_MS[index]);
-    else input.guarding = false;
+    // The user's own switch to another app ends the guard too.
+    if (front && front !== input.app) return;
+    if (index + 1 < CHECK_DELAYS_MS.length) setTimeout(() => check(index + 1), CHECK_DELAYS_MS[index + 1] - CHECK_DELAYS_MS[index]);
   };
   setTimeout(() => check(0), CHECK_DELAYS_MS[0]);
 }

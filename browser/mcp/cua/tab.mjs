@@ -26,6 +26,8 @@ const WAIT_FOR_QUIET_DOM = `(quietMs, maxMs) => new Promise((resolve) => {
 })`;
 const SCROLL_PAGE_FRACTION = 0.85;
 const NETWORK_IDLE_MS = 500;
+const QUICK_COMMAND_MS = 8_000;
+const PAGE_CODE_MS = 30_000;
 const DOWNLOAD_WAIT_MS = 30_000;
 // Shorter than a call's default timeout, so the wait ends (and stops intercepting) within the call.
 const FILE_CHOOSER_WAIT_MS = 20_000;
@@ -71,8 +73,10 @@ export class Tab {
   }
 
   // CDP sender for the tab, or for a cross-origin frame's session.
-  cdpSender(sessionId = null) {
-    return (method, params = {}) => this.context.call("cdp", { tabId: this.tabId, method, params, ...(sessionId ? { sessionId } : {}) });
+  // Commands of the tool's own quick operations fail after QUICK_COMMAND_MS, so a stuck page gives an
+  // error instead of a hang; reading whole pages and code the agent runs in them get PAGE_CODE_MS.
+  cdpSender(sessionId = null, { timeoutMs = QUICK_COMMAND_MS } = {}) {
+    return (method, params = {}) => this.context.call("cdp", { tabId: this.tabId, method, params, timeoutMs, ...(sessionId ? { sessionId } : {}) });
   }
 
   async info() {
@@ -99,13 +103,20 @@ export class Tab {
   // `userGesture` lets the code use APIs that need user activation (the clipboard). State reads run
   // without it, so a page cannot use the agent's reads to open popups or pickers.
   async evaluateInPage(expression, { userGesture = false } = {}) {
-    const { result, exceptionDetails } = await this.cdpSender()("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true, userGesture });
+    const { result, exceptionDetails } = await this.cdpSender(null, { timeoutMs: PAGE_CODE_MS })("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true, userGesture });
     if (exceptionDetails) throw new Error(exceptionDetails.exception?.description?.split("\n")[0] ?? exceptionDetails.text);
     return result.value;
   }
 
+  // A cross-origin frame's session is looked up again by frame: the debugger may have attached anew
+  // (after an idle detach) and given the frame a new session.
   async nodeFor(index) {
-    return this.tracker.nodeRef(index);
+    const ref = this.tracker.nodeRef(index);
+    if (!ref.frameId) return ref;
+    const { frames } = await this.context.call("page.state", { tabId: this.tabId });
+    const frame = frames.find((f) => f.frameId === ref.frameId);
+    if (!frame) throw new Error("The frame of this element is gone; call getAXState() again");
+    return { ...ref, sessionId: frame.sessionId };
   }
 
   // A frame session's owner element in its parent session, with the quad of the frame's content box
@@ -177,7 +188,7 @@ export class Tab {
       const { type, message } = state.dialog;
       return `${header}\nA JavaScript ${type} dialog is open: ${JSON.stringify(message)}. Handle it with \`const dialog = await tab.getJsDialog()\` and \`dialog.accept()\` or \`dialog.dismiss()\`.`;
     }
-    const page = await fetchPageTree((sessionId) => this.cdpSender(sessionId), state.frames);
+    const page = await fetchPageTree((sessionId) => this.cdpSender(sessionId, { timeoutMs: PAGE_CODE_MS }), state.frames);
     const { text, focusedLine } = this.tracker.render(page, options);
     return `${header}\n${text}${focusedLine ? `\nThe focused UI element is ${focusedLine}` : ""}`;
   }
@@ -190,7 +201,8 @@ export class Tab {
 
   // Captures in CSS pixels, so a point in the image is the same point for click([x, y]).
   async captureScreenshot({ fullPage = false, clip } = {}) {
-    const cdp = this.cdpSender();
+    // A full-page capture of a long page can take a while.
+    const cdp = this.cdpSender(null, { timeoutMs: PAGE_CODE_MS });
     const [metrics, ratio] = await Promise.all([cdp("Page.getLayoutMetrics"), this.evaluateInPage("devicePixelRatio").catch(() => 1)]);
     const viewport = metrics.cssVisualViewport;
     const size = metrics.cssContentSize ?? metrics.contentSize;
@@ -418,7 +430,7 @@ export class Tab {
       async domSnapshot() {
         await tab.settle();
         const { frames } = await tab.context.call("page.state", { tabId: tab.tabId });
-        return ariaSnapshot(await fetchPageTree((sessionId) => tab.cdpSender(sessionId), frames));
+        return ariaSnapshot(await fetchPageTree((sessionId) => tab.cdpSender(sessionId, { timeoutMs: PAGE_CODE_MS }), frames));
       },
       waitForTimeout: (ms) => sleep(ms),
       // "networkidle" waits until the tab has had no request in flight for NETWORK_IDLE_MS.

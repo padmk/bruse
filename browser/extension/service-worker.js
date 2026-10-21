@@ -97,7 +97,7 @@ const handlers = {
   "session.name": ({ sessionId, name }) => nameSession(sessionId, name),
   "session.end": ({ sessionId }) => endSession(sessionId),
 
-  cdp: ({ tabId, method, params, sessionId }) => cdp(tabId, method, params, sessionId),
+  cdp: ({ tabId, method, params, sessionId, timeoutMs }) => cdp(tabId, method, params, sessionId, timeoutMs),
   "page.state": ({ tabId }) => tabState(tabId),
   "page.console": ({ tabId }) => consoleLogs(tabId),
   "page.network": ({ tabId }) => networkRequests(tabId),
@@ -110,6 +110,8 @@ const handlers = {
   // Browser organization through the WebExtensions APIs; only listed methods can be called.
   "browser.manage": ({ namespace, method, args = [] }) => {
     if (!MANAGEMENT_METHODS[namespace]?.includes(method)) throw new Error(`${namespace}.${method} is not available`);
+    // Organizing tabs must not navigate them; pages are opened and driven through tab objects.
+    if (namespace === "tabs" && method === "update" && args[1] && "url" in args[1]) throw new Error("management.tabs.update cannot change a tab's URL; bind the tab with cua.getTab and use tab.goto");
     return chrome[namespace][method](...args);
   },
 
@@ -210,7 +212,7 @@ onCdpEvent((tabId, method, params, sessionId) => {
 });
 
 // Tells sessions which tab a page opened, so that notifications name the exact tab.
-onTabOpened((openerTabId, tabId, url) => send({ type: "event", tabId: openerTabId, method: "tabs.opened", params: { tabId, url } }));
+onTabOpened((openerTabId, tabId, url, byAgent) => send({ type: "event", tabId: openerTabId, method: "tabs.opened", params: { tabId, url, byAgent } }));
 
 async function ensureOffscreenDocument() {
   const existing = await chrome.runtime.getContexts({ contextTypes: ["OFFSCREEN_DOCUMENT"] });

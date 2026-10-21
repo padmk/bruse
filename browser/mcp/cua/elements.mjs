@@ -36,7 +36,9 @@ export async function callOn(cdp, backendNodeId, functionDeclaration, args = [])
 
 // Center of the element's visible part: the part of its box inside the viewport of its frame session.
 export async function elementCenter(cdp, backendNodeId) {
-  await cdp("DOM.scrollIntoViewIfNeeded", { backendNodeId }).catch(() => {});
+  await cdp("DOM.scrollIntoViewIfNeeded", { backendNodeId }).catch((error) => {
+    if (isUnresponsive(error)) throw error;
+  });
   // Only a missing layout box means "not visible"; other failures (e.g. a lost debugger session) surface as they are.
   const [{ quads }, metrics] = await Promise.all([
     cdp("DOM.getContentQuads", { backendNodeId }).catch((error) => {
@@ -104,9 +106,12 @@ export async function focusNode(cdp, backendNodeId, { requireFocus = false } = {
   if (!focused && requireFocus) throw new Error("The element cannot take keyboard focus, so typed text would go elsewhere; use the element number of the text field itself, or click the element first");
 }
 
+// A page that does not respond (the extension's message for a timed-out quick command).
+export const isUnresponsive = (error) => /did not respond within/.test(error?.message ?? "");
+
 export async function prepareClick(cdp, backendNodeId) {
   await callOn(cdp, backendNodeId, PREPARE_CLICK).catch((error) => {
-    if (error.message.includes(STALE_ELEMENT_MESSAGE)) throw error;
+    if (error.message.includes(STALE_ELEMENT_MESSAGE) || isUnresponsive(error)) throw error;
   });
 }
 
@@ -117,7 +122,7 @@ export const OFF_PAGE = "off-page";
 // Checks every document from the session root down to the element's own: the point must hit the next
 // frame's owner and finally the element. Returns null when the click reaches the element (or the check
 // cannot tell), otherwise a short description of what would receive the click instead.
-const HIT_TEST = `function (points, mainSession) {
+const HIT_TEST = `function (points, mainSession, ownersOnly) {
   let [x, y] = points[0];
   const target = this.nodeType === 1 ? this : this.parentElement;
   if (!target) return null;
@@ -162,8 +167,12 @@ const HIT_TEST = `function (points, mainSession) {
   // same-process frames down to the element's. Without them the frame owners are reported, so that the
   // caller can map the point (through any transform) and ask again.
   const chain = [...owners, target];
+  // The owners go back by reference; elements can hold cycles (framework properties) that a by-value
+  // result cannot carry.
+  if (ownersOnly) return owners;
+  // Viewport size of each frame (its owner's content box, untransformed), to map points into it.
   if (points.length < chain.length) {
-    return { owners, sizes: owners.map((owner) => {
+    return { sizes: owners.map((owner) => {
       const style = getComputedStyle(owner);
       return [owner.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight), owner.clientHeight - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom)];
     }) };
@@ -183,24 +192,23 @@ const HIT_TEST = `function (points, mainSession) {
 export async function coveringElement(cdp, backendNodeId, point, mainSession) {
   const { object } = await cdp("DOM.resolveNode", { backendNodeId });
   const objectGroup = `hit-${Math.random().toString(36).slice(2)}`;
-  const call = (points, returnByValue) =>
-    cdp("Runtime.callFunctionOn", { objectId: object.objectId, functionDeclaration: HIT_TEST, arguments: [{ value: points }, { value: mainSession }], returnByValue, objectGroup });
+  const call = (points, returnByValue, ownersOnly = false) =>
+    cdp("Runtime.callFunctionOn", { objectId: object.objectId, functionDeclaration: HIT_TEST, arguments: [{ value: points }, { value: mainSession }, { value: ownersOnly }], returnByValue, objectGroup });
   try {
     const first = await call([point], true);
     const verdict = first.result.value;
     if (verdict === null || typeof verdict === "string") return verdict;
-    // Frame owners as remote objects, to read their quads.
-    const { result } = await call([point], false);
-    const { result: props } = await cdp("Runtime.getProperties", { objectId: result.objectId, ownProperties: true });
-    const ownersArray = props.find((p) => p.name === "owners").value.objectId;
-    const { result: items } = await cdp("Runtime.getProperties", { objectId: ownersArray, ownProperties: true });
+    // Frame owners as remote objects, to read their content boxes.
+    const { result } = await call([point], false, true);
+    const { result: items } = await cdp("Runtime.getProperties", { objectId: result.objectId, ownProperties: true });
     const owners = items.filter((p) => /^\d+$/.test(p.name)).sort((a, b) => a.name - b.name);
     const points = [point];
     for (const [i, owner] of owners.entries()) {
       const { node } = await cdp("DOM.describeNode", { objectId: owner.value.objectId });
-      const { quads } = await cdp("DOM.getContentQuads", { backendNodeId: node.backendNodeId });
-      if (!quads?.[0]) return null;
-      const [u, v] = quadToSquare(quads[0])(...point);
+      // The content box is where the frame's document is drawn; its quad maps the frame's viewport.
+      const { model } = await cdp("DOM.getBoxModel", { backendNodeId: node.backendNodeId }).catch(() => ({}));
+      if (!model) return null;
+      const [u, v] = quadToSquare(model.content)(...point);
       const [width, height] = verdict.sizes[i];
       points.push([u * width, v * height]);
     }
