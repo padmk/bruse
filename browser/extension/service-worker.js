@@ -121,7 +121,8 @@ const handlers = {
 // which the hub stores; later connections prove knowledge of that secret in both directions with
 // HMAC over fresh nonces, so neither a local process posing as the hub nor one posing as the extension
 // can take over. Requests are executed only on the authenticated connection.
-let hub = { gen: 0, verified: false, expectedHubMac: null };
+const unverifiedHub = (gen) => ({ gen, verified: false, expectedHubMac: null });
+let hub = unverifiedHub(0);
 
 function hex(bytes) {
   return [...new Uint8Array(bytes)].map((b) => b.toString(16).padStart(2, "0")).join("");
@@ -170,7 +171,7 @@ async function handle(gen, text) {
     return null;
   }
   if (!message || typeof message !== "object") return null;
-  if (gen !== hub.gen) hub = { gen, verified: false, expectedHubMac: null };
+  if (gen !== hub.gen) hub = unverifiedHub(gen);
   if (message.type === "challenge") return JSON.stringify(await answerChallenge(String(message.nonce)));
   if (message.type === "auth-ok") {
     hub.verified = Boolean(hub.expectedHubMac) && message.mac === hub.expectedHubMac;
@@ -194,7 +195,7 @@ async function handle(gen, text) {
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message.target !== "worker") return false;
   if (message.type === "hub-open" || message.type === "hub-closed") {
-    if (message.gen >= hub.gen) hub = { gen: message.gen, verified: false, expectedHubMac: null };
+    if (message.gen >= hub.gen) hub = unverifiedHub(message.gen);
     return false;
   }
   if (message.type !== "hub-message") return false;

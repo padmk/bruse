@@ -9,11 +9,7 @@ import { beforeInput, isOpeningInput, onEvent as guardFocus } from "./focus-guar
 
 const SERVER_INFO = { name: "browser-control", version: "0.3.0" };
 
-// The REPL's dynamic import support is flagged experimental; keep that notice out of the client's log.
-process.removeAllListeners("warning");
-process.on("warning", (warning) => {
-  if (warning.name !== "ExperimentalWarning") process.stderr.write(`${warning.stack ?? warning}\n`);
-});
+const DEFAULT_TIMEOUT_MS = 30_000;
 
 const JS_DESCRIPTION = `Control the user's browser by running JavaScript in a persistent REPL with the global \`cua\`.
 
@@ -34,7 +30,7 @@ const TOOLS = [
       type: "object",
       properties: {
         code: { type: "string", description: "JavaScript to run; top-level await is supported." },
-        timeout_ms: { type: "integer", minimum: 1, description: "Execution timeout in milliseconds, default 30000." },
+        timeout_ms: { type: "integer", minimum: 1, description: `Execution timeout in milliseconds, default ${DEFAULT_TIMEOUT_MS}.` },
         title: { type: "string", maxLength: 80, description: "Short user-facing description of what the code does." },
       },
       required: ["code"],
@@ -49,7 +45,6 @@ const TOOLS = [
   },
 ];
 
-const DEFAULT_TIMEOUT_MS = 30_000;
 // Time the worker gets beyond a call's timeout to report on its own before it is terminated.
 const TERMINATE_GRACE_MS = 500;
 // A reset the worker does not confirm in time (it is busy or stuck) replaces the worker instead.

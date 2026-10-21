@@ -1,10 +1,9 @@
 // Playwright-style ARIA snapshot of a page (the YAML-like form of locator.ariaSnapshot()), built from
 // the same simplified accessibility tree as getAXState(), including cross-origin frames.
 
-import { property, simplifyTree } from "./ax-tree.mjs";
+import { clip, property, simplifyTree } from "./ax-tree.mjs";
 
 const MAX_LINES = 5000;
-const MAX_TEXT = 300;
 // Chrome's internal roles mapped to ARIA roles; roles in FLATTENED only pass their children through.
 const ROLES = {
   StaticText: "text",
@@ -19,11 +18,6 @@ const ROLES = {
 };
 const FLATTENED = new Set(["generic", "none", "presentation", "group", "LayoutTable", "LayoutTableRow", "LayoutTableCell", "Section", "section", "Pre", "time", "Abbr", "emphasis", "strong", "code", "mark", "subscript", "superscript", "Ruby", "label", "LabelText", "MenuListPopup"]);
 const STATES = ["checked", "disabled", "expanded", "pressed", "selected"];
-
-function clip(text) {
-  const flat = String(text).replace(/\s+/g, " ").trim();
-  return flat.length > MAX_TEXT ? `${flat.slice(0, MAX_TEXT)}…` : flat;
-}
 
 // Plain text stays unquoted unless YAML would read it as something else.
 function scalar(text) {
