@@ -127,9 +127,10 @@ The full API is in `browser/mcp/cua/docs.mjs`, which the agent receives on its f
   fail with a pointer to `getAXState()` instead of changing the detached node.
 - `waitForLoadState({ state: "networkidle" })` waits until the tab has had no request in flight for
   500 ms. `waitForEvent("download")` takes the next download the tab starts, or a tab it opened (such
-  as a `target=_blank` link to an attachment): downloads are paired with the tab that reported them or
-  that the browser opened for them, so two tabs downloading the same URL each get their own file, and
-  a download nothing ties to the tab is never handed out.
+  as a `target=_blank` link to an attachment): a download counts only when that tab reported it, either
+  through the debugger (`Page.downloadWillBegin`) or because the extension held the tab's first
+  document response (CDP `Fetch`) and saw a file. Two tabs downloading the same URL each get their own
+  file, and a download nothing ties to the tab is never handed out.
 - CSS locators reach into open shadow roots, as in Playwright.
 - The first call of a new session connects within about 0.5 s. While no session runs, the offscreen
   document retries twice a second; the browser logs the refused connections on the extension's card

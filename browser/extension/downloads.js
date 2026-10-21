@@ -2,10 +2,8 @@
 // (Page.downloadWillBegin); the downloads API then reports the item without saying which tab started
 // it. Each report is paired with the first unpaired item at that URL, in either order, so two tabs
 // downloading the same URL get one file each. A tab waiting for a download takes its own next one.
-// A download that starts in a tab the waiting tab opened counts for the waiting tab. Such tabs are
-// attached as soon as they open so that they report their downloads; a tab that turns into a download
-// before that (a link to an attachment with target=_blank) is matched by the URL the browser reported
-// it was opened for. Downloads with no such evidence are never handed out.
+// A download that starts in a tab the waiting tab opened from the agent's input counts for the waiting
+// tab. Downloads that no tab reported are never handed out.
 
 import { cdp, onCdpEvent } from "./cdp.js";
 import { agentOpenerChain, onTabOpened } from "./sessions.js";
@@ -21,47 +19,42 @@ function waitingTab(tabId) {
   return null;
 }
 
-const OPENED_TAB_WINDOW_MS = 15_000;
-const ABORT_MATCH_MS = 2_000;
-// Tabs that waiting tabs opened from the agent's input and that may turn into a download (a link to an
-// attachment with target=_blank) before they can report it. Such a download is theirs only with two
-// pieces of evidence: an item at the URL the tab was opened for, and the tab's own navigation ending
-// without a page (it turned into the download) at about the same time. A tab that shows a page is
-// dropped. Any other download at that URL stays unassigned.
-const openedTabs = []; // { tabId, url, at, endedAt }
-const candidates = []; // { itemId, tabId, at } items at an opened tab's URL, awaiting its navigation's end
+// Tabs that waiting tabs opened from the agent's input may turn into a download (a link to an
+// attachment with target=_blank) before the debugger could report it. Their first document response is
+// held for a moment instead: when it is a file rather than a page, the tab reports that download itself,
+// like Page.downloadWillBegin does, and the response goes on. Nothing is matched by URL alone.
+const INTERCEPT_MS = 15_000;
+const intercepting = new Map(); // tab id -> timer that ends the interception
+const RENDERED_TYPES = /^(text\/|image\/|audio\/|video\/|application\/(xhtml\+xml|xml|json|pdf|javascript))/i;
+
+function stopIntercepting(tabId) {
+  if (!intercepting.has(tabId)) return;
+  clearTimeout(intercepting.get(tabId));
+  intercepting.delete(tabId);
+  cdp(tabId, "Fetch.disable", {}).catch(() => {});
+}
 
 onTabOpened((openerTabId, tabId, url, byAgent) => {
   if (!byAgent || waitingTab(openerTabId) === null) return;
-  cdp(tabId, "Page.enable", {}).catch(() => {});
-  // The tab exists before its download does, so only later downloads can be its own.
-  openedTabs.push({ tabId, url, at: Date.now(), endedAt: null });
+  intercepting.set(tabId, setTimeout(() => stopIntercepting(tabId), INTERCEPT_MS));
+  cdp(tabId, "Fetch.enable", { patterns: [{ urlPattern: "*", resourceType: "Document", requestStage: "Response" }] }).catch(() => intercepting.delete(tabId));
 });
 
-function dropOpenedTab(tabId) {
-  const index = openedTabs.findIndex((tab) => tab.tabId === tabId);
-  if (index >= 0) openedTabs.splice(index, 1);
-  for (let i = candidates.length - 1; i >= 0; i--) if (candidates[i].tabId === tabId) candidates.splice(i, 1);
-}
+onCdpEvent((tabId, method, params) => {
+  if (method !== "Fetch.requestPaused" || !intercepting.has(tabId)) return;
+  const header = (name) => params.responseHeaders?.find((h) => h.name.toLowerCase() === name)?.value ?? "";
+  const isFile = /attachment/i.test(header("content-disposition")) || (params.responseStatusCode < 300 && !RENDERED_TYPES.test(header("content-type")));
+  const redirect = params.responseStatusCode >= 300 && params.responseStatusCode < 400;
+  if (isFile) reportDownload(tabId, params.request.url);
+  cdp(tabId, "Fetch.continueResponse", { requestId: params.requestId }).catch(() => {});
+  // A redirect is followed by the response that decides.
+  if (!redirect) stopIntercepting(tabId);
+});
 
-function navigationEnded(tabId) {
-  const tab = openedTabs.find((entry) => entry.tabId === tabId);
-  if (!tab) return;
-  tab.endedAt = Date.now();
-  const index = candidates.findIndex((c) => c.tabId === tabId && Math.abs(tab.endedAt - c.at) < ABORT_MATCH_MS);
-  if (index >= 0) {
-    const [candidate] = candidates.splice(index, 1);
-    dropOpenedTab(tabId);
-    const item = unpairedItems.findIndex((entry) => entry.id === candidate.itemId);
-    if (item < 0) return; // a report of the tab already paired it
-    unpairedItems.splice(item, 1);
-    assign(candidate.itemId, tabId);
-  }
-}
-
-chrome.webNavigation.onCommitted.addListener(({ tabId, frameId }) => frameId === 0 && dropOpenedTab(tabId));
-chrome.webNavigation.onErrorOccurred.addListener(({ tabId, frameId }) => frameId === 0 && navigationEnded(tabId));
-chrome.tabs.onRemoved.addListener((tabId) => navigationEnded(tabId));
+chrome.tabs.onRemoved.addListener((tabId) => {
+  clearTimeout(intercepting.get(tabId));
+  intercepting.delete(tabId);
+});
 
 function remember(map, key, value) {
   map.set(key, value);
@@ -97,13 +90,17 @@ function update(downloadId) {
   for (const waiter of waiters) if (waiter.claimed === downloadId && finished.has(downloadId)) waiter.settle(downloadId, finished.get(downloadId));
 }
 
-onCdpEvent((tabId, method, params) => {
-  if (method !== "Page.downloadWillBegin") return;
+// A tab's own report that it downloads a URL. A report and its item come within moments of each
+// other; an older item at the URL is someone else's.
+function reportDownload(tabId, url) {
   expire(unpairedItems);
-  // A report and its item come within moments of each other; an older item at the URL is someone else's.
-  const index = unpairedItems.findIndex((item) => item.urls.includes(params.url) && Date.now() - item.at < REPORT_MATCH_MS);
+  const index = unpairedItems.findIndex((item) => item.urls.includes(url) && Date.now() - item.at < REPORT_MATCH_MS);
   if (index >= 0) assign(unpairedItems.splice(index, 1)[0].id, tabId);
-  else reports.push({ tabId, url: params.url, at: Date.now() });
+  else reports.push({ tabId, url, at: Date.now() });
+}
+
+onCdpEvent((tabId, method, params) => {
+  if (method === "Page.downloadWillBegin") reportDownload(tabId, params.url);
 });
 
 chrome.downloads.onCreated.addListener((item) => {
@@ -112,15 +109,6 @@ chrome.downloads.onCreated.addListener((item) => {
   const index = reports.findIndex((report) => urls.includes(report.url) && Date.now() - report.at < REPORT_MATCH_MS);
   if (index >= 0) return assign(item.id, reports.splice(index, 1)[0].tabId);
   unpairedItems.push({ id: item.id, urls, at: Date.now() });
-  for (let i = openedTabs.length - 1; i >= 0; i--) if (Date.now() - openedTabs[i].at > OPENED_TAB_WINDOW_MS) openedTabs.splice(i, 1);
-  const opened = openedTabs.find((tab) => urls.includes(tab.url));
-  if (!opened) return;
-  if (opened.endedAt !== null && Date.now() - opened.endedAt < ABORT_MATCH_MS) {
-    unpairedItems.pop();
-    dropOpenedTab(opened.tabId);
-    return assign(item.id, opened.tabId);
-  }
-  candidates.push({ itemId: item.id, tabId: opened.tabId, at: Date.now() });
 });
 
 chrome.downloads.onChanged.addListener((delta) => {
