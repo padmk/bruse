@@ -8,36 +8,60 @@
 // it was opened for. Downloads with no such evidence are never handed out.
 
 import { cdp, onCdpEvent } from "./cdp.js";
-import { onTabOpened, openerChain } from "./sessions.js";
+import { agentOpenerChain, onTabOpened } from "./sessions.js";
 
 const MAX_REMEMBERED = 200;
 
-// The tab waiting for a download from `tabId`: the tab itself or a tab that opened it (directly or
-// not), or null when none of them waits.
+// The tab waiting for a download from `tabId`: the tab itself or a tab whose agent actions opened it
+// (directly or not; a tab the user opened ends the chain), or null when none of them waits.
 function waitingTab(tabId) {
-  for (const tab of [tabId, ...openerChain(tabId)]) {
+  for (const tab of [tabId, ...agentOpenerChain(tabId)]) {
     for (const waiter of waiters) if (waiter.claimed === null && waiter.tabId === tab) return tab;
   }
   return null;
 }
 
 const OPENED_TAB_WINDOW_MS = 15_000;
+const ABORT_MATCH_MS = 2_000;
 // Tabs that waiting tabs opened from the agent's input and that may turn into a download (a link to an
-// attachment with target=_blank) before they can report it. A tab that shows a page instead is dropped.
-const openedTabs = []; // { tabId, url, at }
+// attachment with target=_blank) before they can report it. Such a download is theirs only with two
+// pieces of evidence: an item at the URL the tab was opened for, and the tab's own navigation ending
+// without a page (it turned into the download) at about the same time. A tab that shows a page is
+// dropped. Any other download at that URL stays unassigned.
+const openedTabs = []; // { tabId, url, at, endedAt }
+const candidates = []; // { itemId, tabId, at } items at an opened tab's URL, awaiting its navigation's end
 
 onTabOpened((openerTabId, tabId, url, byAgent) => {
   if (!byAgent || waitingTab(openerTabId) === null) return;
   cdp(tabId, "Page.enable", {}).catch(() => {});
   // The tab exists before its download does, so only later downloads can be its own.
-  openedTabs.push({ tabId, url, at: Date.now() });
+  openedTabs.push({ tabId, url, at: Date.now(), endedAt: null });
 });
 
-chrome.webNavigation.onCommitted.addListener(({ tabId, frameId }) => {
-  if (frameId !== 0) return;
+function dropOpenedTab(tabId) {
   const index = openedTabs.findIndex((tab) => tab.tabId === tabId);
   if (index >= 0) openedTabs.splice(index, 1);
-});
+  for (let i = candidates.length - 1; i >= 0; i--) if (candidates[i].tabId === tabId) candidates.splice(i, 1);
+}
+
+function navigationEnded(tabId) {
+  const tab = openedTabs.find((entry) => entry.tabId === tabId);
+  if (!tab) return;
+  tab.endedAt = Date.now();
+  const index = candidates.findIndex((c) => c.tabId === tabId && Math.abs(tab.endedAt - c.at) < ABORT_MATCH_MS);
+  if (index >= 0) {
+    const [candidate] = candidates.splice(index, 1);
+    dropOpenedTab(tabId);
+    const item = unpairedItems.findIndex((entry) => entry.id === candidate.itemId);
+    if (item < 0) return; // a report of the tab already paired it
+    unpairedItems.splice(item, 1);
+    assign(candidate.itemId, tabId);
+  }
+}
+
+chrome.webNavigation.onCommitted.addListener(({ tabId, frameId }) => frameId === 0 && dropOpenedTab(tabId));
+chrome.webNavigation.onErrorOccurred.addListener(({ tabId, frameId }) => frameId === 0 && navigationEnded(tabId));
+chrome.tabs.onRemoved.addListener((tabId) => navigationEnded(tabId));
 
 function remember(map, key, value) {
   map.set(key, value);
@@ -45,6 +69,7 @@ function remember(map, key, value) {
 }
 
 const PAIRING_WINDOW_MS = 30_000;
+const REPORT_MATCH_MS = 2_000;
 const reports = []; // { tabId, url, at } not yet paired with an item
 const unpairedItems = []; // { id, urls, at }
 const owners = new Map(); // download id -> tab id
@@ -75,7 +100,8 @@ function update(downloadId) {
 onCdpEvent((tabId, method, params) => {
   if (method !== "Page.downloadWillBegin") return;
   expire(unpairedItems);
-  const index = unpairedItems.findIndex((item) => item.urls.includes(params.url));
+  // A report and its item come within moments of each other; an older item at the URL is someone else's.
+  const index = unpairedItems.findIndex((item) => item.urls.includes(params.url) && Date.now() - item.at < REPORT_MATCH_MS);
   if (index >= 0) assign(unpairedItems.splice(index, 1)[0].id, tabId);
   else reports.push({ tabId, url: params.url, at: Date.now() });
 });
@@ -83,12 +109,18 @@ onCdpEvent((tabId, method, params) => {
 chrome.downloads.onCreated.addListener((item) => {
   expire(reports);
   const urls = [item.url, item.finalUrl].filter(Boolean);
-  const index = reports.findIndex((report) => urls.includes(report.url));
+  const index = reports.findIndex((report) => urls.includes(report.url) && Date.now() - report.at < REPORT_MATCH_MS);
   if (index >= 0) return assign(item.id, reports.splice(index, 1)[0].tabId);
-  for (let i = openedTabs.length - 1; i >= 0; i--) if (Date.now() - openedTabs[i].at > OPENED_TAB_WINDOW_MS) openedTabs.splice(i, 1);
-  const opened = openedTabs.findIndex((tab) => urls.includes(tab.url));
-  if (opened >= 0) return assign(item.id, openedTabs.splice(opened, 1)[0].tabId);
   unpairedItems.push({ id: item.id, urls, at: Date.now() });
+  for (let i = openedTabs.length - 1; i >= 0; i--) if (Date.now() - openedTabs[i].at > OPENED_TAB_WINDOW_MS) openedTabs.splice(i, 1);
+  const opened = openedTabs.find((tab) => urls.includes(tab.url));
+  if (!opened) return;
+  if (opened.endedAt !== null && Date.now() - opened.endedAt < ABORT_MATCH_MS) {
+    unpairedItems.pop();
+    dropOpenedTab(opened.tabId);
+    return assign(item.id, opened.tabId);
+  }
+  candidates.push({ itemId: item.id, tabId: opened.tabId, at: Date.now() });
 });
 
 chrome.downloads.onChanged.addListener((delta) => {

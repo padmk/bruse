@@ -2,6 +2,7 @@
 // a clickable point, and mouse input. `cdp` is a tab-bound CDP sender.
 
 import { modifierMask } from "./keys.mjs";
+import { quadToSquare } from "./geometry.mjs";
 import { OPT_OUT_OF_PASSWORD_MANAGERS } from "./page-scripts.mjs";
 
 // Long presses are capped well below a call's timeout, so the button is always released.
@@ -116,7 +117,8 @@ export const OFF_PAGE = "off-page";
 // Checks every document from the session root down to the element's own: the point must hit the next
 // frame's owner and finally the element. Returns null when the click reaches the element (or the check
 // cannot tell), otherwise a short description of what would receive the click instead.
-const HIT_TEST = `function (x, y, mainSession) {
+const HIT_TEST = `function (points, mainSession) {
+  let [x, y] = points[0];
   const target = this.nodeType === 1 ? this : this.parentElement;
   if (!target) return null;
   const owners = [];
@@ -156,19 +158,18 @@ const HIT_TEST = `function (x, y, mainSession) {
     const classes = typeof hit.className === "string" ? hit.className.trim().split(/\\s+/).filter(Boolean).slice(0, 2) : [];
     return "<" + hit.localName + (hit.id ? "#" + hit.id : "") + classes.map((c) => "." + c).join("") + ">";
   };
-  // The session root is checked at the click point. Inside same-process frames, whose transforms this
-  // script cannot invert in general (rotation, perspective), the check uses the center of the visible
-  // part of the next element in its own document: under such transforms that is the same spot.
-  const visibleCenter = (el) => {
-    const r = el.getBoundingClientRect();
-    const view = el.ownerDocument.defaultView;
-    const left = Math.max(r.left, 0), top = Math.max(r.top, 0);
-    const right = Math.min(r.right, view.innerWidth), bottom = Math.min(r.bottom, view.innerHeight);
-    return right > left && bottom > top ? [(left + right) / 2, (top + bottom) / 2] : [r.left + r.width / 2, r.top + r.height / 2];
-  };
+  // points[i] is the click point in the document of level i: the session root, then the documents of
+  // same-process frames down to the element's. Without them the frame owners are reported, so that the
+  // caller can map the point (through any transform) and ask again.
   const chain = [...owners, target];
+  if (points.length < chain.length) {
+    return { owners, sizes: owners.map((owner) => {
+      const style = getComputedStyle(owner);
+      return [owner.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight), owner.clientHeight - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom)];
+    }) };
+  }
   for (let i = 0; i < chain.length; i++) {
-    if (i > 0) [x, y] = visibleCenter(chain[i]);
+    [x, y] = points[i];
     const hit = deepHit(chain[i].ownerDocument);
     if (!hit) return ${JSON.stringify(OFF_PAGE)};
     if (!reaches(hit, chain[i])) return describe(hit);
@@ -176,8 +177,38 @@ const HIT_TEST = `function (x, y, mainSession) {
   return null;
 }`;
 
-export function coveringElement(cdp, backendNodeId, [x, y], mainSession) {
-  return callOn(cdp, backendNodeId, HIT_TEST, [x, y, mainSession]);
+// What would receive a click at `point` (in the node's frame session) instead of the node, or null.
+// Same-process frames between the session root and the node are passed by mapping the point into each
+// frame's document through the frame's quad.
+export async function coveringElement(cdp, backendNodeId, point, mainSession) {
+  const { object } = await cdp("DOM.resolveNode", { backendNodeId });
+  const objectGroup = `hit-${Math.random().toString(36).slice(2)}`;
+  const call = (points, returnByValue) =>
+    cdp("Runtime.callFunctionOn", { objectId: object.objectId, functionDeclaration: HIT_TEST, arguments: [{ value: points }, { value: mainSession }], returnByValue, objectGroup });
+  try {
+    const first = await call([point], true);
+    const verdict = first.result.value;
+    if (verdict === null || typeof verdict === "string") return verdict;
+    // Frame owners as remote objects, to read their quads.
+    const { result } = await call([point], false);
+    const { result: props } = await cdp("Runtime.getProperties", { objectId: result.objectId, ownProperties: true });
+    const ownersArray = props.find((p) => p.name === "owners").value.objectId;
+    const { result: items } = await cdp("Runtime.getProperties", { objectId: ownersArray, ownProperties: true });
+    const owners = items.filter((p) => /^\d+$/.test(p.name)).sort((a, b) => a.name - b.name);
+    const points = [point];
+    for (const [i, owner] of owners.entries()) {
+      const { node } = await cdp("DOM.describeNode", { objectId: owner.value.objectId });
+      const { quads } = await cdp("DOM.getContentQuads", { backendNodeId: node.backendNodeId });
+      if (!quads?.[0]) return null;
+      const [u, v] = quadToSquare(quads[0])(...point);
+      const [width, height] = verdict.sizes[i];
+      points.push([u * width, v * height]);
+    }
+    return (await call(points, true)).result.value;
+  } finally {
+    cdp("Runtime.releaseObject", { objectId: object.objectId }).catch(() => {});
+    cdp("Runtime.releaseObjectGroup", { objectGroup }).catch(() => {});
+  }
 }
 
 export async function clickAt(cdp, [x, y], { mouseButton = "left", clickCount = 1, key, durationMs = 0 } = {}) {

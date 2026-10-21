@@ -36,7 +36,7 @@ MCP server (hub) ◀──WebSocket 127.0.0.1:47615──▶ extension ──chr
   - `repl.mjs`: the persistent REPL; `hoist.mjs`: turns top-level declarations of a cell into globals so
     they persist and can be redeclared.
   - `focus-guard.mjs`: gives the front back to the user's app when an agent action makes a page
-    open a tab (see Behavior).
+    open a tab and the browser takes the front (see Behavior); a switch the user makes stands.
   - `browser-link.mjs`, `websocket.mjs`, `config.mjs`: hub election, authentication and transport. The
     first server to bind the port becomes the hub; the others connect to it. A hub that exits first lets
     in-flight requests finish, read-only requests interrupted by a handover are resent, and a new hub
@@ -94,9 +94,10 @@ The full API is in `browser/mcp/cua/docs.mjs`, which the agent receives on its f
 
 - Agent tabs open without focus in a tab group named after the session (`sessionName` or
   `browser.nameSession`). When the session ends, its unmarked tabs close, including tabs its pages
-  opened in response to the agent's input (the browser reports each such tab with the tab that
-  opened it, through `webNavigation.onCreatedNavigationTarget`, so tool results name the exact new
-  tab; tabs the user opens from an agent page, for example from its context menu, stay the user's);
+  opened in response to the agent's input: the page reported the opening (`Page.windowOpen`) right
+  after the agent's input, and the browser reported the new tab with its opener
+  (`webNavigation.onCreatedNavigationTarget`), so tool results name the exact new tab. Tabs the
+  user opens from an agent page, for example from its context menu, stay the user's;
   `markDeliverable()` and `markHandoff()` keep a tab. Tabs bound with `getTab` and
   other tabs in the group, such as ones the user moves there, stay untouched.
 - Agent work keeps the user's app in front. Brave brings its window forward when a page opens a tab

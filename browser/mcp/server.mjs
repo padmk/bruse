@@ -122,8 +122,12 @@ class ReplHost {
   async relay(worker, { callId, method, params }) {
     // A replaced worker may still be running until it is terminated; it reaches nothing anymore.
     if (worker !== this.worker) return;
+    if (isOpeningInput(method, params)) {
+      await beforeInput(params.tabId);
+      // The worker may have been replaced meanwhile; its input must not arrive after the reset.
+      if (worker !== this.worker) return;
+    }
     this.buttons.note(method, params);
-    if (isOpeningInput(method, params)) await beforeInput(params.tabId);
     let reply;
     try {
       reply = { type: "browser-reply", callId, result: await callBrowser(method, params) };
