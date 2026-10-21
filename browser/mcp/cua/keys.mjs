@@ -60,7 +60,7 @@ function characterKey(char) {
   return { key: char, code, keyCode, text: char };
 }
 
-export function parseChord(chord) {
+function parseChord(chord) {
   const parts = chord.split("+").filter(Boolean);
   // "ctrl++" and "+" mean the plus key itself.
   if (chord.endsWith("++") || chord === "+") parts.push("+");

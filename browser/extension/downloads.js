@@ -156,7 +156,7 @@ const reports = []; // { tabId, url, at } not yet paired with an item
 const unpairedItems = []; // { id, urls, at }
 const owners = new Map(); // download id -> tab id
 const finished = new Map(); // download id -> "complete" | "interrupted"
-const waiters = new Set(); // { tabId, since, claimed: download id | null, settle }
+const waiters = new Set(); // { tabId, claimed: download id | null, settle, fail, supersede }
 
 function expire(list) {
   const now = Date.now();
@@ -186,8 +186,6 @@ function update(downloadId) {
   for (const waiter of waiters) if (waiter.claimed === downloadId && finished.has(downloadId)) waiter.settle(downloadId, finished.get(downloadId));
 }
 
-// A tab's own report that it downloads a URL. A report and its item come within moments of each
-// other; an older item at the URL is someone else's.
 // A tab's own report that it downloads a URL. The browser reports a download (Page.downloadWillBegin,
 // or a response the extension holds) before it creates the item, so a report only pairs with an item
 // created after it; an item that already exists is someone else's, however close in time.

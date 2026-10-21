@@ -1,6 +1,7 @@
 // Chrome DevTools Protocol sessions over chrome.debugger. A tab stays attached while in use and is
 // detached after a quiet period, which also removes the browser's "started debugging" bar. The module
-// also tracks per-tab state that CDP only reports as events: open JavaScript dialogs and console output.
+// also tracks per-tab state that CDP only reports as events (open JavaScript dialogs, console output,
+// network requests, out-of-process frames) and when the agent last pressed a button or key in a tab.
 
 import { PASSWORD_MANAGER_ELEMENTS, isPressInput, unresponsivePageError } from "./shared.js";
 
@@ -217,8 +218,6 @@ async function removeForeignExtensionFrames(tabId) {
 
 const FOREIGN_FRAME_ERROR = /chrome-extension:\/\/ URL of different extension/;
 
-// Runs a CDP command on a tab, attaching first when needed. When another extension's frame blocks
-// debugger access, the frame is removed and the command retried once.
 const FILE_CHOOSER_INTERCEPT_MS = 60_000;
 const interceptTimers = new Map(); // tab id -> timer that switches file chooser interception off
 
@@ -231,7 +230,9 @@ export function sinceAgentInput(tabId) {
 
 chrome.tabs.onRemoved.addListener((tabId) => agentInputAt.delete(tabId));
 
-// `timeoutMs` shortens the wait for commands that should be quick, so a stuck page fails them early.
+// Runs a CDP command on a tab, attaching first when needed. When another extension's frame blocks
+// debugger access, the frame is removed and the command retried once. `timeoutMs` shortens the wait
+// for commands that should be quick, so a stuck page fails them early.
 export async function cdp(tabId, method, params, sessionId, timeoutMs) {
   if (isPressInput(method, params)) agentInputAt.set(tabId, Date.now());
   // File chooser interception that nobody switches off (the agent's code was stopped) would leave the
