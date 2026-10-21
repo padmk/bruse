@@ -2,6 +2,7 @@
 // dialogs, Playwright-style locators and console logs.
 
 import { ariaSnapshot } from "./aria-snapshot.mjs";
+import { squareToQuad } from "./geometry.mjs";
 import { AXTracker, fetchPageTree } from "./ax-tree.mjs";
 import { createContentApi } from "./content.mjs";
 import { OFF_PAGE, callOn, clickAt, coveringElement, dragBetween, elementCenter, focusNode, prepareClick } from "./elements.mjs";
@@ -46,27 +47,6 @@ function urlMatches(url, pattern) {
     return regex.test(url);
   }
   return url === pattern;
-}
-
-// Maps the unit square onto a quad (top-left, top-right, bottom-right, bottom-left), also through a
-// perspective transform: the projective mapping fixed by the four corners.
-function squareToQuad([x0, y0, x1, y1, x2, y2, x3, y3]) {
-  const dx3 = x0 - x1 + x2 - x3;
-  const dy3 = y0 - y1 + y2 - y3;
-  let g = 0;
-  let h = 0;
-  if (Math.abs(dx3) > 1e-9 || Math.abs(dy3) > 1e-9) {
-    const [dx1, dx2, dy1, dy2] = [x1 - x2, x3 - x2, y1 - y2, y3 - y2];
-    const det = dx1 * dy2 - dx2 * dy1;
-    g = (dx3 * dy2 - dx2 * dy3) / det;
-    h = (dx1 * dy3 - dx3 * dy1) / det;
-  }
-  const [a, b, c] = [x1 - x0 + g * x1, x3 - x0 + h * x3, x0];
-  const [d, e, f] = [y1 - y0 + g * y1, y3 - y0 + h * y3, y0];
-  return (u, v) => {
-    const w = g * u + h * v + 1;
-    return [(a * u + b * v + c) / w, (d * u + e * v + f) / w];
-  };
 }
 
 export class Tab {

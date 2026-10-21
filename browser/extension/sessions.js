@@ -1,7 +1,7 @@
 // Agent sessions: tabs an agent session opened, the tab group that marks them, and cleanup when the
 // session ends. State lives in chrome.storage.session so it survives service worker restarts.
 
-import { sinceAgentInput } from "./cdp.js";
+import { onCdpEvent, sinceAgentInput } from "./cdp.js";
 
 const DEFAULT_GROUP_TITLE = "Claude";
 const GROUP_COLOR = "orange";
@@ -40,26 +40,61 @@ chrome.tabs.onRemoved.addListener((tabId) =>
 // the agent's input belongs to that session. Other new tabs, including ones the user opens from such a
 // page or moves into the agent group, belong to none.
 const openedListeners = new Set();
-const ancestorsOf = new Map(); // tab id -> tabs that opened it, nearest first; kept when those close
+const agentAncestorsOf = new Map(); // tab id -> tabs whose agent actions led to it, nearest first
 
-// A page opened a tab from an agent action when the agent gave the opening tab input just before.
-// Tabs the user opens from such a page (its context menu, a middle click) are not the session's.
+// A page opened a tab from an agent action when both hold: the page itself reported the opening
+// (Page.windowOpen: a link click or window.open, unlike the browser's own context menu commands) and
+// the agent gave that tab input just before. Other tabs opened from agent pages stay the user's.
 const AGENT_OPEN_WINDOW_MS = 3_000;
+const WINDOW_OPEN_MATCH_MS = 2_000;
+const pageOpens = new Map(); // tab id -> [{ url, at }] openings its page reported
+
+onCdpEvent((tabId, method, params) => {
+  if (method !== "Page.windowOpen") return;
+  const list = (pageOpens.get(tabId) ?? []).filter((open) => Date.now() - open.at < WINDOW_OPEN_MATCH_MS);
+  list.push({ url: normalizedUrl(params.url), at: Date.now() });
+  pageOpens.set(tabId, list);
+});
+
+function normalizedUrl(url) {
+  if (!url || url === "about:blank") return "";
+  try {
+    return new URL(url).href;
+  } catch {
+    return url;
+  }
+}
+
+function takePageOpen(tabId, url) {
+  const list = pageOpens.get(tabId) ?? [];
+  const index = list.findIndex((open) => open.url === normalizedUrl(url) && Date.now() - open.at < WINDOW_OPEN_MATCH_MS);
+  return index >= 0 && list.splice(index, 1).length > 0;
+}
 
 export function onTabOpened(listener) {
   openedListeners.add(listener);
 }
 
-// The tabs that opened this tab, nearest first.
-export function openerChain(tabId) {
-  return ancestorsOf.get(tabId) ?? [];
+// The tabs whose agent-caused openings led to this tab, nearest first; empty for a tab the user opened.
+export function agentOpenerChain(tabId) {
+  return agentAncestorsOf.get(tabId) ?? [];
 }
 
-chrome.tabs.onRemoved.addListener((tabId) => ancestorsOf.delete(tabId));
+chrome.tabs.onRemoved.addListener((tabId) => {
+  agentAncestorsOf.delete(tabId);
+  pageOpens.delete(tabId);
+});
 
-chrome.webNavigation.onCreatedNavigationTarget.addListener(({ sourceTabId, tabId, url }) => {
-  ancestorsOf.set(tabId, [sourceTabId, ...openerChain(sourceTabId)].slice(0, 8));
-  const byAgent = sinceAgentInput(sourceTabId) < AGENT_OPEN_WINDOW_MS;
+chrome.webNavigation.onCreatedNavigationTarget.addListener(async ({ sourceTabId, tabId, url }) => {
+  const recentInput = sinceAgentInput(sourceTabId) < AGENT_OPEN_WINDOW_MS;
+  // The page's report may arrive just after the browser's.
+  let reported = takePageOpen(sourceTabId, url);
+  if (!reported && recentInput) {
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    reported = takePageOpen(sourceTabId, url);
+  }
+  const byAgent = recentInput && reported;
+  if (byAgent) agentAncestorsOf.set(tabId, [sourceTabId, ...agentOpenerChain(sourceTabId)].slice(0, 8));
   for (const listener of openedListeners) listener(sourceTabId, tabId, url, byAgent);
   if (!byAgent) return;
   serialized(async () => {

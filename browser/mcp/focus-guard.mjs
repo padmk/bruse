@@ -1,7 +1,7 @@
 // Keeps the user's app in front while the agent works. Brave brings its window to the front when a
 // page opens a tab or window (target=_blank, window.open), also when the agent's input caused it. The
 // guard notes the frontmost app before the agent's clicks and key presses, and when a page of a tab it
-// just gave input to opens something and another app took the front, it gives the front back. macOS only.
+// just gave input to opens something and the browser took the front, it gives the front back. macOS only.
 
 import { execFile } from "node:child_process";
 
@@ -30,20 +30,31 @@ export async function beforeInput(tabId) {
   inputs.set(tabId, { app: cached.app, at: Date.now() });
 }
 
+// Chromium-based browsers the extension may run in; only one of them taking the front is undone, so
+// a switch the user makes to another app in the meantime stands.
+const BROWSER_BUNDLE = /^(com\.brave\.Browser|com\.google\.Chrome|org\.chromium\.Chromium|com\.microsoft\.edgemac|com\.vivaldi\.Vivaldi|com\.operasoftware\.Opera|company\.thebrowser\.Browser)/;
+
 // Called for every browser event; reacts to a tab or window opened by a page of a tab with recent input.
 export function onEvent(event) {
   if (!enabled || (event.method !== "Page.windowOpen" && event.method !== "tabs.opened")) return;
   const input = inputs.get(event.tabId);
-  if (!input?.app || Date.now() - input.at > INPUT_WINDOW_MS) return;
-  for (const delay of CHECK_DELAYS_MS) {
-    setTimeout(async () => {
-      const front = await frontmostApp();
-      if (front && front !== input.app) {
-        cached = { app: null, at: 0 };
-        await run("open", ["-b", input.app]);
-      }
-    }, delay);
-  }
+  if (!input?.app || BROWSER_BUNDLE.test(input.app) || Date.now() - input.at > INPUT_WINDOW_MS) return;
+  if (input.guarding) return;
+  input.guarding = true;
+  const deadline = Date.now() + CHECK_DELAYS_MS[CHECK_DELAYS_MS.length - 1];
+  const check = async (index) => {
+    const front = await frontmostApp();
+    // The user's own switch to another app ends the guard.
+    if (front && front !== input.app && !BROWSER_BUNDLE.test(front)) return;
+    if (front && BROWSER_BUNDLE.test(front)) {
+      cached = { app: null, at: 0 };
+      await run("open", ["-b", input.app]);
+    }
+    // After a restore, a popup window may still take the front once more; keep watching until the deadline.
+    if (index + 1 < CHECK_DELAYS_MS.length && Date.now() < deadline) setTimeout(() => check(index + 1), CHECK_DELAYS_MS[index + 1] - CHECK_DELAYS_MS[index]);
+    else input.guarding = false;
+  };
+  setTimeout(() => check(0), CHECK_DELAYS_MS[0]);
 }
 
 // Input events that can make a page open a tab: a pressed mouse button or key.
