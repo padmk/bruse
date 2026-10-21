@@ -1,7 +1,8 @@
-// Builds dist/<Product>-<version>.zip: the browser files, the installer and a double-click entry point.
+// Builds dist/<Product>-<version>.zip: the browser files, the installer, a double-click entry point and
+// installation instructions for agents.
 
 import { execFileSync } from "node:child_process";
-import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -17,6 +18,9 @@ cpSync(join(root, "browser"), join(stage, "browser"), { recursive: true, filter:
 cpSync(join(root, "installer", "install.mjs"), join(stage, "installer", "install.mjs"));
 cpSync(join(root, "installer", "Install.command"), join(stage, `Install ${name}.command`));
 chmodSync(join(stage, `Install ${name}.command`), 0o755);
+// Agents opened in the unpacked package read these: Codex reads AGENTS.md, Claude Code reads CLAUDE.md.
+cpSync(join(root, "installer", "agent-instructions.md"), join(stage, "AGENTS.md"));
+writeFileSync(join(stage, "CLAUDE.md"), "@AGENTS.md\n");
 
 const dist = join(root, "dist");
 mkdirSync(dist, { recursive: true });
