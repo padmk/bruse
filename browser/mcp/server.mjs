@@ -4,6 +4,7 @@
 
 import { createInterface } from "node:readline";
 import { Worker } from "node:worker_threads";
+import { isPressInput } from "../extension/shared.js";
 import { callBrowser, endSession, onBrowserEvent, sessionId } from "./browser-link.mjs";
 import { beforeInput, isOpeningInput, onEvent as guardFocus } from "./focus-guard.mjs";
 
@@ -60,16 +61,12 @@ class PressedInput {
 
   note(method, params) {
     if (method !== "cdp") return;
-    const { type, button, code, key } = params?.params ?? {};
-    if (params.method === "Input.dispatchMouseEvent") {
-      const id = `${params.tabId}:mouse:${button}`;
-      if (type === "mousePressed") this.pressed.set(id, params);
-      else if (type === "mouseReleased") this.pressed.delete(id);
-    } else if (params.method === "Input.dispatchKeyEvent") {
-      const id = `${params.tabId}:key:${code ?? key}`;
-      if (type === "keyDown" || type === "rawKeyDown") this.pressed.set(id, params);
-      else if (type === "keyUp") this.pressed.delete(id);
-    }
+    const mouse = params?.method === "Input.dispatchMouseEvent";
+    if (!mouse && params?.method !== "Input.dispatchKeyEvent") return;
+    const { type, button, code, key } = params.params ?? {};
+    const id = mouse ? `${params.tabId}:mouse:${button}` : `${params.tabId}:key:${code ?? key}`;
+    if (isPressInput(params.method, params.params)) this.pressed.set(id, params);
+    else if (type === (mouse ? "mouseReleased" : "keyUp")) this.pressed.delete(id);
   }
 
   releaseAll() {
