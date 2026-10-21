@@ -29,7 +29,8 @@ MCP server (hub) ◀──WebSocket 127.0.0.1:47615──▶ extension ──chr
   session's tabs in its own tab group and closes the unmarked ones when the session ends. `downloads.js`
   pairs downloads with the tabs that started them.
 - `installer/`: `install.mjs` (the installer), `Install.command` (its double-click entry point on macOS,
-  which finds Node.js) and `package.mjs` (builds the zip package).
+  which finds Node.js), `agent-instructions.md` (installation steps for an agent, shipped as the
+  package's `AGENTS.md` with a `CLAUDE.md` that imports it) and `package.mjs` (builds the zip package).
 - `browser/mcp/`: MCP stdio server, no dependencies.
   - `server.mjs`: the `js` and `js_reset` tools. It runs the REPL in a worker thread (`repl-worker.mjs`)
     and replaces the worker whenever a call times out or the worker crashes, so nothing the call left running (an endless
@@ -66,7 +67,9 @@ is your own session. After reinstalling the extension (it then has a new secret)
 Requires Node.js 22 or newer and a Chromium browser (Brave, Chrome, Edge).
 
 1. Build the package with `node installer/package.mjs`; it writes `dist/Bruse-<version>.zip` (about 100 KB).
-2. Unzip it and double-click **Install Bruse.command** (or run `node installer/install.mjs` from a checkout).
+2. Unzip it and double-click **Install Bruse.command** (or run `node installer/install.mjs` from a checkout),
+   or open an agent (Claude Code, Codex) in the unpacked folder and ask it to install Bruse: the package's
+   `AGENTS.md` tells it how.
    The installer:
    - copies the extension and the MCP server to `~/Library/Application Support/Bruse/browser`
      (`~/.local/share/bruse/browser` on Linux), replacing a previous version;
