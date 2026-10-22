@@ -70,7 +70,6 @@ export function createCua() {
   const tabs = new Map(); // tab id -> Tab
   const notifications = [];
   let documentationShown = false;
-  let sessionName = null;
   let disposed = false;
 
   const call = (method, params) => {
@@ -155,10 +154,9 @@ export function createCua() {
     return tab;
   }
 
-  async function createBrowserTab(browserId, url, { sessionName: name } = {}) {
+  async function createBrowserTab(browserId, url) {
     checkBrowser(browserId);
-    if (name) sessionName = name;
-    const info = await call("tabs.create", { url, sessionId, sessionName });
+    const info = await call("tabs.create", { url, sessionId });
     return bind(info);
   }
 
@@ -166,10 +164,6 @@ export function createCua() {
     return {
       browserId: BROWSER_ID,
       documentation: async () => BROWSER_DOCUMENTATION,
-      nameSession: async (name) => {
-        sessionName = name;
-        await call("session.name", { sessionId, name });
-      },
       history: async ({ queries, from, to, limit = 100 } = {}) => {
         const search = async (text) =>
           call("history.search", {
@@ -238,7 +232,7 @@ export function createCua() {
       return makeBrowser();
     },
     async createBrowserTab(browserId, url, options = {}) {
-      const tab = await createBrowserTab(browserId, url, options);
+      const tab = await createBrowserTab(browserId, url);
       showDocumentation();
       if (options.emit !== false) await tab.getAXState();
       return tab;

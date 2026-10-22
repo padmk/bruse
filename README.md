@@ -25,13 +25,14 @@ MCP server (hub) ◀──WebSocket 127.0.0.1:47615──▶ extension ──chr
   (an offscreen document is never suspended, so it reconnects within 0.5 s of a session starting) and
   passes requests to `service-worker.js`, which handles tab lifecycle, browser management, history and
   downloads. `cdp.js` relays DevTools Protocol commands through `chrome.debugger`, including the
-  sessions of cross-origin frames, and tracks dialogs and console output. `sessions.js` keeps each agent
-  session's tabs in its own tab group and closes the unmarked ones when the session ends. `downloads.js`
-  pairs downloads with the tabs that started them. `shared.js` is the one owner of what the extension
-  and the MCP server must agree on (hub port, management method allow-list, which input counts as the
-  agent's press and for how long, password manager element names, the unresponsive-page error); it uses
-  no browser or Node APIs, so the MCP server imports it from the extension directory. `browser/package.json`
-  marks the `.js` files as ES modules for Node; installed copies of `browser/` include it.
+  sessions of cross-origin frames, and tracks dialogs and console output. `sessions.js` keeps the tabs
+  of all agent sessions in one tab group per window, tracks which session owns each tab and closes a
+  session's unmarked tabs when it ends. `downloads.js` pairs downloads with the tabs that started
+  them. `shared.js` is the one owner of what the extension and the MCP server must agree on (hub
+  port, management method allow-list, which input counts as the agent's press and for how long,
+  password manager element names, the unresponsive-page error); it uses no browser or Node APIs, so
+  the MCP server imports it from the extension directory. `browser/package.json` marks the `.js`
+  files as ES modules for Node; installed copies of `browser/` include it.
 - `installer/`: `install.mjs` (the installer), `Install.command` (its double-click entry point on macOS,
   which finds Node.js), `agent-instructions.md` (installation steps for an agent, shipped as the
   package's `AGENTS.md` with a `CLAUDE.md` that imports it) and `package.mjs` (builds the zip package).
@@ -112,14 +113,15 @@ The full API is in `browser/mcp/cua/docs.mjs`, which the agent receives on its f
 
 ### Behavior
 
-- Agent tabs open without focus in a tab group named after the session (`sessionName` or
-  `browser.nameSession`). When the session ends, its unmarked tabs close, including tabs its pages
-  opened in response to the agent's input: the page reported the opening (`Page.windowOpen`) right
-  after the agent's input, and the browser reported the new tab with its opener
-  (`webNavigation.onCreatedNavigationTarget`), so tool results name the exact new tab. Tabs the
-  user opens from an agent page, for example from its context menu, stay the user's;
-  `markDeliverable()` and `markHandoff()` keep a tab. Tabs bound with `getTab` and
-  other tabs in the group, such as ones the user moves there, stay untouched.
+- Agent tabs open without focus in the window's "Claude" tab group, which all agent sessions share;
+  the extension remembers which session owns each tab, also across extension reloads. When a session
+  ends, its unmarked tabs close, including tabs its pages opened in response to the agent's input: the
+  page reported the opening (`Page.windowOpen`) right after the agent's input, and the browser
+  reported the new tab with its opener (`webNavigation.onCreatedNavigationTarget`), so tool results
+  name the exact new tab. Tabs the user opens from an agent page, for example from its context menu,
+  stay the user's. `markDeliverable()` and `markHandoff()` keep a tab, which then leaves the group.
+  Tabs bound with `getTab` stay untouched, and other tabs in the group, such as ones the user moves
+  there, leave it once no live session has a tab in it.
 - Agent work keeps the user's app in front. Brave brings its window forward when a page opens a tab
   or window (`target=_blank`, `window.open`); tabs opened by agent pages become background tabs in
   the agent group, popup windows included, and on macOS `focus-guard.mjs` returns the front to the
