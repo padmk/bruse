@@ -15,7 +15,7 @@ const MAX_REQUESTS = 300;
 // Commands that still work while a JavaScript dialog blocks the page.
 const DIALOG_SAFE_METHODS = new Set(["Page.handleJavaScriptDialog", "Page.captureScreenshot", "Page.getLayoutMetrics", "Fetch.continueResponse", "Fetch.disable"]);
 
-const sessions = new Map(); // tabId -> { lastUsed, dialog, console, requests, inflight (request id -> { session, frameId }), frames }
+const sessions = new Map(); // tabId -> { lastUsed, dialog, console, requests, inflight (request id -> { session, frameId, url }), frames }
 const eventListeners = new Set();
 
 // Returns a function that removes the listener.
@@ -47,6 +47,11 @@ chrome.debugger.onEvent.addListener(({ tabId, sessionId: source }, method, param
     if (params.targetInfo.type === "iframe") {
       session.frames.set(params.targetInfo.targetId, { sessionId: params.sessionId, url: params.targetInfo.url, parentSessionId: source ?? null });
       enableChildSession(tabId, params.sessionId);
+    } else if (params.targetInfo.type === "worker") {
+      // A dedicated worker's script request starts in the page's session and reports no end there.
+      // Request URLs come without the fragment, the target's URL keeps it.
+      const scriptUrl = params.targetInfo.url.split("#")[0];
+      dropRequests(session, (r) => r.url === scriptUrl);
     }
   } else if (method === "Target.detachedFromTarget") {
     for (const [frameId, frame] of session.frames) if (frame.sessionId === params.sessionId) session.frames.delete(frameId);
@@ -76,7 +81,7 @@ chrome.debugger.onEvent.addListener(({ tabId, sessionId: source }, method, param
   } else if (method === "Network.requestWillBeSent") {
     // Keyed by request ID alone: a frame's document request can start in the parent's session and
     // finish in the session of the frame's new process.
-    session.inflight.set(params.requestId, { session: source ?? null, frameId: params.frameId });
+    session.inflight.set(params.requestId, { session: source ?? null, frameId: params.frameId, url: params.request.url });
     session.networkActivityAt = Date.now();
     session.requests.push({ id: params.requestId, method: params.request.method, url: params.request.url, type: params.type, timestamp: new Date().toISOString() });
     if (session.requests.length > MAX_REQUESTS) session.requests.shift();
