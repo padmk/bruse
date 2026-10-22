@@ -1,19 +1,19 @@
-// Agent sessions: tabs an agent session opened, the tab group that marks them, and cleanup when the
-// session ends. State lives in chrome.storage.local so it survives service worker restarts and extension
-// reloads, while MCP servers keep their sessions; tab and group IDs change when the browser starts, so it
-// starts empty then.
+// Agent sessions: tabs an agent session opened, the one agent tab group per window that holds the tabs
+// of all live sessions, and cleanup when a session ends. State lives in chrome.storage.local so it
+// survives service worker restarts and extension reloads, while MCP servers keep their sessions; tab and
+// group IDs change when the browser starts, so it starts empty then.
 
 import { onCdpEvent, sinceAgentInput } from "./cdp.js";
 import { AGENT_INPUT_WINDOW_MS } from "./shared.js";
 
-const DEFAULT_GROUP_TITLE = "Claude";
+const GROUP_TITLE = "Claude";
 const GROUP_COLOR = "orange";
 // Marked tabs survive session cleanup: deliverables are results for the user, handoffs wait for later work.
 const KEPT_MARKS = new Set(["deliverable", "handoff"]);
 
 async function load() {
   const { agentState } = await chrome.storage.local.get("agentState");
-  return agentState ?? { tabs: {}, groups: {}, names: {} };
+  return { tabs: agentState?.tabs ?? {}, windowGroups: agentState?.windowGroups ?? {} };
 }
 
 async function save(state) {
@@ -123,8 +123,8 @@ async function keepInBackground(tabId, sourceTabId, sessionId, state) {
   const [tab, source] = await Promise.all([chrome.tabs.get(tabId), chrome.tabs.get(sourceTabId)]).catch(() => []);
   if (!tab || !source) return;
   if (tab.windowId !== source.windowId) await chrome.tabs.move(tabId, { windowId: source.windowId, index: -1 }).catch(() => {});
-  const groupId = state.groups[sessionId];
-  if (await groupExists(groupId)) await chrome.tabs.group({ tabIds: [tabId], groupId }).catch(() => {});
+  const groupId = await agentGroup(source.windowId, state);
+  if (groupId !== undefined) await chrome.tabs.group({ tabIds: [tabId], groupId }).catch(() => {});
   // The browser may activate the new tab before or after it is reported; for a moment, any activation of
   // it is undone in favor of the tab the user had.
   const windowId = source.windowId;
@@ -151,42 +151,31 @@ chrome.tabs.onActivated.addListener(({ tabId, windowId }) => {
   currentActive.set(windowId, tabId);
 });
 
-async function groupExists(groupId) {
-  if (groupId === undefined) return false;
-  return chrome.tabGroups.get(groupId).then(() => true, () => false);
+// The window's agent group, if it still exists there.
+async function agentGroup(windowId, state) {
+  const groupId = state.windowGroups[windowId];
+  if (groupId === undefined) return undefined;
+  const group = await chrome.tabGroups.get(groupId).catch(() => null);
+  return group?.windowId === windowId ? groupId : undefined;
 }
 
-export function groupAgentTab(tabId, sessionId, sessionName) {
-  return serialized(() => groupAgentTabNow(tabId, sessionId, sessionName));
+export function groupAgentTab(tabId, sessionId) {
+  return serialized(() => groupAgentTabNow(tabId, sessionId));
 }
 
-async function groupAgentTabNow(tabId, sessionId, sessionName) {
+async function groupAgentTabNow(tabId, sessionId) {
   const state = await load();
-  if (sessionName) state.names[sessionId] = sessionName;
-  let groupId = state.groups[sessionId];
-  const tab = await chrome.tabs.get(tabId);
-  const sameWindow = (await groupExists(groupId)) && (await chrome.tabGroups.get(groupId)).windowId === tab.windowId;
-  if (sameWindow) {
+  const { windowId } = await chrome.tabs.get(tabId);
+  const groupId = await agentGroup(windowId, state);
+  if (groupId !== undefined) {
     await chrome.tabs.group({ tabIds: [tabId], groupId });
   } else {
-    groupId = await chrome.tabs.group({ tabIds: [tabId], createProperties: { windowId: tab.windowId } });
-    await chrome.tabGroups.update(groupId, { title: state.names[sessionId] ?? DEFAULT_GROUP_TITLE, color: GROUP_COLOR, collapsed: false });
-    state.groups[sessionId] = groupId;
+    const created = await chrome.tabs.group({ tabIds: [tabId], createProperties: { windowId } });
+    await chrome.tabGroups.update(created, { title: GROUP_TITLE, color: GROUP_COLOR, collapsed: false });
+    state.windowGroups[windowId] = created;
   }
   state.tabs[tabId] = { sessionId, mark: null };
   await save(state);
-}
-
-export function nameSession(sessionId, name) {
-  return serialized(() => nameSessionNow(sessionId, name));
-}
-
-async function nameSessionNow(sessionId, name) {
-  const state = await load();
-  state.names[sessionId] = name;
-  await save(state);
-  if (await groupExists(state.groups[sessionId])) await chrome.tabGroups.update(state.groups[sessionId], { title: name });
-  return null;
 }
 
 export function markTab(tabId, mark) {
@@ -206,7 +195,9 @@ export async function agentTabs() {
 }
 
 // Closes the session's unmarked tabs (those it opened and those its pages opened) and forgets the
-// session. Other tabs in the agent group stay open.
+// session. Its marked tabs leave the agent group: they are the user's now. When no live session has a
+// tab in a window's group anymore, the remaining tabs (ones the user moved there or opened from an agent
+// page) leave it too, so the group goes away.
 export function endSession(sessionId) {
   return serialized(() => endSessionNow(sessionId));
 }
@@ -214,23 +205,24 @@ export function endSession(sessionId) {
 async function endSessionNow(sessionId) {
   const state = await load();
   const toClose = [];
-  const kept = new Set(); // marked tabs, which stay in the group
+  const kept = [];
   for (const [tabId, entry] of Object.entries(state.tabs)) {
     if (entry.sessionId !== sessionId) continue;
-    if (KEPT_MARKS.has(entry.mark)) kept.add(Number(tabId));
+    if (KEPT_MARKS.has(entry.mark)) kept.push(Number(tabId));
     else toClose.push(Number(tabId));
     delete state.tabs[tabId];
   }
-  const groupId = state.groups[sessionId];
-  delete state.groups[sessionId];
-  delete state.names[sessionId];
   await save(state);
   // One by one, so a tab that is already gone does not keep the others open.
   await Promise.all(toClose.map((tabId) => chrome.tabs.remove(tabId).catch(() => {})));
-  // Tabs the browser put into the group that are not the session's (a duplicate, a tab the user opened
-  // from an agent page) leave it, so no group of a finished session remains around them.
-  if (await groupExists(groupId)) {
-    const strays = (await chrome.tabs.query({ groupId })).map((tab) => tab.id).filter((id) => !kept.has(id) && !toClose.includes(id));
+  await Promise.all(kept.map((tabId) => chrome.tabs.ungroup(tabId).catch(() => {})));
+  const live = new Set(Object.entries(state.tabs).filter(([, entry]) => entry.sessionId).map(([tabId]) => Number(tabId)));
+  for (const windowId of Object.keys(state.windowGroups)) {
+    const groupId = await agentGroup(Number(windowId), state);
+    if (groupId === undefined) continue;
+    const members = (await chrome.tabs.query({ groupId })).map((tab) => tab.id);
+    if (members.some((id) => live.has(id))) continue;
+    const strays = members.filter((id) => !toClose.includes(id));
     if (strays.length) await chrome.tabs.ungroup(strays).catch(() => {});
   }
   return { closed: toClose.length };

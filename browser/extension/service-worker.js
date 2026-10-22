@@ -4,7 +4,7 @@
 
 import { cdp, consoleLogs, detach, networkRequests, onCdpEvent, tabState } from "./cdp.js";
 import { waitForDownload } from "./downloads.js";
-import { agentTabs, endSession, groupAgentTab, markTab, nameSession, onTabOpened } from "./sessions.js";
+import { agentTabs, endSession, groupAgentTab, markTab, onTabOpened } from "./sessions.js";
 import { MANAGEMENT_METHODS } from "./shared.js";
 
 const OFFSCREEN_ALARM = "offscreen-check";
@@ -55,10 +55,10 @@ const handlers = {
 
   "tabs.get": async ({ tabId }) => tabInfo(await chrome.tabs.get(tabId)),
 
-  "tabs.create": async ({ url, sessionId, sessionName }) => {
+  "tabs.create": async ({ url, sessionId }) => {
     const window = await chrome.windows.getLastFocused({ windowTypes: ["normal"] });
     const tab = await chrome.tabs.create({ url: url ?? "about:blank", windowId: window.id, active: false });
-    await groupAgentTab(tab.id, sessionId, sessionName);
+    await groupAgentTab(tab.id, sessionId);
     if (url) await waitForLoad(tab.id);
     return tabInfo(await chrome.tabs.get(tab.id));
   },
@@ -89,7 +89,6 @@ const handlers = {
 
   "tabs.mark": ({ tabId, mark }) => markTab(tabId, mark),
   "tabs.agent": () => agentTabs(),
-  "session.name": ({ sessionId, name }) => nameSession(sessionId, name),
   "session.end": ({ sessionId }) => endSession(sessionId),
 
   cdp: ({ tabId, method, params, sessionId, timeoutMs }) => cdp(tabId, method, params, sessionId, timeoutMs),

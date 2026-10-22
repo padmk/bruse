@@ -20,7 +20,7 @@ declare const cua: {
   listBrowsers(options?: ObservationOptions): Promise<BrowserInfo[]>;
   listTabs(options?: { browser?: string } & ObservationOptions): Promise<TabInfo[]>;
   getBrowser(options?: { id?: string }): Promise<Browser>;
-  createBrowserTab(browserId: string, url?: string, options?: { sessionName?: string; emit?: boolean }): Promise<Tab>; // opens a background tab in the agent tab group and shows its state
+  createBrowserTab(browserId: string, url?: string, options?: { emit?: boolean }): Promise<Tab>; // opens a background tab in the agent tab group and shows its state
   getTab(reference: string | { url: string }, options?: { browser?: string; emit?: boolean }): Promise<Tab>;            // binds an existing tab (ID or exact URL) and shows its state
   rewriteDocumentation(): Promise<void>;
 };
@@ -60,7 +60,6 @@ interface Tab {
 interface Browser {
   readonly browserId: string;
   documentation(): Promise<string>;
-  nameSession(name: string): Promise<void>;                 // title of the agent tab group
   history(options?: { queries?: string[]; from?: string | Date; to?: string | Date; limit?: number }): Promise<Array<{ url: string; title?: string; dateVisited: string }>>;
   tabs: { list(): Promise<TabInfo[]>; get(id: string): Promise<Tab>; new(): Promise<Tab>; selected(): Promise<Tab | undefined> };
   user: { openTabs(): Promise<TabInfo[]>; claimTab(tab: string | TabInfo): Promise<Tab> };
@@ -102,9 +101,10 @@ interface PlaywrightAPI {             // locators: getByRole/getByText/getByLabe
 - \`getAXState()\`, \`getScreenshot()\` and \`getState()\` display their result; use \`nodeRepl.write(value)\` and
   \`await nodeRepl.emitImage(bytes)\` for anything else.
 - REPL state persists across calls: \`const tab = …\` at the top level stays available. \`js_reset\` clears it.
-- Agent tabs open in the background inside the agent tab group and close when the session ends unless
-  marked with \`markDeliverable()\` or \`markHandoff()\`; so do tabs that agent tabs open (popups), even
-  when bound with \`getTab\`. Other tabs bound with \`getTab\` belong to the user and stay.
+- Agent tabs open in the background inside the agent tab group, which all agent sessions share. This
+  session's tabs, and tabs they open (popups, even when bound with \`getTab\`), close when the session
+  ends unless marked with \`markDeliverable()\` or \`markHandoff()\`; marked tabs then leave the group.
+  Other tabs bound with \`getTab\` belong to the user and stay.
 - A JavaScript dialog blocks the page; handle it with \`getJsDialog()\`. Notifications about dialogs and new
   tabs opened by the page are appended to the tool result.
 
