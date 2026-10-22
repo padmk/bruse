@@ -1,5 +1,7 @@
 // Agent sessions: tabs an agent session opened, the tab group that marks them, and cleanup when the
-// session ends. State lives in chrome.storage.session so it survives service worker restarts.
+// session ends. State lives in chrome.storage.local so it survives service worker restarts and extension
+// reloads, while MCP servers keep their sessions; tab and group IDs change when the browser starts, so it
+// starts empty then.
 
 import { onCdpEvent, sinceAgentInput } from "./cdp.js";
 import { AGENT_INPUT_WINDOW_MS } from "./shared.js";
@@ -10,12 +12,12 @@ const GROUP_COLOR = "orange";
 const KEPT_MARKS = new Set(["deliverable", "handoff"]);
 
 async function load() {
-  const { agentState } = await chrome.storage.session.get("agentState");
+  const { agentState } = await chrome.storage.local.get("agentState");
   return agentState ?? { tabs: {}, groups: {}, names: {} };
 }
 
 async function save(state) {
-  await chrome.storage.session.set({ agentState: state });
+  await chrome.storage.local.set({ agentState: state });
 }
 
 // Read-modify-write operations on the state run one at a time so concurrent requests do not
@@ -26,6 +28,8 @@ function serialized(task) {
   queue = result.catch(() => {});
   return result;
 }
+
+chrome.runtime.onStartup.addListener(() => serialized(() => chrome.storage.local.remove("agentState")));
 
 chrome.tabs.onRemoved.addListener((tabId) =>
   serialized(async () => {
