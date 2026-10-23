@@ -131,6 +131,10 @@ The full API is in `browser/mcp/cua/docs.mjs`, which the agent receives on its f
   such frame that still appears is removed (only the frame, or a known password manager's wrapper)
   before the command is retried, and password manager buttons
   and live regions are left out of the accessibility tree.
+- The `js` tool is loaded up front (`_meta["anthropic/alwaysLoad"]`), so Claude Code does not spend a
+  turn on tool search before the first browser call. A call returns at most 30,000 characters of text,
+  cut at a line end with a note on reading the rest from the REPL; Claude Code would otherwise move a
+  result over 25,000 tokens (a busy page's first tree) to a file outside the agent's view.
 - State reads after an action wait until the DOM has had no mutations for 60 ms (at most 1 s from the
   action) instead of a fixed delay.
 - Screenshots are captured in CSS pixels, so points in the image are the points `click([x, y])` takes.
