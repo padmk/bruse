@@ -10,6 +10,36 @@ import { createCua } from "./cua/index.mjs";
 import { hoistTopLevelDeclarations } from "./hoist.mjs";
 import { useOutput } from "./cua/output.mjs";
 
+// Text one call may return. MCP clients drop larger results from the model's view (Claude Code saves
+// results over 25,000 tokens to a file instead), and a long accessibility tree of a busy page mostly
+// costs reading time; values in the REPL stay complete.
+const MAX_OUTPUT_CHARS = 30_000;
+
+// Keeps the first MAX_OUTPUT_CHARS characters of the text items, cut at a line end, and says how to
+// read the rest.
+function limitText(items) {
+  const total = items.reduce((sum, item) => sum + (item.type === "text" ? item.text.length : 0), 0);
+  if (total <= MAX_OUTPUT_CHARS) return items;
+  let left = MAX_OUTPUT_CHARS;
+  const kept = [];
+  for (const item of items) {
+    if (item.type !== "text") kept.push(item);
+    else if (left > 0) {
+      let text = item.text;
+      if (text.length > left) {
+        const lineEnd = text.lastIndexOf("\n", left);
+        text = text.slice(0, lineEnd > left / 2 ? lineEnd : left);
+      }
+      left -= text.length;
+      kept.push({ type: "text", text });
+    }
+  }
+  const note = `… Output truncated: ${MAX_OUTPUT_CHARS} of ${total} characters shown. Return values are complete, so read the rest in parts, e.g. \`const s = await tab.getAXState({ emit: false, disableDiffing: true }); nodeRepl.write(s.slice(${MAX_OUTPUT_CHARS - 10_000}, ${MAX_OUTPUT_CHARS + 10_000}))\`, or query the page with tab.playwright locators or evaluate().`;
+  const last = kept.findLast((item) => item.type === "text");
+  last.text += `\n${note}`;
+  return kept;
+}
+
 function imagePayload(image, mimeType) {
   if (image instanceof Uint8Array || Buffer.isBuffer(image)) return { data: Buffer.from(image).toString("base64"), mimeType: mimeType ?? "image/png" };
   if (image && typeof image === "object" && image.bytes) return imagePayload(image.bytes, image.mimeType);
@@ -126,7 +156,7 @@ export class Repl {
     }
     const notifications = await this.cuaSession.takeNotifications();
     if (notifications.length) this.pushText(`Notifications:\n${notifications.map((n) => `- ${n}`).join("\n")}`);
-    const items = this.items.length ? this.items : [{ type: "text", text: "" }];
+    const items = this.items.length ? limitText(this.items) : [{ type: "text", text: "" }];
     this.items = null;
     useOutput(null);
     // Code that outlived its call could still act; the server replaces this worker when it sees timedOut.
