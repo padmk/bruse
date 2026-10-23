@@ -38,6 +38,9 @@ const TOOLS = [
       additionalProperties: false,
     },
     annotations: { openWorldHint: true },
+    // Claude Code otherwise defers MCP tools behind tool search, which costs a model turn before the
+    // first browser call.
+    _meta: { "anthropic/alwaysLoad": true },
   },
   {
     name: "js_reset",
