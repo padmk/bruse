@@ -33,6 +33,7 @@ MCP server (hub) ◀──WebSocket 127.0.0.1:47615──▶ extension ──chr
   password manager element names, the unresponsive-page error); it uses no browser or Node APIs, so
   the MCP server imports it from the extension directory. `browser/package.json` marks the `.js`
   files as ES modules for Node; installed copies of `browser/` include it.
+- `bench/`: benchmark against Claude in Chrome on local task pages; see `bench/README.md`.
 - `installer/`: `install.mjs` (the installer), `Install.command` (its double-click entry point on macOS,
   which finds Node.js), `agent-instructions.md` (installation steps for an agent, shipped as the
   package's `AGENTS.md` with a `CLAUDE.md` that imports it) and `package.mjs` (builds the zip package).
