@@ -91,6 +91,10 @@ function scan(code) {
       push(i, i + 1, "punct");
       i++;
       statementStart = true;
+    } else if ((c === "+" || c === "-") && code[i + 1] === c) {
+      // ++ and -- are one token: unlike + and -, a line break after them ends the statement.
+      push(i, i + 2, "punct");
+      i += 2;
     } else {
       push(i, i + 1, "punct");
       i++;
