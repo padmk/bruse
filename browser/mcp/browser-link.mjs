@@ -32,8 +32,11 @@ function parse(text) {
 
 const hmac = (secret, message) => createHmac("sha256", secret).update(message).digest("hex");
 
+const HEX_MAC = /^[0-9a-f]{64}$/;
+
+// Constant-time comparison of two SHA-256 hex digests; anything else never matches.
 function sameHex(a, b) {
-  return typeof a === "string" && typeof b === "string" && a.length === b.length && timingSafeEqual(Buffer.from(a), Buffer.from(b));
+  return typeof a === "string" && typeof b === "string" && HEX_MAC.test(a) && HEX_MAC.test(b) && timingSafeEqual(Buffer.from(a), Buffer.from(b));
 }
 
 // Identifies this agent session to the extension, which groups and cleans up its tabs. It lives in the
@@ -188,8 +191,11 @@ function becomeHub() {
               peer.close();
             }
           } else if (message.type === "auth" && existsSync(EXTENSION_SECRET_PATH)) {
-            const secret = readFileSync(EXTENSION_SECRET_PATH, "utf8").trim();
-            if (sameHex(message.mac, hmac(secret, `extension:${nonce}`))) activate(secret, String(message.nonce));
+            let secret = null;
+            try {
+              secret = readFileSync(EXTENSION_SECRET_PATH, "utf8").trim();
+            } catch {}
+            if (secret && sameHex(message.mac, hmac(secret, `extension:${nonce}`))) activate(secret, String(message.nonce));
             else peer.close();
           } else {
             if (message.type === "pair") process.stderr.write(`[browser-control] Refused to pair a new extension instance: ${EXTENSION_SECRET_PATH} already exists.\n`);
