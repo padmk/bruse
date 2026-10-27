@@ -223,6 +223,7 @@ createInterface({ input: process.stdin, crlfDelay: Infinity })
     } catch {
       return;
     }
+    if (!message || typeof message !== "object") return;
     if (message.id === undefined) return; // notifications need no reply
     try {
       const result = await handle(message);
