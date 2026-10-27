@@ -120,7 +120,7 @@ const handlers = {
 // which the hub stores; later connections prove knowledge of that secret in both directions with
 // HMAC over fresh nonces, so neither a local process posing as the hub nor one posing as the extension
 // can take over. Requests are executed only on the authenticated connection.
-const unverifiedHub = (gen) => ({ gen, verified: false, expectedHubMac: null });
+const unverifiedHub = (gen) => ({ gen, verified: false, expectedHubMac: null, pairing: null });
 let hub = unverifiedHub(0);
 
 function hex(bytes) {
@@ -140,9 +140,15 @@ async function answerChallenge(nonce) {
   const { hubSecret } = await chrome.storage.local.get("hubSecret");
   const ownNonce = randomHex();
   if (!hubSecret) {
-    const secret = randomHex();
-    await chrome.storage.local.set({ hubSecret: secret });
+    // The secret becomes the paired one only when the hub proves it stored it (auth-ok). Until then the
+    // same pending secret is offered again, so a hub that refused it can still accept it later.
+    let { pendingHubSecret: secret } = await chrome.storage.local.get("pendingHubSecret");
+    if (!secret) {
+      secret = randomHex();
+      await chrome.storage.local.set({ pendingHubSecret: secret });
+    }
     hub.expectedHubMac = await hmac(secret, `hub:${ownNonce}`);
+    hub.pairing = secret;
     return { type: "pair", secret, nonce: ownNonce };
   }
   hub.expectedHubMac = await hmac(hubSecret, `hub:${ownNonce}`);
@@ -174,6 +180,11 @@ async function handle(gen, text) {
   if (message.type === "challenge") return JSON.stringify(await answerChallenge(String(message.nonce)));
   if (message.type === "auth-ok") {
     hub.verified = Boolean(hub.expectedHubMac) && message.mac === hub.expectedHubMac;
+    if (hub.verified && hub.pairing) {
+      await chrome.storage.local.set({ hubSecret: hub.pairing });
+      await chrome.storage.local.remove("pendingHubSecret");
+      hub.pairing = null;
+    }
     return null;
   }
   const { id, method, params } = message;
