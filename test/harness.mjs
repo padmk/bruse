@@ -135,52 +135,63 @@ export async function launchBrowser(extensionDir) {
   let stderr = "";
   child.stderr.setEncoding("utf8").on("data", (chunk) => (stderr = (stderr + chunk).slice(-4000)));
   const exited = once(child, "exit");
-  const portFile = join(profile, "DevToolsActivePort");
-  const [port, path] = await until(() => existsSync(portFile) && readFileSync(portFile, "utf8").trim().split("\n"), {
-    timeoutMs: 60_000,
-    message: `Chromium to start (${stderr.slice(-500)})`,
-  });
-  const cdp = await connectCdp(`ws://127.0.0.1:${port}${path}`);
-
-  const { targetId } = await cdp.send("Target.createTarget", { url: "chrome://extensions" });
-  const { sessionId } = await cdp.send("Target.attachToTarget", { targetId, flatten: true });
-  await until(
-    async () => {
-      const { result } = await cdp.send(
-        "Runtime.evaluate",
-        { expression: "typeof chrome.developerPrivate?.updateProfileConfiguration", returnByValue: true },
-        sessionId,
-      );
-      return result.value === "function";
-    },
-    { message: "chrome://extensions to load" },
-  );
-  await cdp.send(
-    "Runtime.evaluate",
-    { expression: "chrome.developerPrivate.updateProfileConfiguration({ inDeveloperMode: true })", awaitPromise: true },
-    sessionId,
-  );
-  await cdp.send("Target.closeTarget", { targetId });
-  const { id: extensionId } = await cdp.send("Extensions.loadUnpacked", { path: extensionDir });
-
-  return {
-    cdp,
-    extensionId,
-    downloads,
-    // Pages (not extension or internal targets) open in the browser.
-    async pages() {
-      const { targetInfos } = await cdp.send("Target.getTargets");
-      return targetInfos.filter((target) => target.type === "page" && !target.url.startsWith("chrome"));
-    },
-    async close() {
-      cdp.send("Browser.close").catch(() => {});
-      cdp.close();
-      const timer = setTimeout(() => child.kill("SIGKILL"), 10_000);
-      if (child.exitCode === null && child.signalCode === null) await exited;
-      clearTimeout(timer);
-      removeTemp(profile);
-    },
+  let cdp = null;
+  const stop = async () => {
+    cdp?.send("Browser.close").catch(() => {});
+    cdp?.close();
+    const timer = setTimeout(() => child.kill("SIGKILL"), 10_000);
+    if (child.exitCode === null && child.signalCode === null) await exited;
+    clearTimeout(timer);
+    removeTemp(profile);
   };
+  try {
+    return await prepare();
+  } catch (error) {
+    await stop();
+    throw error;
+  }
+
+  async function prepare() {
+    const portFile = join(profile, "DevToolsActivePort");
+    const [port, path] = await until(() => existsSync(portFile) && readFileSync(portFile, "utf8").trim().split("\n"), {
+      timeoutMs: 60_000,
+      message: `Chromium to start (${stderr.slice(-500)})`,
+    });
+    cdp = await connectCdp(`ws://127.0.0.1:${port}${path}`);
+
+    const { targetId } = await cdp.send("Target.createTarget", { url: "chrome://extensions" });
+    const { sessionId } = await cdp.send("Target.attachToTarget", { targetId, flatten: true });
+    await until(
+      async () => {
+        const { result } = await cdp.send(
+          "Runtime.evaluate",
+          { expression: "typeof chrome.developerPrivate?.updateProfileConfiguration", returnByValue: true },
+          sessionId,
+        );
+        return result.value === "function";
+      },
+      { message: "chrome://extensions to load" },
+    );
+    await cdp.send(
+      "Runtime.evaluate",
+      { expression: "chrome.developerPrivate.updateProfileConfiguration({ inDeveloperMode: true })", awaitPromise: true },
+      sessionId,
+    );
+    await cdp.send("Target.closeTarget", { targetId });
+    const { id: extensionId } = await cdp.send("Extensions.loadUnpacked", { path: extensionDir });
+
+    return {
+      cdp,
+      extensionId,
+      downloads,
+      // Pages (not extension or internal targets) open in the browser.
+      async pages() {
+        const { targetInfos } = await cdp.send("Target.getTargets");
+        return targetInfos.filter((target) => target.type === "page" && !target.url.startsWith("chrome"));
+      },
+      close: stop,
+    };
+  }
 }
 
 // An agent session: the MCP server over stdio, with the js tool as `js(code)`.

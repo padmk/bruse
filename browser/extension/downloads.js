@@ -87,7 +87,7 @@ onCdpEvent((tabId, method, params) => {
   const header = (name) => params.responseHeaders?.find((h) => h.name.toLowerCase() === name)?.value ?? "";
   const isFile = /attachment/i.test(header("content-disposition")) || (params.responseStatusCode < 300 && !RENDERED_TYPES.test(header("content-type")));
   const redirect = params.responseStatusCode >= 300 && params.responseStatusCode < 400;
-  if (isFile && agentOpened.get(tabId) !== false) reportDownload(tabId, params.request.url);
+  if (isFile && agentOpened.get(tabId) !== false) reportDownload(tabId, params.request.url, "held");
   cdp(tabId, "Fetch.continueResponse", { requestId: params.requestId }).catch(() => {});
   // A redirect is followed by the response that decides.
   if (!redirect) stopIntercepting(tabId);
@@ -156,7 +156,7 @@ function remember(map, key, value) {
 
 const PAIRING_WINDOW_MS = 30_000;
 const REPORT_MATCH_MS = 2_000;
-const reports = []; // { tabId, url, at } not yet paired with an item
+const reports = []; // { tabId, url, source: "held" | "debugger", at } not yet paired with an item
 const unpairedItems = []; // { id, urls, at }
 const owners = new Map(); // download id -> tab id
 const finished = new Map(); // download id -> "complete" | "interrupted"
@@ -193,12 +193,12 @@ function update(downloadId) {
 // A tab's own report that it downloads a URL. The browser reports a download (Page.downloadWillBegin,
 // or a response the extension holds) before it creates the item, so a report only pairs with an item
 // created after it; an item that already exists is someone else's, however close in time.
-function reportDownload(tabId, url) {
-  reports.push({ tabId, url, at: Date.now() });
+function reportDownload(tabId, url, source) {
+  reports.push({ tabId, url, source, at: Date.now() });
 }
 
 onCdpEvent((tabId, method, params) => {
-  if (method === "Page.downloadWillBegin") reportDownload(tabId, params.url);
+  if (method === "Page.downloadWillBegin") reportDownload(tabId, params.url, "debugger");
 });
 
 // A report pairs with the first item at its URL created after it; the tab's own item follows its report
@@ -218,9 +218,10 @@ chrome.downloads.onCreated.addListener((item) => {
   const index = reports.findIndex((report) => urls.includes(report.url) && now - report.at < REPORT_MATCH_MS);
   if (index >= 0) {
     const [report] = reports.splice(index, 1);
-    // The same download may be reported twice (a held response and Page.downloadWillBegin); the other
-    // report must not pair with another tab's item.
-    for (let i = reports.length - 1; i >= 0; i--) if (reports[i].tabId === report.tabId && reports[i].url === report.url) reports.splice(i, 1);
+    // A held response and Page.downloadWillBegin may both report this download; the other report must
+    // not pair with another tab's item. Two reports from one source are two downloads.
+    const twin = reports.findIndex((other) => other.tabId === report.tabId && other.url === report.url && other.source !== report.source);
+    if (twin >= 0) reports.splice(twin, 1);
     recentPairs.push({ urls, at: report.at, itemId: item.id });
     pairedAt.set(item.id, report.at);
     return assign(item.id, report.tabId);
