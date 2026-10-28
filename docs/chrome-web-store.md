@@ -30,7 +30,8 @@ What to enter in the Chrome Web Store Developer Dashboard for Bruse. The package
   > https://github.com/padmk/bruse
 
 - **Icon:** `browser/extension/icons/icon-128.png`
-- **Screenshots:** 1280x800, at least one.
+- **Screenshots:** `docs/store/screenshot-1.png` to `screenshot-3.png` (1280x800).
+- **Small promo tile:** `docs/store/promo-tile-440x280.png`.
 - **Homepage URL:** https://github.com/padmk/bruse
 - **Support URL:** https://github.com/padmk/bruse/issues
 
