@@ -19,7 +19,7 @@ In [the benchmark against Claude in Chrome](bench/README.md), the same model fin
 
 - macOS (Linux works too, but is tested less), with Node.js 22 or newer
 - A Chromium browser: Brave, Chrome, Edge, Chromium or Vivaldi
-- An MCP client; setup registers the server with Claude Code and Codex when their CLIs are installed
+- An MCP client; setup registers the server with every supported one it finds (see [Install](#install))
 
 ## Install
 
@@ -36,7 +36,10 @@ Setup:
 
 - copies the extension and the MCP server to `~/.local/share/bruse/browser`, replacing a previous
   version (`~/.local/share/bruse` holds everything Bruse keeps, the pairing state included);
-- registers the MCP server as `bruse` with Claude Code (user scope) and Codex, whichever is installed;
+- registers the MCP server as `bruse` with each of these agent clients it finds: Claude Code, Codex, Cursor, VS Code (and Insiders), GitHub Copilot CLI, Gemini CLI, Claude Desktop, Devin Desktop and Windsurf. It uses
+  the client's own `mcp add` command where there is one; otherwise it edits the client's JSON
+  configuration, keeping everything else, after a backup to `~/.local/share/bruse/backups`, and leaves a
+  file with comments untouched and reports it;
 - when the extension is not connected yet, shows its folder in Finder and opens the browser's
   extensions page (the first time, macOS asks to let the terminal control the browser);
 - waits until the extension connects, which also pairs it (see [Security and privacy](#security-and-privacy)),

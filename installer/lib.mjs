@@ -6,6 +6,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync } from "node:fs";
 import { homedir, platform } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { moreClients } from "./clients.mjs";
 import { DATA_DIR } from "../browser/mcp/config.mjs";
 
 export const MIN_NODE_MAJOR = 22;
@@ -50,16 +51,19 @@ export function onPath(command) {
 // A CLI's answer for a server it does not know; any other failure leaves the registration unknown.
 const NOT_REGISTERED = /No MCP server named/i;
 
-// The agent CLIs found on this machine, each with how to read, add and remove the registration.
-// registration() returns { path } for a registered server, { path: null } when the CLI says there is
-// none, and null when it could not tell.
+// The agent clients found on this machine, each with how to read, add and remove the registration.
+// add() replaces an earlier registration. registration() returns { path } for a registered server,
+// { path: null } when the client says there is none, and null when it could not tell.
 export function agentClients() {
   const clients = [];
   const claude = onPath("claude") ?? [join(homedir(), ".local", "bin", "claude"), join(homedir(), ".claude", "local", "claude")].find(existsSync);
   if (claude) {
     clients.push({
       name: "Claude Code",
-      add: (command) => spawnSync(claude, ["mcp", "add", "-s", "user", MCP_NAME, "--", ...command], { encoding: "utf8" }),
+      add: (command) => {
+        spawnSync(claude, ["mcp", "remove", "-s", "user", MCP_NAME], { encoding: "utf8" });
+        return spawnSync(claude, ["mcp", "add", "-s", "user", MCP_NAME, "--", ...command], { encoding: "utf8" });
+      },
       remove: () => spawnSync(claude, ["mcp", "remove", "-s", "user", MCP_NAME], { encoding: "utf8" }),
       // `claude mcp get` prints the arguments joined by spaces on an "Args:" line, so a path with spaces
       // can only be recognized, not split out.
@@ -75,7 +79,10 @@ export function agentClients() {
   if (codex) {
     clients.push({
       name: "Codex",
-      add: (command) => spawnSync(codex, ["mcp", "add", MCP_NAME, "--", ...command], { encoding: "utf8" }),
+      add: (command) => {
+        spawnSync(codex, ["mcp", "remove", MCP_NAME], { encoding: "utf8" });
+        return spawnSync(codex, ["mcp", "add", MCP_NAME, "--", ...command], { encoding: "utf8" });
+      },
       remove: () => spawnSync(codex, ["mcp", "remove", MCP_NAME], { encoding: "utf8" }),
       registration: () => {
         const result = spawnSync(codex, ["mcp", "get", MCP_NAME, "--json"], { encoding: "utf8" });
@@ -89,7 +96,7 @@ export function agentClients() {
       },
     });
   }
-  return clients;
+  return [...clients, ...moreClients(onPath, MCP_NAME)];
 }
 
 export function moveToTrash(path) {

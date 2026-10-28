@@ -23,7 +23,7 @@ export async function doctor() {
   else ok(`Installed in ${installed}`);
 
   const clients = agentClients();
-  if (!clients.length) note("No Claude Code or Codex CLI found; register the MCP server with your client by hand (see the README).");
+  if (!clients.length) note("No supported agent client found; register the MCP server with your client by hand (see the README).");
   for (const client of clients) {
     const registration = client.registration();
     if (!registration) bad(`${client.name}: could not read its MCP configuration.`);

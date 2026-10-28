@@ -26,7 +26,7 @@ Both parts are needed: the server cannot reach tabs, and the extension cannot ac
    ```
 
    It copies `browser/` to `~/.local/share/bruse/browser`, replacing an earlier version. It registers the MCP server
-   as `bruse` with Claude Code (user scope) and Codex, if their CLIs are installed. Then it waits up to
+   as `bruse` with each agent client it finds (Claude Code, Codex, Cursor, VS Code (and Insiders), GitHub Copilot CLI, Gemini CLI, Claude Desktop, Devin Desktop and Windsurf). Then it waits up to
    10 minutes for the extension to connect. Run it in the background or with a long timeout, and read
    its output.
 3. **Ask the user to load the extension.** This is needed once. The browser installs extensions from
