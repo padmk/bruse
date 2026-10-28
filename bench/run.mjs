@@ -22,6 +22,16 @@ const model = args.model ?? "claude-opus-5-5";
 const effort = args.effort ?? "medium";
 const browserApp = "Brave Browser";
 
+// The code under test: a run of a dirty tree is marked as such.
+const revision = (() => {
+  try {
+    const sha = execFileSync("git", ["rev-parse", "--short", "HEAD"], { cwd: here, encoding: "utf8" }).trim();
+    return execFileSync("git", ["status", "--porcelain"], { cwd: here, encoding: "utf8" }).trim() ? `${sha}-dirty` : sha;
+  } catch {
+    return "unknown";
+  }
+})();
+
 const outDir = path.join(here, "results", new Date().toISOString().replace(/[:.]/g, "-"));
 fs.mkdirSync(outDir, { recursive: true });
 const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "bruse-bench-"));
@@ -116,7 +126,7 @@ async function runOne(task, tool, rep) {
   const ok = (() => { try { return task.check({ answer, log }); } catch { return false; } })();
   const usage = run.result.usage ?? {};
   const record = {
-    task: task.id, kind: task.kind, tool, rep, ok, answer: String(answer).slice(0, 400),
+    task: task.id, kind: task.kind, tool, rep, ok, model, effort, revision, answer: String(answer).slice(0, 400),
     wallMs: run.wallMs, durationMs: run.result.duration_ms, apiMs: run.result.duration_api_ms, turns: run.result.num_turns,
     costUsd: run.result.total_cost_usd, inputTokens: (usage.input_tokens ?? 0) + (usage.cache_read_input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0),
     outputTokens: usage.output_tokens, isError: run.result.is_error ?? run.code !== 0,

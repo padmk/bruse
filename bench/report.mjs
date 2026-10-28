@@ -17,6 +17,11 @@ const median = (xs) => {
   return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
 };
 const tools = [...new Set(runs.map((r) => r.tool))];
+// Runs with different settings are not comparable; records from before the settings were recorded have none.
+for (const key of ["model", "effort"]) {
+  const values = [...new Set(runs.map((r) => r[key]).filter(Boolean))];
+  if (values.length > 1) console.error(`warning: the runs mix ${key} values (${values.join(", ")}); report them separately`);
+}
 
 const summary = tasks.filter((t) => runs.some((r) => r.task === t.id)).map((t) => {
   const byTool = Object.fromEntries(tools.map((tool) => {
