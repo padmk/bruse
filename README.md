@@ -43,8 +43,9 @@ Setup:
   or reloads an extension that is already connected and waits until it runs the new version.
 
 The one manual step, on first install only: on the extensions page turn on **Developer mode** and drag
-the `extension` folder onto the page (or choose **Load unpacked**). Chromium browsers install other
-extensions only from the Chrome Web Store, so this step remains until the extension is published there.
+the `extension` folder onto the page (or choose **Load unpacked**). Chromium browsers let no installer
+add an extension that is not from the Chrome Web Store, so this step stays manual. Later updates need
+no manual step: `bruse setup` reloads the extension.
 
 A zip downloaded from the internet is quarantined: macOS refuses to open the unsigned
 `Install Bruse.command` until you allow it in System Settings › Privacy & Security (**Open Anyway**).
