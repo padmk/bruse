@@ -27,10 +27,12 @@ anywhere else.
 - In the extension's storage: a pairing secret, which agent session owns which tab, and whether you
   paused agents.
 - On your computer, in `~/.local/share/bruse`: the installed program, the pairing secret and the
-  token that local agent sessions use. Exports an agent makes (for example a YouTube transcript) are
-  written to a private temporary folder.
+  token that local agent sessions use.
+- Exports an agent makes (for example a YouTube transcript): in a private temporary folder
+  (`browser-control-exports-…` in the system's temporary directory), which the operating system may clear.
 
-None of it leaves your computer, and removing the extension and running `bruse uninstall` deletes it.
+None of it is sent anywhere by Bruse. Removing the extension and running `bruse uninstall` deletes the
+first two; delete exports you no longer need yourself.
 
 ## Your control
 
