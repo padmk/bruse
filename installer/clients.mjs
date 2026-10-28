@@ -12,8 +12,9 @@
 //   (https://code.visualstudio.com/docs/copilot/reference/mcp-configuration)
 // - GitHub Copilot CLI: `copilot mcp add|remove`, or ~/.copilot/mcp-config.json with "type": "local"
 //   (https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/add-mcp-servers)
-// - Gemini CLI: `gemini mcp add|remove --scope user`, or ~/.gemini/settings.json
-//   (https://geminicli.com/docs/tools/mcp-server/)
+// - Gemini CLI: `gemini mcp add|remove --scope user`, or ~/.gemini/settings.json; GEMINI_CLI_HOME
+//   replaces the home folder (https://geminicli.com/docs/tools/mcp-server/,
+//   https://geminicli.com/docs/reference/configuration/)
 
 import { spawnSync } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
@@ -48,7 +49,7 @@ export function moreClients(onPath, name) {
     },
     {
       label: "Gemini CLI",
-      path: join(home, ".gemini", "settings.json"),
+      path: join(process.env.GEMINI_CLI_HOME || home, ".gemini", "settings.json"),
       key: "mcpServers",
       entry: stdio,
       cli: onPath("gemini") && { path: onPath("gemini"), add: ["mcp", "add", "--scope", "user", name], remove: ["mcp", "remove", "--scope", "user", name] },
