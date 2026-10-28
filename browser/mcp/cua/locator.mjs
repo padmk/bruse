@@ -156,6 +156,20 @@ export class Locator {
     }
   }
 
+  // The single element matched by `steps` in a scope, as { count, id }: id is the backend node ID when
+  // exactly one element matches, and nothing else is resolved otherwise.
+  async matchOneIn(scope, steps) {
+    const cdp = this.tab.cdpSender(scope.sessionId);
+    const objectGroup = `locator-${Math.random().toString(36).slice(2)}`;
+    try {
+      const result = await this.runEngine(scope, steps, "(elements) => (elements.length === 1 ? elements[0] : elements.length)", null, { returnByValue: false, objectGroup });
+      if (result.type === "number") return { count: result.value, id: null };
+      return { count: 1, id: (await cdp("DOM.describeNode", { objectId: result.objectId })).node.backendNodeId };
+    } finally {
+      cdp("Runtime.releaseObjectGroup", { objectGroup }).catch(() => {});
+    }
+  }
+
   // Returns { ids, sessionId, cdp } for the elements currently matched.
   async resolveAll() {
     const scope = await this.scope();
@@ -166,16 +180,18 @@ export class Locator {
   async resolveOne({ timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
     const deadline = Date.now() + timeoutMs;
     for (;;) {
-      const { ids, sessionId, cdp } = await this.resolveAll();
-      if (ids.length === 1) return { id: ids[0], sessionId, cdp };
-      if (ids.length > 1) throw new Error(`Locator matched ${ids.length} elements; narrow it with filter(), nth(), first() or a more specific selector`);
+      const scope = await this.scope();
+      const { count, id } = await this.matchOneIn(scope, scope.steps);
+      if (count === 1) return { id, sessionId: scope.sessionId, cdp: this.tab.cdpSender(scope.sessionId) };
+      if (count > 1) throw new Error(`Locator matched ${count} elements; narrow it with filter(), nth(), first() or a more specific selector`);
       if (Date.now() > deadline) throw new Error(`Locator matched no element within ${timeoutMs} ms: ${JSON.stringify(this.steps)}`);
       await sleep(POLL_MS);
     }
   }
 
   async count() {
-    return (await this.resolveAll()).ids.length;
+    const scope = await this.scope();
+    return (await this.runEngine(scope, scope.steps, "(elements) => elements.length", null, { returnByValue: true })).value;
   }
   async all() {
     const n = await this.count();
