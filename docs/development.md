@@ -67,3 +67,16 @@ same value.
 ## Benchmarks
 
 `bench/` compares Bruse with Claude in Chrome on local task pages; see [bench/README.md](../bench/README.md).
+
+## Releasing
+
+1. Move the `Unreleased` entries of `CHANGELOG.md` under a `## X.Y.Z` heading, set `X.Y.Z` as the
+   `version` in `browser/extension/manifest.json` and `package.json`, and commit.
+2. Once `ci` passed for that commit on `main`, tag it `vX.Y.Z` and push the tag.
+
+`.github/workflows/release.yml` then checks the commit, builds and smoke-tests the zip package on
+macOS, creates the GitHub release with the changelog section as notes, and renders
+`packaging/homebrew/bruse.rb.tmpl` into `Formula/bruse.rb` of the owner's `homebrew-tap`. The tap
+step needs a `HOMEBREW_TAP_TOKEN` secret, with write access to the tap, in the repository's
+`release` environment; without it the step is skipped. Running the workflow by hand
+(`workflow_dispatch`) builds and checks everything without publishing.

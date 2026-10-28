@@ -1,0 +1,39 @@
+# Rendered by .github/workflows/release.yml into the tap as Formula/bruse.rb.
+# Installs the `bruse` command with the extension and MCP server files from
+# the tagged source; `bruse setup` then copies them to a stable per-user
+# location that the browser and the agents use.
+class Bruse < Formula
+  desc "Background control of your real browser for local AI agents"
+  homepage "https://github.com/__REPO__"
+  url "https://github.com/__REPO__/archive/refs/tags/v__VERSION__.tar.gz"
+  sha256 "__SOURCE_SHA256__"
+  license "MIT"
+
+  depends_on "node"
+
+  def install
+    libexec.install "bin", "browser", "installer", "package.json"
+    node = formula_opt_bin("node")/"node"
+    # INSTALL_NODE is the Node.js that setup registers for the MCP server:
+    # the opt path stays valid across `brew upgrade node`.
+    (bin/"bruse").write <<~SH
+      #!/bin/bash
+      export INSTALL_NODE="${INSTALL_NODE:-#{node}}"
+      exec "#{node}" "#{libexec}/bin/bruse.mjs" "$@"
+    SH
+  end
+
+  def caveats
+    <<~EOS
+      To install the browser extension and register the MCP server with
+      Claude Code and Codex, run:
+        bruse setup
+      The first time, it asks you to load the extension in your browser.
+      After `brew upgrade bruse`, run `bruse setup` again.
+    EOS
+  end
+
+  test do
+    assert_match version.to_s, shell_output("#{bin}/bruse version")
+  end
+end
