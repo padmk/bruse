@@ -86,6 +86,9 @@ The full API is in [browser/mcp/cua/docs.mjs](browser/mcp/cua/docs.mjs).
 - **The agent gets your browser.** Code sent to the `js` tool runs as your user with Node.js
   privileges and acts in your signed-in tabs. The agent is told to confirm irreversible or
   outward-facing steps with you, but that is an instruction to the model, not a guarantee.
+- **You can stop it at any moment.** Click the Bruse icon in the toolbar and **Pause agents** (or
+  **Cancel** on the browser's "started debugging" bar): the extension detaches from every tab at once
+  and refuses agent requests until you resume. Agent tabs stay open, so you can look at what was done.
 - **Page content goes to your model provider.** What the agent reads from a tab (accessibility trees,
   screenshots, page text) is returned to the agent and so reaches the provider of the model it runs on.
   Bruse itself sends nothing anywhere: the server and the extension talk only over `127.0.0.1`.
