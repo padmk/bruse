@@ -48,7 +48,12 @@ export function onPath(command) {
   return spawnSync("/bin/sh", ["-c", `command -v ${command}`], { encoding: "utf8" }).stdout.trim() || null;
 }
 
+// A CLI's answer for a server it does not know; any other failure leaves the registration unknown.
+const NOT_REGISTERED = /No MCP server named/i;
+
 // The agent CLIs found on this machine, each with how to read, add and remove the registration.
+// registration() returns { path } for a registered server, { path: null } when the CLI says there is
+// none, and null when it could not tell.
 export function agentClients() {
   const clients = [];
   const claude = onPath("claude") ?? [join(homedir(), ".local", "bin", "claude"), join(homedir(), ".claude", "local", "claude")].find(existsSync);
@@ -59,10 +64,11 @@ export function agentClients() {
       remove: () => spawnSync(claude, ["mcp", "remove", "-s", "user", MCP_NAME], { encoding: "utf8" }),
       // `claude mcp get` prints the arguments joined by spaces on an "Args:" line, so a path with spaces
       // can only be recognized, not split out.
-      registeredPath: () => {
-        const out = spawnSync(claude, ["mcp", "get", MCP_NAME], { encoding: "utf8", timeout: 30_000 }).stdout ?? "";
-        const args = out.match(/^\s*Args:\s*(.+)$/m)?.[1].trim();
-        return args?.endsWith(serverPath) ? serverPath : (args ?? null);
+      registration: () => {
+        const result = spawnSync(claude, ["mcp", "get", MCP_NAME], { encoding: "utf8", timeout: 30_000 });
+        if (result.status !== 0) return NOT_REGISTERED.test(`${result.stdout}${result.stderr}`) ? { path: null } : null;
+        const args = result.stdout.match(/^\s*Args:\s*(.+)$/m)?.[1].trim();
+        return args ? { path: args.endsWith(serverPath) ? serverPath : args } : null;
       },
     });
   }
@@ -72,10 +78,12 @@ export function agentClients() {
       name: "Codex",
       add: (command) => spawnSync(codex, ["mcp", "add", MCP_NAME, "--", ...command], { encoding: "utf8" }),
       remove: () => spawnSync(codex, ["mcp", "remove", MCP_NAME], { encoding: "utf8" }),
-      registeredPath: () => {
+      registration: () => {
+        const result = spawnSync(codex, ["mcp", "get", MCP_NAME, "--json"], { encoding: "utf8" });
+        if (result.status !== 0) return NOT_REGISTERED.test(`${result.stdout}${result.stderr}`) ? { path: null } : null;
         try {
-          const config = JSON.parse(spawnSync(codex, ["mcp", "get", MCP_NAME, "--json"], { encoding: "utf8" }).stdout);
-          return (config.transport?.args ?? config.args ?? []).at(-1) ?? null;
+          const config = JSON.parse(result.stdout);
+          return { path: (config.transport?.args ?? config.args ?? []).at(-1) ?? null };
         } catch {
           return null;
         }

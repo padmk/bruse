@@ -10,7 +10,8 @@ export async function uninstall() {
   const { STATE_DIR } = await import(join(existsSync(installed) ? installed : source, "mcp", "config.mjs"));
   let failed = 0;
   for (const client of agentClients()) {
-    if (!client.registeredPath()) {
+    const registration = client.registration();
+    if (registration && !registration.path) {
       note(`${client.name}: was not registered`);
       continue;
     }
@@ -21,7 +22,8 @@ export async function uninstall() {
       note(`${client.name}: failed (${(result.stderr || result.stdout).trim()})`);
     }
   }
-  // A registration left behind must still find its server, so the files stay until it is gone.
+  // A registration left behind, or one that could not be checked and removed, must still find its
+  // server, so the files stay until it is gone.
   if (failed) fail("Removing the MCP server failed for an agent CLI (see above); the installed files were kept.");
   for (const path of [installRoot, STATE_DIR]) {
     if (!existsSync(path)) continue;

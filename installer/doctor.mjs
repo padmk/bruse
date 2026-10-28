@@ -25,9 +25,10 @@ export async function doctor() {
   const clients = agentClients();
   if (!clients.length) note("No Claude Code or Codex CLI found; register the MCP server with your client by hand (see the README).");
   for (const client of clients) {
-    const path = client.registeredPath();
-    if (path === serverPath) ok(`${client.name}: registered`);
-    else if (path) bad(`${client.name}: registered with ${path}, not the installed copy; run \`bruse setup\`.`);
+    const registration = client.registration();
+    if (!registration) bad(`${client.name}: could not read its MCP configuration.`);
+    else if (registration.path === serverPath) ok(`${client.name}: registered`);
+    else if (registration.path) bad(`${client.name}: registered with ${registration.path}, not the installed copy; run \`bruse setup\`.`);
     else bad(`${client.name}: not registered; run \`bruse setup\`.`);
   }
 
