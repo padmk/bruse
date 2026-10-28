@@ -86,8 +86,11 @@ export function agentOpenerChain(tabId) {
   return agentAncestorsOf.get(tabId) ?? [];
 }
 
+// A tab that turned into a download closes at once; its download is matched to it a moment later (see
+// downloads.js), so its openers stay known for a while. Tab IDs are not reused.
+const REMOVED_TAB_MEMORY_MS = 10_000;
 chrome.tabs.onRemoved.addListener((tabId) => {
-  agentAncestorsOf.delete(tabId);
+  setTimeout(() => agentAncestorsOf.delete(tabId), REMOVED_TAB_MEMORY_MS);
   pageOpens.delete(tabId);
 });
 
