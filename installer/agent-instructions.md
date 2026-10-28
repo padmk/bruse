@@ -25,8 +25,7 @@ Both parts are needed: the server cannot reach tabs, and the extension cannot ac
    node installer/install.mjs
    ```
 
-   It copies `browser/` to `~/Library/Application Support/Bruse/browser` on macOS
-   (`~/.local/share/bruse/browser` on Linux), replacing an earlier version. It registers the MCP server
+   It copies `browser/` to `~/.local/share/bruse/browser`, replacing an earlier version. It registers the MCP server
    as `bruse` with Claude Code (user scope) and Codex, if their CLIs are installed. Then it waits up to
    10 minutes for the extension to connect. Run it in the background or with a long timeout, and read
    its output.
@@ -55,7 +54,7 @@ Use a stable Node path such as `/opt/homebrew/bin/node`, not a versioned one.
 
 - **The extension does not connect after a reinstall.** If the user removed the extension and loaded it
   again, it has a new secret, while the old one is still stored. Ask the user, then move
-  `~/.local/state/browser-control/extension-secret` to the Trash; the extension pairs again within a
+  `~/.local/share/bruse/state/extension-secret` to the Trash; the extension pairs again within a
   second. Run the installer again to confirm.
 - **"Load unpacked" fails.** Check that the selected folder contains `manifest.json`.
 - **Developer mode warning.** Chromium shows a notice about developer-mode extensions. It is expected
@@ -71,4 +70,4 @@ browser's extensions page.
 ## Rules
 
 - Do not change browser profiles, policies or system settings; the installer needs none of that.
-- Do not read, print or copy files in `~/.local/state/browser-control`; they hold the pairing secrets.
+- Do not read, print or copy files in `~/.local/share/bruse/state`; they hold the pairing secrets.

@@ -6,6 +6,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync } from "node:fs";
 import { homedir, platform } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { DATA_DIR } from "../browser/mcp/config.mjs";
 
 export const MIN_NODE_MAJOR = 22;
 export const MCP_NAME = "bruse";
@@ -15,11 +16,9 @@ export const source = join(dirname(fileURLToPath(import.meta.url)), "..", "brows
 export const manifest = JSON.parse(readFileSync(join(source, "extension", "manifest.json"), "utf8"));
 export const product = manifest.name;
 
-// A stable per-user copy: the browser loads the extension from it, and agents start its server.
-export const installRoot =
-  platform() === "darwin"
-    ? join(homedir(), "Library", "Application Support", product)
-    : join(process.env.XDG_DATA_HOME ?? join(homedir(), ".local", "share"), product.toLowerCase());
+// A stable per-user copy: the browser loads the extension from it, and agents start its server. The
+// pairing state lives next to it.
+export const installRoot = DATA_DIR;
 export const installed = join(installRoot, "browser");
 export const extensionDir = join(installed, "extension");
 export const serverPath = join(installed, "mcp", "server.mjs");
