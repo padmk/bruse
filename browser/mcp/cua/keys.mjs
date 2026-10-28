@@ -12,6 +12,8 @@ const MODIFIERS = {
   command: { bit: 4, key: "Meta", code: "MetaLeft", keyCode: 91 },
   shift: { bit: 8, key: "Shift", code: "ShiftLeft", keyCode: 16 },
 };
+// Playwright's ControlOrMeta: the platform's shortcut modifier (Command on macOS, Control elsewhere).
+MODIFIERS.controlormeta = process.platform === "darwin" ? MODIFIERS.meta : MODIFIERS.ctrl;
 
 const NAMED_KEYS = {
   return: { key: "Enter", code: "Enter", keyCode: 13, text: "\r" },
