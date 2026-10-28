@@ -103,6 +103,25 @@ The full API is in [browser/mcp/cua/docs.mjs](browser/mcp/cua/docs.mjs).
   session. After reinstalling the extension, move `extension-secret` to the Trash so that the new
   extension can pair; it connects again within a second.
 
+- **Nothing third-party.** The server and the extension use only Node.js built-ins and browser APIs:
+  no npm dependencies, no code downloaded at run time, no telemetry. The extension's only network connection is the
+  WebSocket to `127.0.0.1`; requests to websites are made by the pages themselves, for example when
+  exporting a Google Doc the agent was asked to export.
+
+The extension asks for these permissions:
+
+| Permission | Used for |
+| --- | --- |
+| `debugger` | Reading pages and sending input to them (Chrome DevTools Protocol); the browser shows its "started debugging" bar while attached |
+| `<all_urls>` (host) | Debugging and reading tabs on any site, and removing password manager menus that block debugging |
+| `scripting` | Removing those password manager menus from a page's frames |
+| `tabs`, `tabGroups` | Listing tabs, opening agent tabs in the background and grouping them |
+| `webNavigation` | Telling which tab a page opened, so new tabs and downloads go to the right session |
+| `downloads` | Reporting the files a tab downloaded |
+| `history`, `bookmarks` | `browser.history()` and the `management` capability, when the agent is asked to use them |
+| `storage` | The pairing secret and which session owns which tab |
+| `offscreen`, `alarms` | Keeping the connection to the local hub open |
+
 Report vulnerabilities as described in [SECURITY.md](SECURITY.md).
 
 ## Behavior
