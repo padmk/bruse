@@ -29,7 +29,11 @@ function extensionId(manifestKey) {
 }
 
 const manifest = JSON.parse(readFileSync(new URL("../extension/manifest.json", import.meta.url), "utf8"));
-export const EXTENSION_ORIGIN = `chrome-extension://${extensionId(manifest.key)}`;
+// The Chrome Web Store's copy of the extension has the ID the store assigned.
+export const STORE_EXTENSION_ID = "bjnnnehfcpmcnkdninoogdcdkpapogln";
+
+// The extensions the hub accepts: an unpacked copy, whose ID the manifest key pins, and the store's copy.
+export const EXTENSION_ORIGINS = new Set([extensionId(manifest.key), STORE_EXTENSION_ID].map((id) => `chrome-extension://${id}`));
 
 // The release version, from the manifest of the extension shipped with this server.
 export const VERSION = manifest.version;

@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Bruse",
   "description": "Browser use for local AI agents: reads and operates your tabs in the background.",
-  "version": "0.16.0",
+  "version": "0.17.0",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAt+CDMGy3iiZvT5vI4PKmuVuKXe7YGiPUpWbsDzyLF0sawSs2vMXfq2GWSHGDjMbQZP7Nd9BcUxUvmPXAhiWaSxCXLYB177zOwHMil6rwiGbu/aLLU+8bdY4yCMn5FGvhKuTwbAuTkuyxptxTxnvgV3v+O6wNgjRGrleRdo5I/C1XlMgEPHwI605D4G21lqAy2Gcel17hc6vpmkAdHZbwS1ymA6jaK6bpcpg8wVKsPe2ALOZlwXCRLu+yxEXp1seg2QLGfxo8ZO/RqnVAfQz00gEPPsMor2YrKdxKH3Vps/3hlA4XLVAzNjxZMLCuIcOwwuBYJQSHNjRJLrjQh4GjsQIDAQAB",
   "minimum_chrome_version": "125",
   "permissions": [

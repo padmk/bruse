@@ -34,13 +34,14 @@ export async function doctor() {
 
   // The installed copy's own modules, so the check talks to the hub the way agents do.
   const browserDir = copy ? installed : source;
-  const { EXTENSION_SECRET_PATH } = await import(join(browserDir, "mcp", "config.mjs"));
+  const { EXTENSION_SECRET_PATH, STORE_EXTENSION_ID } = await import(join(browserDir, "mcp", "config.mjs"));
   const { callBrowser } = await import(join(browserDir, "mcp", "browser-link.mjs"));
   if (existsSync(EXTENSION_SECRET_PATH)) ok("Paired with an extension");
   else bad("No extension has paired yet; load the extension (see `bruse setup`).");
   try {
     const info = await callBrowser("browser.info");
     if (info.version === manifest.version) ok(`Connected to ${info.name}, extension ${info.version}`);
+    else if (info.id === STORE_EXTENSION_ID) note(`Connected to ${info.name}; its extension from the Chrome Web Store is ${info.version} and updates to ${manifest.version} on its own.`);
     else bad(`Connected to ${info.name}, but its extension is ${info.version ? `version ${info.version}` : "an older version"}; run \`bruse setup\`.`);
     if (info.paused) bad(`Agents are paused in ${info.name}; resume them from the ${product} icon in the toolbar.`);
   } catch (error) {
