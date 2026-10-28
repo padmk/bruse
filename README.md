@@ -2,7 +2,7 @@
 
 <img src="browser/extension/icons/icon-128.png" width="96" alt="Bruse icon" align="right">
 
-**Bruse** (browser use, with a nod to Bruce Lee) gives local AI agents fast, background control of your
+**Bruse** (browser use) gives local AI agents fast, background control of your
 real browser, independent of any vendor's runtime.
 
 An MCP server gives the agent (Claude Code, Codex or another MCP client) a persistent JavaScript REPL
