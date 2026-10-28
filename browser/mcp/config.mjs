@@ -10,7 +10,11 @@ export const PRODUCT_NAME = "Bruse";
 
 export const PORT = HUB_PORT;
 
-export const STATE_DIR = process.env.BROWSER_CONTROL_STATE_DIR ?? join(homedir(), ".local/state/browser-control");
+// Everything setup and the server keep for this user: the installed copy (browser/) and the pairing
+// state (state/).
+export const DATA_DIR = join(process.env.XDG_DATA_HOME || join(homedir(), ".local", "share"), PRODUCT_NAME.toLowerCase());
+
+export const STATE_DIR = process.env.BROWSER_CONTROL_STATE_DIR ?? join(DATA_DIR, "state");
 
 // Secret that MCP servers present to the hub; web pages cannot read it, so they cannot drive the hub.
 export const TOKEN_PATH = join(STATE_DIR, "hub-token");

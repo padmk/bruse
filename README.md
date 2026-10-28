@@ -34,8 +34,8 @@ agent in the unpacked folder and ask it to install Bruse; the package's `AGENTS.
 
 Setup:
 
-- copies the extension and the MCP server to `~/Library/Application Support/Bruse/browser`
-  (`~/.local/share/bruse/browser` on Linux), replacing a previous version;
+- copies the extension and the MCP server to `~/.local/share/bruse/browser`, replacing a previous
+  version (`~/.local/share/bruse` holds everything Bruse keeps, the pairing state included);
 - registers the MCP server as `bruse` with Claude Code (user scope) and Codex, whichever is installed;
 - when the extension is not connected yet, shows its folder in Finder and opens the browser's
   extensions page (the first time, macOS asks to let the terminal control the browser);
@@ -91,9 +91,9 @@ The full API is in [browser/mcp/cua/docs.mjs](browser/mcp/cua/docs.mjs).
   Bruse itself sends nothing anywhere: the server and the extension talk only over `127.0.0.1`.
 - **One browser.** The hub talks to one paired extension, in one browser profile, at a time.
 - **Who can drive it.** The hub accepts peer MCP servers only with the token in
-  `~/.local/state/browser-control/hub-token` (mode 0600), so web pages and other users cannot drive it.
+  `~/.local/share/bruse/state/hub-token` (mode 0600), so web pages and other users cannot drive it.
   Hub and extension authenticate each other: on first connection the extension pairs by sending a
-  random secret, which the hub stores in `~/.local/state/browser-control/extension-secret` (0600);
+  random secret, which the hub stores in `~/.local/share/bruse/state/extension-secret` (0600);
   every later connection proves that secret in both directions with HMAC over fresh nonces. The
   extension executes requests only on an authenticated connection, so a process posing as the hub on
   the port gets nothing, and one posing as the extension cannot replace it.
