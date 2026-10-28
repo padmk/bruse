@@ -192,8 +192,10 @@ export function createCua() {
         list: listTabs,
         get: (id) => getTab(id),
         new: () => createBrowserTab(BROWSER_ID),
+        // Every window has an active tab; the selected one is in the window the user used last.
         selected: async () => {
-          const active = (await call("tabs.list")).find((tab) => tab.active);
+          const focused = await call("browser.manage", { namespace: "windows", method: "getLastFocused", args: [{ windowTypes: ["normal"] }] });
+          const active = (await call("tabs.list")).find((tab) => tab.active && tab.windowId === focused.id);
           return active ? bind(active) : undefined;
         },
       },
