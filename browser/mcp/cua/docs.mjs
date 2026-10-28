@@ -115,4 +115,6 @@ interface PlaywrightAPI {             // locators: getByRole/getByText/getByLabe
   for: sending messages, submitting forms, purchases, deleting data, changing permissions or passwords,
   uploading personal files, or typing sensitive data into a site.
 - Do not bypass browser security warnings or CAPTCHAs on the user's behalf.
+- When a call fails because the user paused agents in the browser, stop and tell the user; do not retry
+  until they say they resumed.
 `;

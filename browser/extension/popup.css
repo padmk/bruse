@@ -1,0 +1,29 @@
+:root {
+  color-scheme: light dark;
+  font: 13px/1.4 system-ui, sans-serif;
+}
+
+body {
+  width: 240px;
+  margin: 12px;
+}
+
+p {
+  margin: 0 0 10px;
+}
+
+#status {
+  font-weight: 600;
+}
+
+#hint {
+  margin: 10px 0 0;
+  opacity: 0.75;
+}
+
+button {
+  width: 100%;
+  padding: 6px 10px;
+  font: inherit;
+  cursor: pointer;
+}

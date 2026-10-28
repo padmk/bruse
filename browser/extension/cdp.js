@@ -3,6 +3,7 @@
 // also tracks per-tab state that CDP only reports as events (open JavaScript dialogs, console output,
 // network requests, out-of-process frames) and when the agent last pressed a button or key in a tab.
 
+import { PAUSED_ERROR, isPaused, onPausedChange, setPaused } from "./pause.js";
 import { PASSWORD_MANAGER_ELEMENTS, isPressInput, unresponsivePageError } from "./shared.js";
 
 const PROTOCOL_VERSION = "1.3";
@@ -24,7 +25,15 @@ export function onCdpEvent(listener) {
   return () => eventListeners.delete(listener);
 }
 
-chrome.debugger.onDetach.addListener(({ tabId }) => sessions.delete(tabId));
+// The user's "Cancel" on the browser's debugging bar detaches every tab; it pauses agents until resumed.
+chrome.debugger.onDetach.addListener(({ tabId }, reason) => {
+  sessions.delete(tabId);
+  if (reason === "canceled_by_user") setPaused(true);
+});
+
+onPausedChange((paused) => {
+  if (paused) for (const tabId of [...sessions.keys()]) detach(tabId);
+});
 
 // Child frames in other processes (cross-origin iframes) are separate targets with their own session.
 function enableChildSession(tabId, sessionId) {
@@ -156,6 +165,7 @@ function attach(tabId) {
 }
 
 async function attachNow(tabId) {
+  if (await isPaused()) throw new Error(PAUSED_ERROR);
   let reattached = false;
   try {
     await chrome.debugger.attach({ tabId }, PROTOCOL_VERSION);
