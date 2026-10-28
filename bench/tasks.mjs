@@ -87,7 +87,8 @@ export const tasks = [
     allowFileTools: true,
     title: "Pobranie pliku i odczyt wartości",
     prompt: `Otwórz ${ORIGIN_A}/raporty w przeglądarce, pobierz raport CSV przyciskiem na stronie i podaj przychód za 2026-09 z pobranego pliku. Do odczytania pobranego pliku możesz użyć narzędzia Read. Jeśli nie możesz go odczytać, napisz „brak dostępu”. Odpowiedz krótko, bez opisu kroków.`,
-    check: ({ answer }) => numbersIn(answer).some((n) => Math.abs(n - septemberRevenue) < 0.011),
+    // The file must have been downloaded; the number alone could come from elsewhere.
+    check: ({ answer, log }) => log.downloads > 0 && numbersIn(answer).some((n) => Math.abs(n - septemberRevenue) < 0.011),
     expected: String(septemberRevenue),
   },
 ];
