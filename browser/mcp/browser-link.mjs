@@ -30,6 +30,8 @@ function parse(text) {
   }
 }
 
+const LOCAL_HOSTS = new Set([`127.0.0.1:${PORT}`, `localhost:${PORT}`]);
+
 const hmac = (secret, message) => createHmac("sha256", secret).update(message).digest("hex");
 
 const HEX_MAC = /^[0-9a-f]{64}$/;
@@ -263,6 +265,8 @@ function becomeHub() {
       } catch {
         return rejectUpgrade(socket, "400 Bad Request");
       }
+      // A web page that points its own host name at 127.0.0.1 (DNS rebinding) still sends that name.
+      if (!LOCAL_HOSTS.has(req.headers.host)) return rejectUpgrade(socket);
       if (url.pathname === "/extension" && req.headers.origin === EXTENSION_ORIGIN) acceptExtension(req, socket);
       else if (url.pathname === "/client" && !req.headers.origin && url.searchParams.get("token") === token) acceptClient(req, socket);
       else rejectUpgrade(socket);

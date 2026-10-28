@@ -18,10 +18,11 @@ after(async () => {
   await env?.close();
 });
 
-function upgrade(path, origin) {
+function upgrade(path, origin, host) {
   return new Promise((resolve, reject) => {
     const headers = { Connection: "Upgrade", Upgrade: "websocket", "Sec-WebSocket-Version": "13", "Sec-WebSocket-Key": randomBytes(16).toString("base64") };
     if (origin) headers.Origin = origin;
+    if (host) headers.Host = host;
     const req = http.request({ host: "127.0.0.1", port: env.port, path, headers });
     req.on("upgrade", (_response, socket, head) => resolve({ socket, head }));
     req.on("response", (response) => {
@@ -88,6 +89,22 @@ test("hub rejects incorrect tokens and web origins", { timeout: 60_000 }, async 
   ]) {
     const result = await upgrade(path, origin);
     if (result.socket) result.socket.destroy();
+    assert.equal(result.status, 403);
+  }
+});
+
+test("hub rejects requests addressed to another host name", { timeout: 60_000 }, async () => {
+  const token = readFileSync(join(env.stateDir, "hub-token"), "utf8").trim();
+  const accepted = await upgrade(`/client?token=${token}`);
+  accepted.socket?.destroy();
+  assert.ok(accepted.socket, "the right token on 127.0.0.1 connects");
+  // A page on a domain that resolves to 127.0.0.1 sends its own name as Host.
+  for (const [path, origin] of [
+    [`/client?token=${token}`, undefined],
+    ["/extension", `chrome-extension://${env.browser.extensionId}`],
+  ]) {
+    const result = await upgrade(path, origin, `rebind.example:${env.port}`);
+    result.socket?.destroy();
     assert.equal(result.status, 403);
   }
 });
