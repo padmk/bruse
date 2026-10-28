@@ -6,10 +6,9 @@ import { after, before, test } from "node:test";
 import { browserCopy, freePort, launchBrowser, until } from "./harness.mjs";
 
 let copy, browser, home, installed, cli, environment;
-const children = new Set();
+const children = new Map();
 function run(command) {
   const child = spawn(process.execPath, [cli, command], { env: environment, stdio: ["ignore", "pipe", "pipe"] });
-  children.add(child);
   let output = "";
   child.stdout.on("data", (chunk) => (output += chunk));
   child.stderr.on("data", (chunk) => (output += chunk));
@@ -20,6 +19,7 @@ function run(command) {
       resolve({ code, output });
     });
   });
+  children.set(child, done);
   return { child, done, output: () => output };
 }
 before(async () => {
@@ -43,7 +43,9 @@ before(async () => {
   delete environment.BROWSER_CONTROL_STATE_DIR;
 });
 after(async () => {
-  for (const child of children) child.kill("SIGKILL");
+  const pending = [...children];
+  for (const [child] of pending) child.kill("SIGKILL");
+  await Promise.allSettled(pending.map(([, done]) => done));
   await browser?.close();
   copy?.remove();
 });
