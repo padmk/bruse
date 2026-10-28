@@ -40,6 +40,7 @@ before(async () => {
   delete environment.XDG_DATA_HOME;
   delete environment.XDG_CONFIG_HOME;
   delete environment.COPILOT_HOME;
+  delete environment.GEMINI_CLI_HOME;
   delete environment.BROWSER_CONTROL_STATE_DIR;
 });
 after(async () => {

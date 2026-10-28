@@ -274,6 +274,11 @@ export async function cdp(tabId, method, params, sessionId, timeoutMs) {
 
 async function sendChecked(tabId, method, params, sessionId, timeoutMs) {
   const session = await attach(tabId);
+  // A pause that came while the attach was in flight found no session to detach.
+  if (await isPaused()) {
+    await detach(tabId);
+    throw new Error(PAUSED_ERROR);
+  }
   if (session.dialog && !DIALOG_SAFE_METHODS.has(method) && !method.startsWith("Input.")) {
     throw new Error(`A JavaScript ${session.dialog.type} dialog is open on this tab ("${session.dialog.message}"); handle it with getJsDialog() first`);
   }
