@@ -2,11 +2,13 @@
 
 import { isPaused, setPaused } from "./pause.js";
 
-const status = document.getElementById("status");
+const status = document.getElementById("status-text");
 const toggle = document.getElementById("toggle");
 const hint = document.getElementById("hint");
+document.getElementById("name").textContent = chrome.runtime.getManifest().name;
 
 function render(paused) {
+  document.body.classList.toggle("paused", paused);
   status.textContent = paused ? "Agents are paused" : "Agents can use this browser";
   toggle.textContent = paused ? "Resume agents" : "Pause agents";
   hint.textContent = paused
