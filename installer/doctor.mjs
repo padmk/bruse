@@ -42,6 +42,7 @@ export async function doctor() {
     const info = await callBrowser("browser.info");
     if (info.version === manifest.version) ok(`Connected to ${info.name}, extension ${info.version}`);
     else bad(`Connected to ${info.name}, but its extension is ${info.version ? `version ${info.version}` : "an older version"}; run \`bruse setup\`.`);
+    if (info.paused) bad(`Agents are paused in ${info.name}; resume them from the ${product} icon in the toolbar.`);
   } catch (error) {
     bad(`The browser did not connect: ${error.message}`);
   }

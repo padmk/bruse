@@ -4,6 +4,7 @@
 
 import { cdp, consoleLogs, detach, networkRequests, onCdpEvent, tabState } from "./cdp.js";
 import { waitForDownload } from "./downloads.js";
+import { PAUSED_ERROR, isPaused } from "./pause.js";
 import { agentTabs, endSession, groupAgentTab, markTab, onTabOpened } from "./sessions.js";
 import { MANAGEMENT_METHODS } from "./shared.js";
 
@@ -49,7 +50,7 @@ function browserName() {
 }
 
 const handlers = {
-  "browser.info": async () => ({ name: browserName(), userAgent: navigator.userAgent, version: chrome.runtime.getManifest().version }),
+  "browser.info": async () => ({ name: browserName(), userAgent: navigator.userAgent, version: chrome.runtime.getManifest().version, paused: await isPaused() }),
 
   "tabs.list": async () => (await chrome.tabs.query({})).map(tabInfo),
 
@@ -115,6 +116,9 @@ const handlers = {
     return null;
   },
 };
+
+// Requests that still run while the user has paused agents: none of them acts on a page.
+const PAUSE_EXEMPT = new Set(["browser.info", "extension.reload", "session.end"]);
 
 // Hub authentication. On first use the extension pairs with the hub by sending it a random secret,
 // which the hub stores; later connections prove knowledge of that secret in both directions with
@@ -196,6 +200,7 @@ async function handle(gen, text) {
   try {
     const handler = handlers[method];
     if (!handler) throw new Error(`Unknown method ${method}`);
+    if (!PAUSE_EXEMPT.has(method) && (await isPaused())) throw new Error(PAUSED_ERROR);
     return JSON.stringify({ id, result: (await handler(params ?? {})) ?? null });
   } catch (error) {
     return JSON.stringify({ id, error: error?.message ?? String(error) });
