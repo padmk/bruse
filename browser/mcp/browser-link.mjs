@@ -39,6 +39,17 @@ function sameHex(a, b) {
   return typeof a === "string" && typeof b === "string" && HEX_MAC.test(a) && HEX_MAC.test(b) && timingSafeEqual(Buffer.from(a), Buffer.from(b));
 }
 
+// Whether `secret` is the stored extension secret, compared in constant time.
+function sameSecret(secret) {
+  let stored;
+  try {
+    stored = readFileSync(EXTENSION_SECRET_PATH, "utf8").trim();
+  } catch {
+    return false;
+  }
+  return sameHex(hmac(stored, "pairing"), hmac(secret, "pairing"));
+}
+
 // Identifies this agent session to the extension, which groups and cleans up its tabs. It lives in the
 // server's main thread, so it stays the same when the REPL worker is replaced.
 export const sessionId = randomUUID();
@@ -190,6 +201,9 @@ function becomeHub() {
             } catch {
               peer.close();
             }
+          } else if (message.type === "pair" && typeof message.secret === "string" && sameSecret(message.secret)) {
+            // The hub stored this secret, but its auth-ok did not arrive; the extension still offers it.
+            activate(message.secret, String(message.nonce));
           } else if (message.type === "auth" && existsSync(EXTENSION_SECRET_PATH)) {
             let secret = null;
             try {
