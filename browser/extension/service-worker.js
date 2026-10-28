@@ -49,7 +49,7 @@ function browserName() {
 }
 
 const handlers = {
-  "browser.info": async () => ({ name: browserName(), userAgent: navigator.userAgent }),
+  "browser.info": async () => ({ name: browserName(), userAgent: navigator.userAgent, version: chrome.runtime.getManifest().version }),
 
   "tabs.list": async () => (await chrome.tabs.query({})).map(tabInfo),
 
