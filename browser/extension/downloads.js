@@ -206,6 +206,8 @@ const recentPairs = []; // { urls, at, itemId } report pairings still open to do
 
 chrome.downloads.onCreated.addListener((item) => {
   expire(reports);
+  // The popup fallback looks only at items from the last moments, so older ones can go.
+  expire(unpairedItems);
   const now = Date.now();
   const urls = [item.url, item.finalUrl].filter(Boolean);
   for (let i = recentPairs.length - 1; i >= 0; i--) if (now - recentPairs[i].at > AMBIGUITY_MS) recentPairs.splice(i, 1);
