@@ -4,7 +4,7 @@
 
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { cpSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import { homedir, platform, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -110,6 +110,10 @@ export async function launchBrowser(extensionDir) {
   const executable = findChromium();
   if (!executable) throw new Error("No Chromium for tests found; install one with `npx playwright install chromium` or set BRUSE_TEST_CHROME");
   const profile = tempDir("profile");
+  // Downloads go to the profile, not the user's Downloads folder.
+  const downloads = join(profile, "Downloads");
+  mkdirSync(join(profile, "Default"), { recursive: true });
+  writeFileSync(join(profile, "Default", "Preferences"), JSON.stringify({ download: { default_directory: downloads, prompt_for_download: false } }));
   const args = [
     "--headless=new",
     "--enable-unsafe-extension-debugging",
@@ -148,6 +152,7 @@ export async function launchBrowser(extensionDir) {
   return {
     cdp,
     extensionId,
+    downloads,
     // Pages (not extension or internal targets) open in the browser.
     async pages() {
       const { targetInfos } = await cdp.send("Target.getTargets");
