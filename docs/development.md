@@ -64,6 +64,11 @@ package in `dist/`.
 The release version is the `version` of `browser/extension/manifest.json`; `package.json` carries the
 same value.
 
+## Tests
+
+Run `npm test` with Node 24 to exercise MCP input handling and REPL declaration persistence.
+These tests do not yet cover browser integration.
+
 ## Benchmarks
 
 `bench/` compares Bruse with Claude in Chrome on local task pages; see [bench/README.md](../bench/README.md).
