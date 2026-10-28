@@ -15,7 +15,7 @@ const skip = (path) => !path.endsWith(".DS_Store") && !path.endsWith("icon-sourc
 
 mkdirSync(stage, { recursive: true });
 cpSync(join(root, "browser"), join(stage, "browser"), { recursive: true, filter: skip });
-cpSync(join(root, "installer", "install.mjs"), join(stage, "installer", "install.mjs"));
+for (const file of ["install.mjs", "lib.mjs"]) cpSync(join(root, "installer", file), join(stage, "installer", file));
 cpSync(join(root, "installer", "Install.command"), join(stage, `Install ${name}.command`));
 chmodSync(join(stage, `Install ${name}.command`), 0o755);
 // Agents opened in the unpacked package read these: Codex reads AGENTS.md, Claude Code reads CLAUDE.md.
