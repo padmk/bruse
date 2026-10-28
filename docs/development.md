@@ -57,7 +57,8 @@ extension on the extensions page, or let it reload itself:
 node --input-type=module -e 'import { callBrowser } from "./browser/mcp/browser-link.mjs"; await callBrowser("extension.reload"); process.exit(0)'
 ```
 
-MCP server changes take effect in new agent sessions. `node installer/package.mjs` builds the zip
+MCP server changes take effect in new agent sessions. `node scripts/check.mjs` runs the checks CI
+runs: every module parses, the versions agree, and the MCP server starts and lists its tools. `node installer/package.mjs` builds the zip
 package in `dist/`.
 
 The release version is the `version` of `browser/extension/manifest.json`; `package.json` carries the
