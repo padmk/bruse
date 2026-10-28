@@ -182,13 +182,16 @@ export const LOCATOR_ENGINE = `function (steps, startRoot) {
     const labels = el.labels ? [...el.labels].map(textOf).join(" ") : "";
     return labels;
   };
+  // An icon-only control (an image or a labeled SVG and no text) is named by its icons' text alternatives.
+  const iconName = (el) =>
+    norm([...el.querySelectorAll("img[alt], [role=img][aria-label], svg[aria-label]")].filter((icon) => !icon.closest("[aria-hidden=true]")).map((icon) => icon.getAttribute("alt") ?? icon.getAttribute("aria-label")).join(" "));
   const accessibleName = (el) => {
     const label = labelText(el);
     if (norm(label)) return label;
     if (el.localName === "img") return el.getAttribute("alt") ?? "";
     if (el instanceof HTMLInputElement && ["button", "submit", "reset"].includes(el.type)) return el.value || el.type;
     const role = implicitRole(el);
-    if (["button", "link", "heading", "tab", "menuitem", "option", "checkbox", "radio", "cell", "columnheader", "listitem", "treeitem", "switch"].includes(role)) return textOf(el) || el.getAttribute("title") || "";
+    if (["button", "link", "heading", "tab", "menuitem", "option", "checkbox", "radio", "cell", "columnheader", "listitem", "treeitem", "switch"].includes(role)) return textOf(el) || iconName(el) || el.getAttribute("title") || "";
     return el.getAttribute("title") ?? el.getAttribute("placeholder") ?? "";
   };
   const textMatches = (roots, matcher, exact) => {
