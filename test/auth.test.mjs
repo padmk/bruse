@@ -11,8 +11,12 @@ let hub;
 const call = (session) => session.js("await cua.getState();");
 const secretPath = () => join(env.stateDir, "extension-secret");
 
-before(async () => { env = await startEnvironment(); });
-after(async () => { await env?.close(); });
+before(async () => {
+  env = await startEnvironment();
+});
+after(async () => {
+  await env?.close();
+});
 
 function upgrade(path, origin) {
   return new Promise((resolve, reject) => {
@@ -20,7 +24,10 @@ function upgrade(path, origin) {
     if (origin) headers.Origin = origin;
     const req = http.request({ host: "127.0.0.1", port: env.port, path, headers });
     req.on("upgrade", (_response, socket, head) => resolve({ socket, head }));
-    req.on("response", (response) => { response.resume(); resolve({ status: response.statusCode }); });
+    req.on("response", (response) => {
+      response.resume();
+      resolve({ status: response.statusCode });
+    });
     req.on("error", reject);
     req.end();
   });
@@ -46,8 +53,12 @@ async function rejectedExtension(message) {
   const { socket, head } = result;
   let data = head;
   let closed = false;
-  socket.on("data", (chunk) => { data = Buffer.concat([data, chunk]); });
-  socket.on("close", () => { closed = true; });
+  socket.on("data", (chunk) => {
+    data = Buffer.concat([data, chunk]);
+  });
+  socket.on("close", () => {
+    closed = true;
+  });
   try {
     await until(() => data.length >= 2 && data.length >= 2 + (data[1] & 127), { message: "authentication challenge" });
     const challenge = JSON.parse(data.subarray(2, 2 + (data[1] & 127)).toString());
@@ -56,7 +67,9 @@ async function rejectedExtension(message) {
     await until(() => closed, { message: "unauthenticated extension to close" });
     const remaining = data.subarray(2 + (data[1] & 127));
     assert.ok(!remaining.includes(Buffer.from("auth-ok")), "unauthenticated peer received auth-ok");
-  } finally { socket.destroy(); }
+  } finally {
+    socket.destroy();
+  }
 }
 
 test("first connection pairs and protects credentials", { timeout: 120_000 }, async () => {
@@ -68,7 +81,11 @@ test("first connection pairs and protects credentials", { timeout: 120_000 }, as
 
 test("hub rejects incorrect tokens and web origins", { timeout: 60_000 }, async () => {
   const token = readFileSync(join(env.stateDir, "hub-token"), "utf8").trim();
-  for (const [path, origin] of [["/client?token=wrong", undefined], [`/client?token=${token}`, "https://example.com"], ["/extension", "https://example.com"]]) {
+  for (const [path, origin] of [
+    ["/client?token=wrong", undefined],
+    [`/client?token=${token}`, "https://example.com"],
+    ["/extension", "https://example.com"],
+  ]) {
     const result = await upgrade(path, origin);
     if (result.socket) result.socket.destroy();
     assert.equal(result.status, 403);
@@ -105,6 +122,16 @@ test("another session takes over the hub without re-pairing", { timeout: 120_000
   await call(client);
   await call(hub);
   await hub.close();
-  await until(async () => { try { await call(client); return true; } catch { return false; } }, { timeoutMs: 40_000, message: "client to take over hub" });
+  await until(
+    async () => {
+      try {
+        await call(client);
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    { timeoutMs: 40_000, message: "client to take over hub" },
+  );
   assert.equal(readFileSync(secretPath(), "utf8"), original);
 });

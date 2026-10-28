@@ -71,7 +71,13 @@ export function browserCopy(port) {
   const changed = source.replace(/HUB_PORT = \d+/, `HUB_PORT = ${port}`);
   if (changed === source) throw new Error("HUB_PORT not found in shared.js");
   writeFileSync(shared, changed);
-  return { dir, browserDir: join(dir, "browser"), extensionDir: join(dir, "browser", "extension"), serverPath: join(dir, "browser", "mcp", "server.mjs"), remove: () => removeTemp(dir) };
+  return {
+    dir,
+    browserDir: join(dir, "browser"),
+    extensionDir: join(dir, "browser", "extension"),
+    serverPath: join(dir, "browser", "mcp", "server.mjs"),
+    remove: () => removeTemp(dir),
+  };
 }
 
 // A minimal Chrome DevTools Protocol client over the browser's WebSocket.
@@ -140,12 +146,20 @@ export async function launchBrowser(extensionDir) {
   const { sessionId } = await cdp.send("Target.attachToTarget", { targetId, flatten: true });
   await until(
     async () => {
-      const { result } = await cdp.send("Runtime.evaluate", { expression: "typeof chrome.developerPrivate?.updateProfileConfiguration", returnByValue: true }, sessionId);
+      const { result } = await cdp.send(
+        "Runtime.evaluate",
+        { expression: "typeof chrome.developerPrivate?.updateProfileConfiguration", returnByValue: true },
+        sessionId,
+      );
       return result.value === "function";
     },
     { message: "chrome://extensions to load" },
   );
-  await cdp.send("Runtime.evaluate", { expression: "chrome.developerPrivate.updateProfileConfiguration({ inDeveloperMode: true })", awaitPromise: true }, sessionId);
+  await cdp.send(
+    "Runtime.evaluate",
+    { expression: "chrome.developerPrivate.updateProfileConfiguration({ inDeveloperMode: true })", awaitPromise: true },
+    sessionId,
+  );
   await cdp.send("Target.closeTarget", { targetId });
   const { id: extensionId } = await cdp.send("Extensions.loadUnpacked", { path: extensionDir });
 
@@ -206,7 +220,10 @@ export async function startSession(serverPath, { stateDir, env = {} } = {}) {
     // Runs a cell; resolves with its text output, rejects with it when the cell failed.
     async js(code, timeoutMs) {
       const reply = await request("tools/call", { name: "js", arguments: { code } }, timeoutMs);
-      const text = (reply.result?.content ?? []).filter((item) => item.type === "text").map((item) => item.text).join("\n");
+      const text = (reply.result?.content ?? [])
+        .filter((item) => item.type === "text")
+        .map((item) => item.text)
+        .join("\n");
       if (reply.error || reply.result?.isError) throw Object.assign(new Error(text || JSON.stringify(reply.error)), { output: text });
       return text;
     },
