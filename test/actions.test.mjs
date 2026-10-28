@@ -93,7 +93,7 @@ test("confirm notification and acceptance", async () => {
   const output = await session.js(`await tab.playwright.getByRole('button',{name:'Confirm'}).click();`);
   assert.match(output, /dialog|confirm/i);
   assert.deepEqual(await json(`(async()=>{const d=await tab.getJsDialog(); return [d.type,d.message]})()`), ["confirm", "Proceed?"]);
-  await session.js(`(await tab.getJsDialog()).accept();`);
+  await session.js(`await (await tab.getJsDialog()).accept();`);
   assert.equal(await json(`tab.playwright.evaluate(() => window.confirmed)`), true);
 });
 
