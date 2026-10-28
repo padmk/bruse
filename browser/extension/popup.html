@@ -5,7 +5,11 @@
     <link rel="stylesheet" href="popup.css" />
   </head>
   <body>
-    <p id="status" role="status"></p>
+    <header>
+      <img src="icons/icon-32.png" width="20" height="20" alt="" />
+      <span id="name"></span>
+    </header>
+    <p id="status" role="status"><span class="dot" aria-hidden="true"></span><span id="status-text"></span></p>
     <button id="toggle" type="button"></button>
     <p id="hint"></p>
     <script type="module" src="popup.js"></script>
