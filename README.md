@@ -60,7 +60,7 @@ Start a new agent session afterwards: MCP servers load when a session starts.
 | `bruse uninstall` | Remove the registrations, the installed copy and the pairing state |
 | `bruse version` | Print the version |
 
-From a checkout, run them as `node bin/bruse.mjs <command>`. To update, run `bruse setup` again with
+From a checkout or the unpacked zip, run them as `node bin/bruse.mjs <command>`. To update, run `bruse setup` again with
 the new version; it reloads the extension in the browser. To uninstall, run `bruse uninstall` and
 remove the extension on the browser's extensions page.
 
