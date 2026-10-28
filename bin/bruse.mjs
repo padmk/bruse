@@ -5,7 +5,8 @@ const USAGE = `Usage: bruse <command>
 
 Commands:
   setup      install or update the extension files and the MCP server, register the server with
-             Claude Code and Codex, and wait for the browser extension to connect
+             the agent clients found (Claude Code, Codex, Cursor, VS Code and others), and wait
+             for the browser extension to connect
   doctor     check the installation, the registrations and the browser connection
   uninstall  remove the registrations, the installed files and the pairing state
   version    print the version`;
