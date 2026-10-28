@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **Install docs:** the README leads with `brew install padmk/tap/bruse`, and `bruse help` and the Homebrew notes name all the agent clients setup registers with.
+
 ## 0.17.0
 
 - **New look:** a new icon, and the toolbar popup shows the extension's state with a status dot and one clear button.

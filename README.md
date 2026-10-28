@@ -23,14 +23,16 @@ In [the benchmark against Claude in Chrome](bench/README.md), the same model fin
 
 ## Install
 
-From a checkout of this repository:
+With Homebrew (macOS or Linux):
 
 ```sh
-node bin/bruse.mjs setup
+brew install padmk/tap/bruse
+bruse setup
 ```
 
 Or download a release zip, unpack it and double-click **Install Bruse.command**. You can also open an
-agent in the unpacked folder and ask it to install Bruse; the package's `AGENTS.md` tells it how.
+agent in the unpacked folder and ask it to install Bruse; the package's `AGENTS.md` tells it how. From
+a checkout of this repository, run `node bin/bruse.mjs setup`.
 
 Setup:
 
