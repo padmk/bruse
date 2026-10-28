@@ -53,7 +53,6 @@ function registerServer() {
   const clients = agentClients();
   let failed = 0;
   for (const client of clients) {
-    client.remove();
     const result = client.add(command);
     if (result.status === 0) note(`${client.name}: added`);
     else {
@@ -62,7 +61,7 @@ function registerServer() {
     }
   }
   if (!clients.length) {
-    note("No Claude Code or Codex CLI found. Add this stdio server to your MCP client:");
+    note("No supported agent client found. Add this stdio server to your MCP client:");
     note(`  ${command.map((part) => JSON.stringify(part)).join(" ")}`);
   }
   return failed === 0;
