@@ -94,13 +94,13 @@ function scan(code) {
       statementStart = true;
     } else if ((c === "+" || c === "-") && code[i + 1] === c) {
       // ++ and -- are one token. After an operand on the same line (a name other than a keyword such as
-      // typeof or await, a literal, a closing bracket) they are postfix, and a line break after them
-      // ends the statement.
+      // typeof or await, a property name even if it is a keyword, a literal, a closing bracket) they are
+      // postfix, and a line break after them ends the statement.
       const previous = tokens[tokens.length - 1];
       const postfix =
         !newlineSinceLast &&
         !!previous &&
-        ((previous.kind === "word" && !KEYWORDS_BEFORE_REGEX.has(previous.text)) || previous.kind === "string" || previous.kind === "template" || previous.kind === "regex" || previous.text === ")" || previous.text === "]");
+        ((previous.kind === "word" && (!KEYWORDS_BEFORE_REGEX.has(previous.text) || tokens[tokens.length - 2]?.text === ".")) || previous.kind === "string" || previous.kind === "template" || previous.kind === "regex" || previous.text === ")" || previous.text === "]");
       push(i, i + 2, "punct", postfix ? undefined : { prefix: true });
       i += 2;
     } else {
