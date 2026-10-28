@@ -230,7 +230,7 @@ export class Locator {
     const deadline = Date.now() + timeoutMs;
     const { id, sessionId } = await this.resolveOne({ timeoutMs });
     const point = await this.tab.nodePoint(id, sessionId, { hitTest: true, force, timeoutMs: Math.max(0, deadline - Date.now()) });
-    await clickAt(this.tab.cdpSender(), point, { mouseButton: button, clickCount, key: modifiers.map((m) => (m === "ControlOrMeta" ? "meta" : m)).join("+") });
+    await clickAt(this.tab.cdpSender(), point, { mouseButton: button, clickCount, key: modifiers.join("+") });
     await this.tab.afterInput();
   }
   async dblclick(options = {}) {
@@ -269,7 +269,7 @@ export class Locator {
   async press(key, { timeoutMs } = {}) {
     const { id, cdp } = await this.resolveOne({ timeoutMs });
     await focusNode(cdp, id);
-    await pressChord(this.tab.cdpSender(), key.replace(/\bControlOrMeta\b/, "meta"));
+    await pressChord(this.tab.cdpSender(), key);
     await this.tab.afterInput();
   }
 
