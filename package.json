@@ -4,6 +4,11 @@
   "private": true,
   "description": "Browser use for local AI agents: an extension and MCP server that read and operate the user's browser tabs",
   "license": "MIT",
+  "homepage": "https://github.com/padmk/bruse",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/padmk/bruse.git"
+  },
   "type": "module",
   "bin": {
     "bruse": "bin/bruse.mjs"
