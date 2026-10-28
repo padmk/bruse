@@ -66,8 +66,12 @@ same value.
 
 ## Tests
 
-Run `npm test` with Node 24 to exercise MCP input handling and REPL declaration persistence.
-These tests do not yet cover browser integration.
+`npm test` runs the unit tests and the end-to-end tests. The end-to-end tests load a copy of the
+extension into headless Chrome for Testing and drive it through MCP sessions, the way an agent does.
+Each test file uses its own hub port, state directory and browser profile, so the tests never reach an
+installed Bruse or the browser it is connected to. They look for Chromium in Playwright's cache
+(`npx playwright install chromium`) or take its executable from `BRUSE_TEST_CHROME`. `test/harness.mjs`
+starts the browser, sessions and local test sites.
 
 ## Benchmarks
 
