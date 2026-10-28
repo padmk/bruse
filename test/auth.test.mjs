@@ -86,11 +86,19 @@ test("hub rejects incorrect tokens and web origins", { timeout: 60_000 }, async 
     ["/client?token=wrong", undefined],
     [`/client?token=${token}`, "https://example.com"],
     ["/extension", "https://example.com"],
+    ["/extension", "chrome-extension://abcdefghijklmnopabcdefghijklmnop"],
   ]) {
     const result = await upgrade(path, origin);
     if (result.socket) result.socket.destroy();
     assert.equal(result.status, 403);
   }
+});
+
+test("hub accepts the Chrome Web Store copy of the extension", { timeout: 60_000 }, async () => {
+  const { STORE_EXTENSION_ID } = await import(join(env.copy.browserDir, "mcp", "config.mjs"));
+  const result = await upgrade("/extension", `chrome-extension://${STORE_EXTENSION_ID}`);
+  assert.ok(result.socket, `store extension upgrade rejected: ${result.status}`);
+  result.socket.destroy();
 });
 
 test("hub rejects requests addressed to another host name", { timeout: 60_000 }, async () => {

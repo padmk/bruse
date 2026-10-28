@@ -8,6 +8,7 @@ import { cpSync, existsSync, mkdirSync, renameSync } from "node:fs";
 import { homedir, platform } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { STORE_EXTENSION_ID } from "../browser/mcp/config.mjs";
 import { agentClients, extensionDir, fail, installRoot, installed, manifest, note, onPath, product, requireNode, serverPath, source, step, moveToTrash } from "./lib.mjs";
 
 const PAIR_WAIT_MS = 10 * 60_000;
@@ -135,18 +136,28 @@ async function reloadExtension(callBrowser, connected) {
   );
 }
 
+// The Chrome Web Store's copy updates itself; reloading it would not change its version.
+function checkStoreExtension(info) {
+  if (info.version === manifest.version) note(`Connected to ${info.name}, extension from the Chrome Web Store.`);
+  else note(`The extension from the Chrome Web Store is version ${info.version}; the browser updates it to ${manifest.version} on its own.`);
+}
+
+const fromStore = (info) => info?.id === STORE_EXTENSION_ID;
+
 export async function setup() {
   requireNode();
   installFiles();
   const registered = registerServer();
   const { callBrowser } = await import(join(installed, "mcp", "browser-link.mjs"));
   const connected = await callBrowser("browser.info").catch(() => null);
-  if (connected) await reloadExtension(callBrowser, connected);
+  if (fromStore(connected)) checkStoreExtension(connected);
+  else if (connected) await reloadExtension(callBrowser, connected);
   else {
     openExtensionsPage();
     const info = await waitForExtension(callBrowser);
     // An extension enabled from another folder, or an older copy, connects too; it must run this version.
-    if (info.version !== manifest.version) await reloadExtension(callBrowser, info);
+    if (fromStore(info)) checkStoreExtension(info);
+    else if (info.version !== manifest.version) await reloadExtension(callBrowser, info);
   }
   if (!registered) fail(`${product} is installed, but registering the MCP server failed for an agent CLI (see above).`);
   step(`${product} is ready. Start a new agent session to use it.`);

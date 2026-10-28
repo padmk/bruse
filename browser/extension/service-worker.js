@@ -50,7 +50,7 @@ function browserName() {
 }
 
 const handlers = {
-  "browser.info": async () => ({ name: browserName(), userAgent: navigator.userAgent, version: chrome.runtime.getManifest().version, paused: await isPaused() }),
+  "browser.info": async () => ({ name: browserName(), userAgent: navigator.userAgent, version: chrome.runtime.getManifest().version, id: chrome.runtime.id, paused: await isPaused() }),
 
   "tabs.list": async () => (await chrome.tabs.query({})).map(tabInfo),
 

@@ -6,7 +6,7 @@
 import { createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import http from "node:http";
-import { EXTENSION_ORIGIN, EXTENSION_SECRET_PATH, PORT, PRODUCT_NAME, STATE_DIR, TOKEN_PATH } from "./config.mjs";
+import { EXTENSION_ORIGINS, EXTENSION_SECRET_PATH, PORT, PRODUCT_NAME, STATE_DIR, TOKEN_PATH } from "./config.mjs";
 import { acceptUpgrade, rejectUpgrade } from "./websocket.mjs";
 
 const REQUEST_TIMEOUT_MS = 90_000;
@@ -267,7 +267,7 @@ function becomeHub() {
       }
       // A web page that points its own host name at 127.0.0.1 (DNS rebinding) still sends that name.
       if (!LOCAL_HOSTS.has(req.headers.host)) return rejectUpgrade(socket);
-      if (url.pathname === "/extension" && req.headers.origin === EXTENSION_ORIGIN) acceptExtension(req, socket);
+      if (url.pathname === "/extension" && EXTENSION_ORIGINS.has(req.headers.origin)) acceptExtension(req, socket);
       else if (url.pathname === "/client" && !req.headers.origin && url.searchParams.get("token") === token) acceptClient(req, socket);
       else rejectUpgrade(socket);
     });
