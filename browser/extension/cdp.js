@@ -176,6 +176,12 @@ async function attachNow(tabId) {
   }
   const session = { lastUsed: Date.now(), dialog: null, console: [], dialogWaiters: [], pageContexts: new Set(), frames: new Map(), requests: [], inflight: new Map(), attachedAt: Date.now(), networkActivityAt: null };
   sessions.set(tabId, session);
+  // A pause that came while the attach was in flight found no session to detach; one that comes from
+  // now on finds this one.
+  if (await isPaused()) {
+    await detach(tabId);
+    throw new Error(PAUSED_ERROR);
+  }
   // After a service worker restart the session is still attached but its state is gone. Turning
   // auto-attach and Runtime off first makes the browser report frames and execution contexts again.
   if (reattached) {
@@ -274,11 +280,6 @@ export async function cdp(tabId, method, params, sessionId, timeoutMs) {
 
 async function sendChecked(tabId, method, params, sessionId, timeoutMs) {
   const session = await attach(tabId);
-  // A pause that came while the attach was in flight found no session to detach.
-  if (await isPaused()) {
-    await detach(tabId);
-    throw new Error(PAUSED_ERROR);
-  }
   if (session.dialog && !DIALOG_SAFE_METHODS.has(method) && !method.startsWith("Input.")) {
     throw new Error(`A JavaScript ${session.dialog.type} dialog is open on this tab ("${session.dialog.message}"); handle it with getJsDialog() first`);
   }
