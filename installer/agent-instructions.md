@@ -61,17 +61,12 @@ Use a stable Node path such as `/opt/homebrew/bin/node`, not a versioned one.
 - **Developer mode warning.** Chromium shows a notice about developer-mode extensions. It is expected
   for extensions loaded this way.
 
-## Uninstalling
+## Checking and uninstalling
 
-Remove the extension on the browser's extensions page, then:
-
-```sh
-claude mcp remove -s user bruse
-codex mcp remove bruse
-```
-
-Then move `~/Library/Application Support/Bruse` (macOS) or `~/.local/share/bruse` (Linux) and
-`~/.local/state/browser-control` to the Trash.
+`node bin/bruse.mjs doctor` checks the installation, the registrations and the browser connection and
+says what to do about each problem. `node bin/bruse.mjs uninstall` removes the registrations and moves
+the installed copy and the pairing state to the Trash; the user then removes the extension on the
+browser's extensions page.
 
 ## Rules
 

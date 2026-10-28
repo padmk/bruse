@@ -15,7 +15,8 @@ const skip = (path) => !path.endsWith(".DS_Store") && !path.endsWith("icon-sourc
 
 mkdirSync(stage, { recursive: true });
 cpSync(join(root, "browser"), join(stage, "browser"), { recursive: true, filter: skip });
-for (const file of ["install.mjs", "lib.mjs"]) cpSync(join(root, "installer", file), join(stage, "installer", file));
+for (const file of ["install.mjs", "lib.mjs", "doctor.mjs", "uninstall.mjs"]) cpSync(join(root, "installer", file), join(stage, "installer", file));
+cpSync(join(root, "bin", "bruse.mjs"), join(stage, "bin", "bruse.mjs"));
 cpSync(join(root, "installer", "Install.command"), join(stage, `Install ${name}.command`));
 chmodSync(join(stage, `Install ${name}.command`), 0o755);
 for (const file of ["README.md", "LICENSE"]) cpSync(join(root, file), join(stage, file));

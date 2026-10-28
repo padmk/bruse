@@ -145,7 +145,9 @@ export async function setup() {
   if (connected) await reloadExtension(callBrowser, connected);
   else {
     openExtensionsPage();
-    await waitForExtension(callBrowser);
+    const info = await waitForExtension(callBrowser);
+    // An extension enabled from another folder, or an older copy, connects too; it must run this version.
+    if (info.version !== manifest.version) await reloadExtension(callBrowser, info);
   }
   if (!registered) fail(`${product} is installed, but registering the MCP server failed for an agent CLI (see above).`);
   step(`${product} is ready. Start a new agent session to use it.`);
