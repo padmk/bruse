@@ -26,3 +26,6 @@ function extensionId(manifestKey) {
 
 const manifest = JSON.parse(readFileSync(new URL("../extension/manifest.json", import.meta.url), "utf8"));
 export const EXTENSION_ORIGIN = `chrome-extension://${extensionId(manifest.key)}`;
+
+// The release version, from the manifest of the extension shipped with this server.
+export const VERSION = manifest.version;

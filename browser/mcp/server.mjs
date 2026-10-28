@@ -6,9 +6,10 @@ import { createInterface } from "node:readline";
 import { Worker } from "node:worker_threads";
 import { isPressInput } from "../extension/shared.js";
 import { callBrowser, endSession, onBrowserEvent, sessionId } from "./browser-link.mjs";
+import { VERSION } from "./config.mjs";
 import { beforeInput, isOpeningInput, onEvent as guardFocus } from "./focus-guard.mjs";
 
-const SERVER_INFO = { name: "browser-control", version: "0.3.0" };
+const SERVER_INFO = { name: "browser-control", version: VERSION };
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 
