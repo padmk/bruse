@@ -11,6 +11,7 @@
 - **Fixed, exports:** YouTube transcripts and Google Workspace exports go to a directory only the user can read, and a second export with the same name no longer replaces the first.
 - **Fixed, REPL:** a declaration on the line after `count++` or `count--` persists to later cells.
 - **Fixed, keys:** `ControlOrMeta` in locator `press` and `click` is Control outside macOS, and `tab.pressKey` accepts it too.
+- **Fixed, downloads:** a `target=_blank` link to an attachment that the server answers at once counts for the waiting tab again (the new tab closed before its opener was looked up), and a tab the agent creates right after a page opened one no longer holds back its downloads.
 - **Fixed, selected tab:** `browser.tabs.selected()` returns the active tab of the window the user used last, not the active tab of whichever window comes first.
 - **Release zip:** it includes SECURITY.md and CHANGELOG.md, and README links to files it leaves out point to the repository.
 - **Fixed, MCP:** a JSON line that is not an object (such as `null`) is ignored instead of ending the server.

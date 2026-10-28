@@ -52,12 +52,16 @@ function intercept(tabId) {
   cdp(tabId, "Fetch.enable", { patterns: [{ urlPattern: "*", resourceType: "Document", requestStage: "Response" }] }).catch(() => intercepting.delete(tabId));
 }
 
+// Tabs the agent or the user creates have no opener; only a page's opening can be a download.
 chrome.tabs.onCreated.addListener((tab) => {
+  if (tab.openerTabId === undefined) return;
   const opening = [...pageOpenedAt].some(([source, at]) => Date.now() - at < AGENT_INPUT_WINDOW_MS && sinceAgentInput(source) < AGENT_INPUT_WINDOW_MS);
   if (opening) intercept(tab.id);
 });
 
 chrome.webNavigation.onCreatedNavigationTarget.addListener(({ sourceTabId, tabId, url }) => {
+  // The page's reported opening has its tab now.
+  pageOpenedAt.delete(sourceTabId);
   if (waitingTab(sourceTabId) === null || sinceAgentInput(sourceTabId) > AGENT_INPUT_WINDOW_MS) return;
   const popup = { url, at: Date.now(), endedAt: null, referrer: null };
   popups.set(tabId, popup);
@@ -214,6 +218,9 @@ chrome.downloads.onCreated.addListener((item) => {
   const index = reports.findIndex((report) => urls.includes(report.url) && now - report.at < REPORT_MATCH_MS);
   if (index >= 0) {
     const [report] = reports.splice(index, 1);
+    // The same download may be reported twice (a held response and Page.downloadWillBegin); the other
+    // report must not pair with another tab's item.
+    for (let i = reports.length - 1; i >= 0; i--) if (reports[i].tabId === report.tabId && reports[i].url === report.url) reports.splice(i, 1);
     recentPairs.push({ urls, at: report.at, itemId: item.id });
     pairedAt.set(item.id, report.at);
     return assign(item.id, report.tabId);
