@@ -7,8 +7,10 @@ let env, site, session, count = 0;
 before(async () => {
   env = await startEnvironment();
   site = await startSite({
-    "/": '<a href="/file" download>Download</a><a href="/file" target="_blank">Blank</a>',
+    "/": '<a href="/file" download>Download</a><a href="/file" target="_blank">Blank</a><a href="/slow" target="_blank">Delayed</a>',
     "/file": (_req, res) => res.writeHead(200, { "content-disposition": 'attachment; filename="file.txt"', "content-type": "text/plain" }).end(`content ${++count}`),
+    // Answers after the new tab exists, so the extension holds the response and sees the file.
+    "/slow": (_req, res) => setTimeout(() => res.writeHead(200, { "content-disposition": 'attachment; filename="slow.txt"', "content-type": "text/plain" }).end("slow"), 1000),
   });
   session = await env.session();
 });
@@ -25,11 +27,16 @@ test("download attribute saves the attachment", async () => {
   const path = await download("first", "Download");
   assert.equal(readFileSync(path, "utf8"), "content 1");
 });
-// The opener wait times out for a fast target=_blank attachment response.
-test("blank attachment belongs to its opener", { todo: true }, async () => {
+// The new tab turns into the download and closes before its response can be held.
+test("blank attachment belongs to its opener", async () => {
   await tab("blank");
-  const path = lastJson(await session.js(`const waitBlank = blank.playwright.waitForEvent("download", {timeoutMs: 3000}); await blank.playwright.getByRole("link", {name: "Blank"}).click(); nodeRepl.write(JSON.stringify(await (await waitBlank).path()));`));
+  const path = lastJson(await session.js(`const waitBlank = blank.playwright.waitForEvent("download", {timeoutMs: 15000}); await blank.playwright.getByRole("link", {name: "Blank"}).click(); nodeRepl.write(JSON.stringify(await (await waitBlank).path()));`));
   assert.equal(readFileSync(path, "utf8"), "content 2");
+});
+test("slow blank attachment belongs to its opener", async () => {
+  await tab("slowBlank");
+  const path = lastJson(await session.js(`const waitSlow = slowBlank.playwright.waitForEvent("download", {timeoutMs: 15000}); await slowBlank.playwright.getByRole("link", {name: "Delayed"}).click(); nodeRepl.write(JSON.stringify(await (await waitSlow).path()));`));
+  assert.equal(readFileSync(path, "utf8"), "slow");
 });
 test("tabs downloading the same URL receive their own files", async () => {
   await tab("left"); await tab("right");
