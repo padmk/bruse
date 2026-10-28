@@ -2,104 +2,72 @@
 
 <img src="browser/extension/icons/icon-128.png" width="96" alt="Bruse icon" align="right">
 
-**Bruse** (browser use, with a nod to Bruce Lee) gives local AI agents fast, background control of the
-user's real browser, independent of any vendor's runtime.
+**Bruse** (browser use, with a nod to Bruce Lee) gives local AI agents fast, background control of your
+real browser, independent of any vendor's runtime.
 
-## Browser
+An MCP server gives the agent (Claude Code, Codex or another MCP client) a persistent JavaScript REPL
+with a `cua` object that reads and operates your Chromium browser's tabs in the background, without
+taking focus or moving the cursor. The API follows the shape of Codex's browser computer use: numbered
+accessibility trees with diffs, input by element number, Playwright-style locators, dialogs, uploads
+and downloads. It works in the tabs where you are already signed in, and nothing is written into the
+browser's or the system's configuration.
 
-Gives an MCP client (Claude Code) a persistent JavaScript REPL with a `cua` object for reading and
-operating the user's browser tabs in the background, without taking focus or moving the cursor. The API
-follows the shape of Codex's browser computer use: numbered accessibility trees with diffs, input by
-element number, Playwright-style locators, dialogs, uploads and downloads. Installing the extension is
-the only setup; nothing is written into the browser's or the system's configuration.
+In [the benchmark against Claude in Chrome](bench/README.md), the same model finished each task 56 to
+87 % faster and 26 to 88 % cheaper with Bruse.
 
-```text
-MCP server (hub) ◀──WebSocket 127.0.0.1:47615──▶ extension ──chrome.debugger / chrome.tabs──▶ tabs
-   ▲
-   └── other MCP servers (one per agent session) connect to the hub as clients
-```
+## Requirements
 
-### Layout
+- macOS (Linux works too, but is tested less), with Node.js 22 or newer
+- A Chromium browser: Brave, Chrome, Edge, Chromium or Vivaldi
+- An MCP client; setup registers the server with Claude Code and Codex when their CLIs are installed
 
-- `browser/extension/`: MV3 extension, a thin executor. `offscreen.js` holds the WebSocket to the hub
-  (an offscreen document is never suspended, so it reconnects within 0.5 s of a session starting) and
-  passes requests to `service-worker.js`, which handles tab lifecycle, browser management, history and
-  downloads. `cdp.js` relays DevTools Protocol commands through `chrome.debugger`, including the
-  sessions of cross-origin frames, and tracks dialogs and console output. `sessions.js` keeps the tabs
-  of all agent sessions in one tab group per window, tracks which session owns each tab and closes a
-  session's unmarked tabs when it ends. `downloads.js` pairs downloads with the tabs that started
-  them. `shared.js` is the one owner of what the extension and the MCP server must agree on (hub
-  port, management method allow-list, which input counts as the agent's press and for how long,
-  password manager element names, the unresponsive-page error); it uses no browser or Node APIs, so
-  the MCP server imports it from the extension directory. `browser/package.json` marks the `.js`
-  files as ES modules for Node; installed copies of `browser/` include it.
-- `bench/`: benchmark against Claude in Chrome on local task pages; see `bench/README.md`.
-- `installer/`: `install.mjs` (the installer), `Install.command` (its double-click entry point on macOS,
-  which finds Node.js), `agent-instructions.md` (installation steps for an agent, shipped as the
-  package's `AGENTS.md` with a `CLAUDE.md` that imports it) and `package.mjs` (builds the zip package).
-- `browser/mcp/`: MCP stdio server, no dependencies.
-  - `server.mjs`: the `js` and `js_reset` tools. It runs the REPL in a worker thread (`repl-worker.mjs`)
-    and replaces the worker whenever a call times out or the worker crashes, so nothing the call left running (an endless
-    loop, a timer, a pending request) can act on a page later. The browser connection stays in the main
-    thread and survives the replacement; the worker reaches it through `browser-port.mjs`.
-  - `repl.mjs`: the persistent REPL; `hoist.mjs`: turns top-level declarations of a cell into globals so
-    they persist and can be redeclared.
-  - `focus-guard.mjs`: gives the front back to the user's app when an agent action makes a page
-    open a tab and the browser takes the front (see Behavior); a switch the user makes stands.
-  - `browser-link.mjs`, `websocket.mjs`, `config.mjs`: hub election, authentication and transport. The
-    first server to bind the port becomes the hub; the others connect to it. A hub that exits first lets
-    in-flight requests finish, read-only requests interrupted by a handover are resent, and a new hub
-    is elected on the next call.
-  - `cua/`: the browser API. `index.mjs` (`cua` object, browser and management capability), `tab.mjs`
-    (tab methods), `ax-tree.mjs` (accessibility snapshots across frames with stable element numbers and
-    diffs), `aria-snapshot.mjs` (Playwright-style ARIA snapshot for `domSnapshot()`), `locator.mjs` and `page-scripts.mjs` (locators and in-page helpers), `elements.mjs` (pointer
-    input), `keys.mjs` (xdotool-style key chords), `content.mjs` (YouTube transcript and Google
-    Workspace exports), `docs.mjs` (documentation shown to the agent), `output.mjs`.
+## Install
 
-Security: the hub accepts peer MCP servers only with the token in `~/.local/state/browser-control/hub-token`
-(mode 0600), so web pages and other users cannot drive it. Hub and extension authenticate each other: on
-first connection the extension pairs by sending a random secret, which the hub stores in
-`~/.local/state/browser-control/extension-secret` (0600); every later connection proves that secret in
-both directions with HMAC over fresh nonces. The extension executes requests only on an authenticated
-connection, so a process posing as the hub on the port gets nothing, and one posing as the extension
-cannot replace it. Pairing itself trusts the first connection: while the extension has no secret
-(on first install or after a reinstall) it gives its new secret to whatever listens on the port, and
-while the hub has no `extension-secret` it accepts the first extension that pairs. Pair while the hub
-is your own session. After reinstalling the extension (it then has a new secret), remove
-`extension-secret` so that it can pair again.
-
-### Install
-
-Requires Node.js 22 or newer and a Chromium browser (Brave, Chrome, Edge).
-
-1. Build the package with `node installer/package.mjs`; it writes `dist/Bruse-<version>.zip` (about 100 KB).
-2. Unzip it and double-click **Install Bruse.command** (or run `node installer/install.mjs` from a checkout),
-   or open an agent (Claude Code, Codex) in the unpacked folder and ask it to install Bruse: the package's
-   `AGENTS.md` tells it how.
-   The installer:
-   - copies the extension and the MCP server to `~/Library/Application Support/Bruse/browser`
-     (`~/.local/share/bruse/browser` on Linux), replacing a previous version;
-   - registers the MCP server as `bruse` with Claude Code (user scope) and Codex, whichever is installed;
-   - when the extension is not connected yet, shows its folder in Finder and opens the browser's extensions
-     page (the first time, macOS asks to let the terminal control the browser);
-   - waits until the extension connects, which also pairs it (see Security), or reloads an extension that
-     is already connected so that it runs the new files.
-3. The one manual step, on first install only: on the extensions page turn on Developer mode and drag the
-   `extension` folder onto the page (or choose **Load unpacked**). Chromium browsers on macOS install other
-   extensions only from the Chrome Web Store, so this step remains until the extension is published there.
-
-A package downloaded from the internet is quarantined: macOS refuses to open the unsigned
-`Install Bruse.command` until it is allowed in System Settings › Privacy & Security (**Open Anyway**).
-
-After editing extension files, reload the extension in `brave://extensions`, or let it reload itself:
+From a checkout of this repository:
 
 ```sh
-node --input-type=module -e 'import { callBrowser } from "./browser/mcp/browser-link.mjs"; await callBrowser("extension.reload"); process.exit(0)'
+node bin/bruse.mjs setup
 ```
 
-MCP server changes take effect in new agent sessions.
+Or download a release zip, unpack it and double-click **Install Bruse.command**. You can also open an
+agent in the unpacked folder and ask it to install Bruse; the package's `AGENTS.md` tells it how.
 
-### Usage
+Setup:
+
+- copies the extension and the MCP server to `~/Library/Application Support/Bruse/browser`
+  (`~/.local/share/bruse/browser` on Linux), replacing a previous version;
+- registers the MCP server as `bruse` with Claude Code (user scope) and Codex, whichever is installed;
+- when the extension is not connected yet, shows its folder in Finder and opens the browser's
+  extensions page (the first time, macOS asks to let the terminal control the browser);
+- waits until the extension connects, which also pairs it (see [Security and privacy](#security-and-privacy)),
+  or reloads an extension that is already connected and waits until it runs the new version.
+
+The one manual step, on first install only: on the extensions page turn on **Developer mode** and drag
+the `extension` folder onto the page (or choose **Load unpacked**). Chromium browsers install other
+extensions only from the Chrome Web Store, so this step remains until the extension is published there.
+
+A zip downloaded from the internet is quarantined: macOS refuses to open the unsigned
+`Install Bruse.command` until you allow it in System Settings › Privacy & Security (**Open Anyway**).
+
+Start a new agent session afterwards: MCP servers load when a session starts.
+
+## Commands
+
+| Command | What it does |
+| --- | --- |
+| `bruse setup` | Install or update, register the MCP server and wait for the extension |
+| `bruse doctor` | Check Node.js, the installed copy, the registrations, pairing and the browser connection |
+| `bruse uninstall` | Remove the registrations, the installed copy and the pairing state |
+| `bruse version` | Print the version |
+
+From a checkout, run them as `node bin/bruse.mjs <command>`. To update, run `bruse setup` again with
+the new version; it reloads the extension in the browser. To uninstall, run `bruse uninstall` and
+remove the extension on the browser's extensions page.
+
+## Usage
+
+Ask the agent to do something in your browser. Its first call to the `js` tool returns the API
+documentation; a session then looks like this:
 
 ```js
 await cua.getState();                                             // browsers and tabs
@@ -110,9 +78,33 @@ await tab.playwright.getByRole("button", { name: "Save" }).click();
 await tab.getScreenshot();
 ```
 
-The full API is in `browser/mcp/cua/docs.mjs`, which the agent receives on its first browser call.
+The full API is in [browser/mcp/cua/docs.mjs](browser/mcp/cua/docs.mjs).
 
-### Behavior
+## Security and privacy
+
+- **The agent gets your browser.** Code sent to the `js` tool runs as your user with Node.js
+  privileges and acts in your signed-in tabs. The agent is told to confirm irreversible or
+  outward-facing steps with you, but that is an instruction to the model, not a guarantee.
+- **Page content goes to your model provider.** What the agent reads from a tab (accessibility trees,
+  screenshots, page text) is returned to the agent and so reaches the provider of the model it runs on.
+  Bruse itself sends nothing anywhere: the server and the extension talk only over `127.0.0.1`.
+- **One browser.** The hub talks to one paired extension, in one browser profile, at a time.
+- **Who can drive it.** The hub accepts peer MCP servers only with the token in
+  `~/.local/state/browser-control/hub-token` (mode 0600), so web pages and other users cannot drive it.
+  Hub and extension authenticate each other: on first connection the extension pairs by sending a
+  random secret, which the hub stores in `~/.local/state/browser-control/extension-secret` (0600);
+  every later connection proves that secret in both directions with HMAC over fresh nonces. The
+  extension executes requests only on an authenticated connection, so a process posing as the hub on
+  the port gets nothing, and one posing as the extension cannot replace it.
+- **Pairing trusts the first connection.** While the extension has no secret (on first install or
+  after a reinstall) it offers its new secret to whatever listens on the port, and while the hub has
+  no `extension-secret` it accepts the first extension that pairs. Pair while the hub is your own
+  session. After reinstalling the extension, move `extension-secret` to the Trash so that the new
+  extension can pair; it connects again within a second.
+
+Report vulnerabilities as described in [SECURITY.md](SECURITY.md).
+
+## Behavior
 
 - Agent tabs open without focus in the window's "Claude" tab group, which all agent sessions share;
   the extension remembers which session owns each tab, also across extension reloads. When a session
@@ -172,3 +164,12 @@ The full API is in `browser/mcp/cua/docs.mjs`, which the agent receives on its f
   organizes windows, tabs, tab groups and bookmarks; `tab.content` exports YouTube transcripts and
   Google Docs, Sheets and Slides to local files.
 - Browsers block extensions from loading `data:` and internal (`brave://`, `chrome://`) URLs.
+
+## Development
+
+The code layout, working on the code and the benchmarks are in [docs/development.md](docs/development.md).
+Changes are listed in [CHANGELOG.md](CHANGELOG.md).
+
+## License
+
+[MIT](LICENSE)

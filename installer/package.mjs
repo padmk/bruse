@@ -18,6 +18,7 @@ cpSync(join(root, "browser"), join(stage, "browser"), { recursive: true, filter:
 for (const file of ["install.mjs", "lib.mjs"]) cpSync(join(root, "installer", file), join(stage, "installer", file));
 cpSync(join(root, "installer", "Install.command"), join(stage, `Install ${name}.command`));
 chmodSync(join(stage, `Install ${name}.command`), 0o755);
+for (const file of ["README.md", "LICENSE"]) cpSync(join(root, file), join(stage, file));
 // Agents opened in the unpacked package read these: Codex reads AGENTS.md, Claude Code reads CLAUDE.md.
 cpSync(join(root, "installer", "agent-instructions.md"), join(stage, "AGENTS.md"));
 writeFileSync(join(stage, "CLAUDE.md"), "@AGENTS.md\n");

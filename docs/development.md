@@ -1,0 +1,68 @@
+# Development
+
+## Layout
+
+```text
+MCP server (hub) ◀──WebSocket 127.0.0.1:47615──▶ extension ──chrome.debugger / chrome.tabs──▶ tabs
+   ▲
+   └── other MCP servers (one per agent session) connect to the hub as clients
+```
+
+- `browser/extension/`: MV3 extension, a thin executor. `offscreen.js` holds the WebSocket to the hub
+  (an offscreen document is never suspended, so it reconnects within 0.5 s of a session starting) and
+  passes requests to `service-worker.js`, which handles tab lifecycle, browser management, history and
+  downloads. `cdp.js` relays DevTools Protocol commands through `chrome.debugger`, including the
+  sessions of cross-origin frames, and tracks dialogs and console output. `sessions.js` keeps the tabs
+  of all agent sessions in one tab group per window, tracks which session owns each tab and closes a
+  session's unmarked tabs when it ends. `downloads.js` pairs downloads with the tabs that started
+  them. `shared.js` is the one owner of what the extension and the MCP server must agree on (hub
+  port, management method allow-list, which input counts as the agent's press and for how long,
+  password manager element names, the unresponsive-page error); it uses no browser or Node APIs, so
+  the MCP server imports it from the extension directory. `browser/package.json` marks the `.js`
+  files as ES modules for Node; installed copies of `browser/` include it.
+- `bench/`: benchmark against Claude in Chrome on local task pages; see `bench/README.md`.
+- `installer/`: `install.mjs` (the installer), `Install.command` (its double-click entry point on macOS,
+  which finds Node.js), `agent-instructions.md` (installation steps for an agent, shipped as the
+  package's `AGENTS.md` with a `CLAUDE.md` that imports it) and `package.mjs` (builds the zip package).
+- `browser/mcp/`: MCP stdio server, no dependencies.
+  - `server.mjs`: the `js` and `js_reset` tools. It runs the REPL in a worker thread (`repl-worker.mjs`)
+    and replaces the worker whenever a call times out or the worker crashes, so nothing the call left running (an endless
+    loop, a timer, a pending request) can act on a page later; a command the call had already sent to
+    the browser still completes. The browser connection stays in the main
+    thread and survives the replacement; the worker reaches it through `browser-port.mjs`.
+  - `repl.mjs`: the persistent REPL; `hoist.mjs`: turns top-level declarations of a cell into globals so
+    they persist and can be redeclared.
+  - `focus-guard.mjs`: gives the front back to the user's app when an agent action makes a page
+    open a tab and the browser takes the front (see Behavior); a switch the user makes stands.
+  - `browser-link.mjs`, `websocket.mjs`, `config.mjs`: hub election, authentication and transport. The
+    first server to bind the port becomes the hub; the others connect to it. A hub that exits first lets
+    in-flight requests finish, read-only requests interrupted by a handover are resent, and a new hub
+    is elected on the next call.
+  - `cua/`: the browser API. `index.mjs` (`cua` object, browser and management capability), `tab.mjs`
+    (tab methods), `ax-tree.mjs` (accessibility snapshots across frames with stable element numbers and
+    diffs), `aria-snapshot.mjs` (Playwright-style ARIA snapshot for `domSnapshot()`), `locator.mjs` and `page-scripts.mjs` (locators and in-page helpers), `elements.mjs` (pointer
+    input), `keys.mjs` (xdotool-style key chords), `content.mjs` (YouTube transcript and Google
+    Workspace exports), `docs.mjs` (documentation shown to the agent), `output.mjs`.
+- `bin/bruse.mjs`: the `bruse` command; `installer/doctor.mjs` and `installer/uninstall.mjs` hold its
+  `doctor` and `uninstall` commands, and `installer/lib.mjs` the paths and agent CLI handling they
+  share with the installer.
+
+## Working on the code
+
+Run the MCP server from a checkout by registering `browser/mcp/server.mjs` with your agent instead of
+the installed copy, and load `browser/extension` unpacked. After editing extension files, reload the
+extension on the extensions page, or let it reload itself:
+
+```sh
+node --input-type=module -e 'import { callBrowser } from "./browser/mcp/browser-link.mjs"; await callBrowser("extension.reload"); process.exit(0)'
+```
+
+MCP server changes take effect in new agent sessions. `node installer/package.mjs` builds the zip
+package in `dist/`.
+
+The release version is the `version` of `browser/extension/manifest.json`; `package.json` carries the
+same value.
+
+## Benchmarks
+
+`bench/` compares Bruse with Claude in Chrome on local task pages; see [bench/README.md](../bench/README.md).
