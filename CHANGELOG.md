@@ -1,7 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.17.0
 
+- **New look:** a new icon, and the toolbar popup shows the extension's state with a status dot and one clear button.
+- **Chrome Web Store:** the MCP server accepts the extension from the Chrome Web Store as well as an unpacked copy; setup and doctor let the store update its copy instead of asking to reload it. `node scripts/store-package.mjs` builds the store package.
+- **Privacy policy:** `PRIVACY.md` describes what the extension accesses, where it goes and what is stored.
 - **`bruse` command:** `bruse setup` installs or updates the extension files and the MCP server, registers the server with Claude Code and Codex and waits for the extension; `bruse doctor` checks the installation, the registrations, pairing and the browser connection and says what to run for each problem; `bruse uninstall` removes what setup added; `bruse version` prints the version.
 - **Setup reports failures:** setup exits with an error when an agent CLI rejects the registration, and after reloading a connected extension it waits until the extension reconnects with the new version, so an extension loaded from another folder or turned off is reported instead of a false success.
 - **More agent clients:** setup registers the MCP server with Cursor, VS Code (and Insiders), GitHub Copilot CLI, Gemini CLI, Claude Desktop, Devin Desktop and Windsurf, besides Claude Code and Codex; `bruse doctor` checks those registrations and `bruse uninstall` removes them. JSON configurations keep every other setting, are backed up first, and are left alone when they contain comments.
