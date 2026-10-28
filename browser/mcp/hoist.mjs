@@ -19,13 +19,14 @@ function scan(code) {
   let newlineSinceLast = true;
   let statementStart = true;
 
-  const push = (start, end, kind) => {
+  const push = (start, end, kind, extra) => {
     const text = code.slice(start, end);
     const previous = tokens[tokens.length - 1];
-    // A line break at depth 0 ends the statement unless the surrounding tokens continue it.
+    // A line break at depth 0 ends the statement unless the surrounding tokens continue it. A prefix
+    // ++ or -- continues onto its operand; a postfix one ends the expression.
     const lineBoundary =
-      newlineSinceLast && brackets.length === 0 && !!previous && !CONTINUES_AFTER.has(previous.text) && !CONTINUES_BEFORE.has(text[0] === "`" ? "`" : text);
-    tokens.push({ start, end, kind, text, depth: brackets.length, lineBoundary, statementStart: statementStart || lineBoundary || !previous });
+      newlineSinceLast && brackets.length === 0 && !!previous && !CONTINUES_AFTER.has(previous.text) && !previous.prefix && !CONTINUES_BEFORE.has(text[0] === "`" ? "`" : text);
+    tokens.push({ start, end, kind, text, depth: brackets.length, lineBoundary, statementStart: statementStart || lineBoundary || !previous, ...extra });
     lastSignificant = text;
     newlineSinceLast = false;
     statementStart = false;
@@ -92,8 +93,11 @@ function scan(code) {
       i++;
       statementStart = true;
     } else if ((c === "+" || c === "-") && code[i + 1] === c) {
-      // ++ and -- are one token: unlike + and -, a line break after them ends the statement.
-      push(i, i + 2, "punct");
+      // ++ and -- are one token. After an operand (a name, a literal, a closing bracket) on the same
+      // line they are postfix, and a line break after them ends the statement.
+      const previous = tokens[tokens.length - 1];
+      const postfix = !newlineSinceLast && !!previous && (previous.kind === "word" || previous.kind === "string" || previous.kind === "template" || previous.kind === "regex" || previous.text === ")" || previous.text === "]");
+      push(i, i + 2, "punct", postfix ? undefined : { prefix: true });
       i += 2;
     } else {
       push(i, i + 1, "punct");
