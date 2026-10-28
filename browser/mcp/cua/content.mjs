@@ -1,11 +1,10 @@
 // Content exports from a tab into local files: YouTube transcripts and Google Workspace documents.
 // Both read through the page itself, so they use the user's signed-in session.
 
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { extname, join } from "node:path";
 
-const EXPORT_DIR = join(tmpdir(), "browser-control-exports");
 const TRANSCRIPT_WAIT_MS = 8_000;
 
 const GSUITE_FORMATS = {
@@ -19,11 +18,22 @@ function safeName(text) {
   return (text || "export").replace(/[^\p{L}\p{N} ._-]+/gu, "_").replace(/^[.\s]+/, "").trim().slice(0, 80) || "export";
 }
 
+// Exports go to a directory of this process that only the user can read (mkdtemp creates it with mode
+// 0700), and a file never replaces an earlier export or follows a path planted there.
+let exportDir = null;
 function save(name, data) {
-  mkdirSync(EXPORT_DIR, { recursive: true });
-  const path = join(EXPORT_DIR, name);
-  writeFileSync(path, data);
-  return path;
+  exportDir ??= mkdtempSync(join(tmpdir(), "browser-control-exports-"));
+  const ext = extname(name);
+  const stem = name.slice(0, name.length - ext.length);
+  for (let n = 1; ; n++) {
+    const path = join(exportDir, n === 1 ? name : `${stem} (${n})${ext}`);
+    try {
+      writeFileSync(path, data, { mode: 0o600, flag: "wx" });
+      return path;
+    } catch (error) {
+      if (error.code !== "EEXIST") throw error;
+    }
+  }
 }
 
 // Reads caption tracks from the player, falling back to the page's transcript panel.
