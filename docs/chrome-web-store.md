@@ -20,10 +20,11 @@ What to enter in the Chrome Web Store Developer Dashboard for Bruse. The package
   > number or with Playwright-style locators, handle dialogs, uploads and downloads, and reach into
   > cross-origin frames. When an agent session ends, its tabs close, except the ones it marked for you.
   >
-  > Everything stays on your computer. The extension talks only to the Bruse program on 127.0.0.1, and
-  > the two authenticate each other, so web pages and other programs cannot drive your browser. There
-  > are no servers, accounts or analytics. Click the Bruse icon and choose Pause agents to stop all agent
-  > access at once.
+  > Bruse itself sends nothing anywhere. The extension talks only to the Bruse program on 127.0.0.1,
+  > and the two authenticate each other, so web pages and other programs cannot drive your browser.
+  > There are no servers, accounts or analytics. What your agent reads from a page goes to the agent,
+  > and from there to the AI model provider you use with it. Click the Bruse icon and choose Pause
+  > agents to stop all agent access at once.
   >
   > Bruse needs its free companion program: install it with Homebrew (`brew install padmk/tap/bruse`)
   > and run `bruse setup`, which registers it with your agents. Source code and documentation:
