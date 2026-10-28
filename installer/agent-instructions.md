@@ -55,7 +55,8 @@ Use a stable Node path such as `/opt/homebrew/bin/node`, not a versioned one.
 
 - **The extension does not connect after a reinstall.** If the user removed the extension and loaded it
   again, it has a new secret, while the old one is still stored. Ask the user, then move
-  `~/.local/state/browser-control/extension-secret` to the Trash and run the installer again.
+  `~/.local/state/browser-control/extension-secret` to the Trash; the extension pairs again within a
+  second. Run the installer again to confirm.
 - **"Load unpacked" fails.** Check that the selected folder contains `manifest.json`.
 - **Developer mode warning.** Chromium shows a notice about developer-mode extensions. It is expected
   for extensions loaded this way.
