@@ -344,9 +344,6 @@ export class AXTracker {
     this.nextIndex = 1;
     this.previous = null; // Map key -> { index, depth, text }
     this.backendByIndex = new Map();
-    // Elements of earlier snapshots of this document that later ones no longer have, such as a field a
-    // page script replaced between two reads; their numbers can only lead to a replacement.
-    this.departedByIndex = new Map();
   }
 
   indexFor(key, isRoot) {
@@ -370,8 +367,7 @@ export class AXTracker {
 
     const current = new Map();
     const order = [];
-    // Only elements in this snapshot can be acted on directly.
-    const before = this.backendByIndex;
+    // Only elements in this snapshot can be acted on.
     this.backendByIndex = new Map();
     const lastChildOf = new Map(); // parent key -> key of the previous sibling seen
     let focusedLine = null;
@@ -426,8 +422,6 @@ export class AXTracker {
     if (truncated) text += `\n… truncated after ${MAX_LINES} elements; scroll or use playwright locators for the rest.`;
     if (page.unavailableFrames.length) text += `\nCross-origin frames not included: ${page.unavailableFrames.map(shortUrl).join(", ")}`;
     this.previous = current;
-    for (const [index, ref] of before) if (!this.backendByIndex.has(index)) this.departedByIndex.set(index, ref);
-    for (const index of this.backendByIndex.keys()) this.departedByIndex.delete(index);
     return { text, focusedLine };
   }
 
@@ -438,14 +432,11 @@ export class AXTracker {
     return newNeighbourExisted && oldNeighbourRemains;
   }
 
-  // Returns { backendNodeId, sessionId, frameId, role, name } for an element number of the latest
-  // snapshot, or of an earlier snapshot of this document with `departed: true` when it is gone since.
+  // Returns { backendNodeId, sessionId, frameId, role, name } for an element number of the latest snapshot.
   nodeRef(index) {
-    const ref = this.backendByIndex.get(index);
-    if (ref !== undefined) return ref;
-    const departed = this.departedByIndex.get(index);
-    if (departed !== undefined) return { ...departed, departed: true };
-    throw new Error(`Element ${index} is not in the latest accessibility state of this tab; call getAXState() again`);
+    const id = this.backendByIndex.get(index);
+    if (id === undefined) throw new Error(`Element ${index} is not in the latest accessibility state of this tab; call getAXState() again`);
+    return id;
   }
 
   // Points an element number at the element that replaced its node (see findReplacement).

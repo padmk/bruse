@@ -149,11 +149,10 @@ export class Tab {
 
   // The node of an element number. When a page script has replaced the element since the snapshot (a
   // search field that a widget takes over after load) and the page has not navigated, the element that
-  // took its place is used; so is it for a number from an earlier snapshot whose element a later one no
-  // longer has, never the departed node itself, which may only be hidden.
+  // took its place is used.
   async nodeFor(index) {
     const ref = await this.withFrameSession(this.tracker.nodeRef(index));
-    if (!ref.departed && (await isAttached(this.cdpSender(ref.sessionId), ref.backendNodeId))) return ref;
+    if (await isAttached(this.cdpSender(ref.sessionId), ref.backendNodeId)) return ref;
     const state = await this.pageState();
     const page = await fetchPageTree((sessionId) => this.cdpSender(sessionId, { timeoutMs: PAGE_CODE_MS }), state.frames);
     // Only within the element's own document: after a navigation of its frame an element with the same

@@ -24,4 +24,8 @@ Bruse gives the agents you run full control of your browser: the code an agent s
 - tabs the user did not give the agent (not opened by its session and not shared or bound with `getTab`) being closed or changed by session cleanup;
 - the release artifacts, the installer and the Homebrew formula.
 
-Pairing trusts the first connection by design: an extension without a pairing secret gives its new secret to whatever listens on the port, and a hub without `extension-secret` accepts the first extension that pairs. See [Security in the README](README.md#security-and-privacy).
+Tab isolation limits what an agent does through Bruse's browser API. It is not a sandbox: code in the `js` tool runs as your user, so an agent that sets out to get around it (for example by reading the hub token) is outside the threat model, like any program of yours.
+
+No independent security audit of Bruse has been published.
+
+Pairing trusts the first connection: an extension without a pairing secret gives its new secret to whatever listens on the port, and a hub without `extension-secret` accepts the first extension that pairs. A local process, also of another account, that takes either side at that moment is a known limitation, not a new finding; `bruse setup` narrows it (it stops when the port is not held by a hub that knows the token), and pairing through native messaging, which would close it, is the intended fix and not released yet. See [Security in the README](README.md#security-and-privacy).
