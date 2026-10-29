@@ -350,7 +350,8 @@ export async function startEnvironment(options = {}) {
       try {
         const { sessionId } = await cdp.send("Target.attachToTarget", { targetId, flatten: true });
         const evaluate = (code) => cdp.send("Runtime.evaluate", { expression: code, returnByValue: true, awaitPromise: true }, sessionId);
-        await until(async () => (await evaluate("document.readyState")).result.value === "complete", { message: "popup to load" });
+        // A new tab starts with a loaded about:blank document; wait for the popup itself.
+        await until(async () => (await evaluate('location.protocol === "chrome-extension:" && document.readyState === "complete"')).result.value === true, { message: "popup to load" });
         const { result, exceptionDetails } = await evaluate(`(async () => (${expression}))()`);
         if (exceptionDetails) throw new Error(exceptionDetails.exception?.description ?? exceptionDetails.text);
         return result.value;
