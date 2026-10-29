@@ -67,6 +67,10 @@ const summary = tasks.filter((t) => runs.some((r) => r.task === t.id)).map((t) =
       medianCostUsd: median(ok.map((r) => r.costUsd)),
       medianInputTokens: median(ok.map((r) => r.inputTokens)),
       medianOutputTokens: median(ok.map((r) => r.outputTokens)),
+      // Time inside the browser tool's calls, from the conversation (see transcript.mjs).
+      medianSecondsInTools: median(ok.filter((r) => typeof r.toolMs === "number").map((r) => r.toolMs / 1000)),
+      // Runs with a right answer that did not count, by the reason (left-browser, extension-missing, no-browser-call).
+      notByBrowser: Object.fromEntries([...new Set(rs.map((r) => r.failure).filter((f) => f && f !== "answer"))].map((f) => [f, rs.filter((r) => r.failure === f).length])),
       tabTaken: rs.filter(tookTab).length,
       browserCameForward: rs.filter((r) => r.browserCameForward).length,
     }];
@@ -93,7 +97,7 @@ if (process.argv.includes("--json")) {
     for (const tool of tools) {
       const v = s[tool];
       const range = (r, digits) => (r ? ` [${r[0].toFixed(digits)}–${r[1].toFixed(digits)}]` : "");
-      console.log(`  ${tool.padEnd(7)} ${v.passed}/${v.runs} ok${v.interrupted ? ` (${v.interrupted} interrupted)` : ""}  median ${v.medianSeconds?.toFixed(1) ?? "–"} s${range(v.secondsInterval, 1)} (all runs ${v.medianSecondsAllRuns?.toFixed(1) ?? "–"} s)  outside API ${v.medianSecondsOutsideApi?.toFixed(1) ?? "–"} s  cost${range(v.costInterval, 3)}  turns ${v.medianTurns ?? "–"}  in ${v.medianInputTokens ?? "–"}  out ${v.medianOutputTokens ?? "–"}  $${v.medianCostUsd?.toFixed(3) ?? "–"}  tab taken ${v.tabTaken}/${v.runs}`);
+      console.log(`  ${tool.padEnd(7)} ${v.passed}/${v.runs} ok${v.interrupted ? ` (${v.interrupted} interrupted)` : ""}  median ${v.medianSeconds?.toFixed(1) ?? "–"} s${range(v.secondsInterval, 1)} (all runs ${v.medianSecondsAllRuns?.toFixed(1) ?? "–"} s)  outside API ${v.medianSecondsOutsideApi?.toFixed(1) ?? "–"} s  in tools ${v.medianSecondsInTools?.toFixed(1) ?? "–"} s${Object.keys(v.notByBrowser).length ? `  not by the browser: ${Object.entries(v.notByBrowser).map(([f, n]) => `${n} ${f}`).join(", ")}` : ""}  cost${range(v.costInterval, 3)}  turns ${v.medianTurns ?? "–"}  in ${v.medianInputTokens ?? "–"}  out ${v.medianOutputTokens ?? "–"}  $${v.medianCostUsd?.toFixed(3) ?? "–"}  tab taken ${v.tabTaken}/${v.runs}`);
     }
     for (const other of tools.filter((tool) => tool !== "bruse")) {
       if (!s.bruse || !s[other]) continue;

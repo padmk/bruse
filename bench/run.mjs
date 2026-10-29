@@ -10,8 +10,10 @@
 // brave-cua-mcp bridge (--openai-bridge, default ~/dev/brave-cua-mcp/src/server.mjs). Both are offered to
 // Codex as the same MCP server name, so the model sees the same tool either way.
 //
-// Results go to bench/results/<timestamp>/runs.jsonl, with every Claude Code conversation in
-// transcripts/; bench/report.mjs summarizes them. Every run is recorded, failed ones included.
+// Results go to bench/results/<timestamp>/runs.jsonl, with every conversation in transcripts/ and the
+// versions measured in meta.json; bench/report.mjs summarizes them. Every run is recorded, failed ones
+// included. A Claude Code run passes only when its answer is right, it used the browser tool, the
+// extension was connected and its Bruse code did not reach pages from Node.js (see transcript.mjs).
 import { spawn, execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -20,6 +22,8 @@ import { fileURLToPath } from "node:url";
 import { ORIGIN_A } from "./server.mjs";
 import { tasks as localTasks } from "./tasks.mjs";
 import { tasks as realTasks } from "./tasks-real.mjs";
+import { readClaudeTranscript } from "./transcript.mjs";
+import { extensionBuild } from "../browser/extension/shared.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const args = Object.fromEntries(process.argv.slice(2).reduce((acc, a, i, all) => (a.startsWith("--") ? [...acc, [a.slice(2), all[i + 1]]] : acc), []));
@@ -50,12 +54,49 @@ const revision = (() => {
   }
 })();
 
+const version = (command) => {
+  try { return execFileSync(command, ["--version"], { encoding: "utf8", timeout: 20_000 }).trim(); } catch { return null; }
+};
+// The browser must run this checkout's extension code: the version stays the same between releases, so
+// the code's fingerprint (shared.js) is compared, after reloading the extension once if it differs.
+// Asked from short-lived processes, so that the runner does not hold the hub while the agents run.
+const askBrowser = (method) => {
+  const link = path.join(here, "..", "browser", "mcp", "browser-link.mjs");
+  const code = `const { callBrowser } = await import(${JSON.stringify(link)}); console.log(JSON.stringify(await callBrowser(${JSON.stringify(method)}))); process.exit(0);`;
+  try { return JSON.parse(execFileSync(process.execPath, ["--input-type=module", "-e", code], { encoding: "utf8", timeout: 30_000 }).trim().split("\n").pop()); } catch (error) { return { error: String(error.stderr || error.message).trim().slice(-300) }; }
+};
+const extensionDir = path.join(here, "..", "browser", "extension");
+const { hash: checkoutBuild } = await extensionBuild((file) => fs.promises.readFile(path.join(extensionDir, file), "utf8"));
+let browserInfo = null;
+if (tools.includes("bruse")) {
+  browserInfo = askBrowser("browser.info");
+  if (!browserInfo.error && browserInfo.build !== checkoutBuild) {
+    askBrowser("extension.reload");
+    await new Promise((r) => setTimeout(r, 5_000));
+    browserInfo = askBrowser("browser.info");
+  }
+  // Without the extension every Bruse run would fail the same way, or find a way around the browser.
+  if (browserInfo.error) {
+    console.error(`The browser extension did not answer: ${browserInfo.error}`);
+    process.exit(2);
+  }
+  if (browserInfo.build !== checkoutBuild && !("allow-other-extension" in args)) {
+    console.error(`${browserInfo.name} runs other extension code (build ${browserInfo.build ?? "unknown"}) than this checkout (${checkoutBuild}), also after a reload. Load browser/extension from this checkout, or run \`node bin/bruse.mjs setup\` here, or pass --allow-other-extension.`);
+    process.exit(2);
+  }
+}
+
 const outDir = path.join(here, "results", new Date().toISOString().replace(/[:.]/g, "-"));
 fs.mkdirSync(path.join(outDir, "transcripts"), { recursive: true });
 const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "bruse-bench-"));
 const node = process.execPath;
 fs.writeFileSync(path.join(workDir, "bruse.json"), JSON.stringify({ mcpServers: { bruse: { type: "stdio", command: node, args: [path.join(here, "..", "browser", "mcp", "server.mjs")] } } }));
 fs.writeFileSync(path.join(workDir, "none.json"), JSON.stringify({ mcpServers: {} }));
+
+fs.writeFileSync(
+  path.join(outDir, "meta.json"),
+  JSON.stringify({ revision, suite, agent, model, effort, reps, node: process.version, agentVersion: version(agent), browser: browserInfo, checkoutBuild, startedAt: new Date().toISOString() }, null, 2) + "\n",
+);
 
 // The same tools are denied to both runs so that the browser is the only way to the answer.
 const denied = "Bash,WebFetch,WebSearch,Read,Glob,Grep,Edit,Write,NotebookEdit,Task,Agent";
@@ -124,12 +165,20 @@ function runClaude(tool, task, transcriptPath) {
     const argv = ["-p", task.prompt, "--model", model, "--effort", effort, "--output-format", "stream-json", "--verbose", "--strict-mcp-config", "--dangerously-skip-permissions", "--disallowedTools", deny, ...toolFlags[tool]];
     const started = Date.now();
     const child = spawn("claude", argv, { cwd: workDir, stdio: ["ignore", "pipe", "pipe"] });
-    let out = "", err = "";
-    child.stdout.on("data", (d) => (out += d));
+    let out = "", err = "", pending = "";
+    // Each line with the time it arrived: the events carry no time, and the gaps show where time went.
+    const lines = [];
+    child.stdout.on("data", (d) => {
+      out += d;
+      const parts = (pending + d).split("\n");
+      pending = parts.pop();
+      for (const text of parts) if (text.trim()) lines.push({ at: Date.now(), text });
+    });
     child.stderr.on("data", (d) => (err += d));
     const timer = setTimeout(() => child.kill("SIGTERM"), 15 * 60_000);
     child.on("close", (code) => {
       clearTimeout(timer);
+      if (pending.trim()) lines.push({ at: Date.now(), text: pending });
       fs.writeFileSync(transcriptPath, out);
       // The last event of a stream is the result with time, turns and cost.
       let result = { result: err.slice(-500) };
@@ -139,7 +188,8 @@ function runClaude(tool, task, transcriptPath) {
           if (event.type === "result") { result = event; break; }
         } catch {}
       }
-      resolve({ code, wallMs: Date.now() - started, result, stderr: err.slice(-500) });
+      const transcript = readClaudeTranscript(lines, { browserTools: [tool === "bruse" ? "mcp__bruse__" : "mcp__claude-in-chrome__"] });
+      resolve({ code, wallMs: Date.now() - started, result, stderr: err.slice(-500), transcript });
     });
   });
 }
@@ -154,7 +204,7 @@ const codexServers = {
 };
 const codexHint = "Do this in the user's Brave browser with the js browser tool. ";
 
-function runCodex(tool, task) {
+function runCodex(tool, task, transcriptPath) {
   return new Promise((resolve) => {
     const [command, script] = codexServers[tool];
     const argv = [
@@ -175,6 +225,7 @@ function runCodex(tool, task) {
     const timer = setTimeout(() => child.kill("SIGTERM"), 15 * 60_000);
     child.on("close", (code) => {
       clearTimeout(timer);
+      fs.writeFileSync(transcriptPath, out);
       let answer = "", turns = 0, failed = false;
       const usage = { input_tokens: 0, cached_input_tokens: 0, output_tokens: 0, reasoning_output_tokens: 0 };
       for (const line of out.split("\n")) {
@@ -219,7 +270,7 @@ async function runOne(task, tool, rep) {
     if (startFront !== browserApp && frontApp() === browserApp) browserCameForward = true;
   }, 700);
   const transcript = path.join(outDir, "transcripts", `${task.id}-${tool}-${rep}.jsonl`);
-  const run = agent === "codex" ? await runCodex(tool, task) : await runClaude(tool, task, transcript);
+  const run = agent === "codex" ? await runCodex(tool, task, transcript) : await runClaude(tool, task, transcript);
   clearInterval(probe);
   // A run cut short by the account's usage limit is kept, marked, and ends the benchmark.
   if (/hit your (session|usage) limit|usage limit reached|usage limit/i.test(`${run.result.result ?? ""} ${run.stderr ?? ""}`)) {
@@ -229,7 +280,11 @@ async function runOne(task, tool, rep) {
   }
   const log = await api("/api/log");
   const answer = run.result.result ?? "";
-  const ok = (() => { try { return task.check({ answer, log, tool }); } catch { return false; } })();
+  const answerOk = (() => { try { return task.check({ answer, log, tool }); } catch { return false; } })();
+  // A right answer counts only when the browser tool produced it.
+  const seen = run.transcript;
+  const failure = !answerOk ? "answer" : !seen ? null : seen.extensionMissing ? "extension-missing" : seen.nodeAccess.length ? "left-browser" : seen.browserCalls === 0 ? "no-browser-call" : null;
+  const ok = answerOk && !failure;
   const usage = run.result.usage ?? {};
   const record = {
     task: task.id, suite, kind: task.kind, tool, rep, ok, model, effort, revision, answer: String(answer).slice(0, 400),
@@ -239,10 +294,11 @@ async function runOne(task, tool, rep) {
     inputTokens: (usage.input_tokens ?? 0) + (usage.cache_read_input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0),
     cachedInputTokens: usage.cached_input_tokens ?? usage.cache_read_input_tokens, outputTokens: usage.output_tokens, isError: run.result.is_error ?? run.code !== 0,
     activeTabChanged: seenTabs.size > 0, activeTabs: [...seenTabs], browserCameForward, startFront,
+    answerOk, failure, browserCalls: seen?.browserCalls, toolMs: seen?.toolMs, slowestToolMs: seen?.slowestToolMs, nodeAccess: seen?.nodeAccess, extensionMissing: seen?.extensionMissing,
   };
   fs.appendFileSync(path.join(outDir, "runs.jsonl"), JSON.stringify(record) + "\n");
   trashDownloads();
-  console.log(`${task.id.padEnd(13)} ${tool.padEnd(7)} #${rep} ${ok ? "ok  " : "FAIL"} ${(run.wallMs / 1000).toFixed(1)}s turns=${record.turns} in=${record.inputTokens} out=${record.outputTokens} $${(record.costUsd ?? 0).toFixed(3)} tab=${record.activeTabChanged ? "taken" : "kept"}`);
+  console.log(`${task.id.padEnd(13)} ${tool.padEnd(7)} #${rep} ${ok ? "ok  " : failure && failure !== "answer" ? failure : "FAIL"} ${(run.wallMs / 1000).toFixed(1)}s turns=${record.turns} in=${record.inputTokens} out=${record.outputTokens} $${(record.costUsd ?? 0).toFixed(3)} tab=${record.activeTabChanged ? "taken" : "kept"}`);
   closeBenchTabs();
   closeTabs(listTabs().filter((t) => !tabsBefore.has(t.id) && hosts.some((h) => t.url.includes(h))).map((t) => t.id));
 }

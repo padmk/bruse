@@ -5,25 +5,8 @@
 // task needs a password: Claude in Chrome declines to type one on public sites, which would measure that
 // policy rather than the tool.
 
-const norm = (s) => String(s ?? "").toLowerCase().replace(/\s+/g, " ");
-// Number tokens as written, after joining thousands written with a space ("1 022"): an optional
-// version prefix (v), sign (-, +, −), digits with decimal or version parts, or a leading decimal point,
-// and an exponent. A token starts and ends at a boundary with letters and digits, so "2024-04-24" holds no
-// signed numbers and "v4" is the token "4". The version prefix is dropped and "−" becomes "-".
-const tokensIn = (s) =>
-  (String(s ?? "").replace(/(\d)[\s\u00a0](?=\d{3}\b)/g, "$1").match(/(?<![\p{L}\d.])[vV]?[-+\u2212]?(?:\d+(?:[.,]\d+)*|[.,]\d+)(?:[eE][-+]?\d+)?(?![\p{L}\d])/gu) ?? []).map((token) =>
-    token.replace(/^[vV]/, "").replace("\u2212", "-"),
-  );
-const numbersIn = (s) => tokensIn(s).map((token) => Number(token.replace(",", ".")));
-// Every number in the answer is exactly the value, and there is at least one: "1022 km" and "Counter
-// shows 2 ("2 items left")" pass; "1022 or 1047" and "2.01" do not. A repeated value is not a
-// contradiction, and real answers repeat it.
-const onlyNumber = (answer, value) => {
-  const numbers = numbersIn(answer);
-  return numbers.length > 0 && numbers.every((n) => n === value);
-};
+import { norm, onlyNumber, rules, tokensIn } from "./grading.mjs";
 
-const rules = "Używaj wyłącznie przeglądarki. Odpowiedz krótko, bez opisu kroków.";
 
 export const tasks = [
   {
