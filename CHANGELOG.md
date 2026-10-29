@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.18.1
+
+- **Agents stay out of your windows:** in the default access mode a window is a session's only when every tab in it is the session's or shared. Management calls change, focus or remove only such windows (`windows.update`, `windows.remove`), move tabs and groups into another window only when it is the session's (`tabs.move`, `tabs.group`, `tabGroups.move`), add tabs to a group only when the session reaches every tab in it, and activate, highlight or unhighlight a tab only in the session's windows, so an agent cannot switch the tab you are looking at. `windows.get`, `getAll`, `getCurrent` and `getLastFocused` leave out windows without a tab the session reaches.
+- **Tabs that management opens are the agent's:** a tab from `tabs.duplicate` or `windows.create` belongs to the session like one from `createBrowserTab`: it joins the agent group, opens in the background (a new window opens unfocused unless `focused` or a maximized or fullscreen state is given) and closes when the session ends, also when the session ends while the window is being created. A tab moved into a new window with `tabId` keeps its owner or share. Such tabs had belonged to no session, so the agent could not use them and they stayed open.
+- **Failed updates put the previous installation back:** when `bruse setup` cannot move the new copy into place, it restores the previous one and stops; if that fails too, it keeps the backup and prints the command that restores it. A process killed between the two renames can still leave no copy in place.
+- **Setup says whom Bruse is for:** the first `bruse setup` (not updates) says, before registering the MCP server, that Bruse is meant for agents you trust, that code in the `js` tool runs with your account's permissions, that agents can use the accounts signed in to your browser profile, and that a separate profile keeps those out of reach but is no sandbox.
+- **Docs:** the README and `SECURITY.md` describe these rules, and that actions of several agents on one shared tab can interleave.
+
 ## 0.18.0
 
 - **Measured on public websites:** six tasks on Wikipedia, GitHub, the Python documentation, a paginated shop and TodoMVC, 8 runs per tool: Bruse's median run took 48 to 68 % less time and 38 to 74 % less money than Claude in Chrome, all 96 runs passing, in Brave on the code before the last fixes to replaced elements and tab shares (see `bench/README.md`). The `existing-tab` task now expects both tools to keep a tab the user did not share private.
