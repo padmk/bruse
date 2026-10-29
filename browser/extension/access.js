@@ -33,11 +33,24 @@ export async function sharedTabs() {
   return new Set(Array.isArray(ids) ? ids : []);
 }
 
-export async function setShared(tabId, shared) {
-  const ids = await sharedTabs();
-  if (shared) ids.add(tabId);
-  else ids.delete(tabId);
-  await chrome.storage.session.set({ sharedTabs: [...ids] });
+// Changes the shares one change at a time. The popups and the service worker change them (a click on
+// Stop, a shared tab that closes), and each change reads the list and writes it back, so two at once
+// would undo each other and could bring back a share the user stopped. A Web Lock holds across all of
+// the extension's pages and its worker; the browser releases it when the context holding it ends.
+// `change` edits the set of tab IDs and returns false when it left it as it was.
+function changeShares(change) {
+  return navigator.locks.request("sharedTabs", async () => {
+    const ids = await sharedTabs();
+    if (change(ids) === false) return;
+    await chrome.storage.session.set({ sharedTabs: [...ids] });
+  });
+}
+
+export function setShared(tabId, shared) {
+  return changeShares((ids) => {
+    if (shared) ids.add(tabId);
+    else ids.delete(tabId);
+  });
 }
 
 // Shared tabs that closed, for a while: closing a tab is not stopping its share, so a download that the
@@ -45,11 +58,13 @@ export async function setShared(tabId, shared) {
 const CLOSED_SHARE_MEMORY_MS = 30_000;
 const closedShares = new Set();
 
-export async function endShareOfClosedTab(tabId) {
-  if (!(await sharedTabs()).has(tabId)) return;
-  closedShares.add(tabId);
-  setTimeout(() => closedShares.delete(tabId), CLOSED_SHARE_MEMORY_MS);
-  await setShared(tabId, false);
+export function endShareOfClosedTab(tabId) {
+  return changeShares((ids) => {
+    if (!ids.delete(tabId)) return false;
+    // Marked before the share is removed, so the removal does not read as the user stopping it.
+    closedShares.add(tabId);
+    setTimeout(() => closedShares.delete(tabId), CLOSED_SHARE_MEMORY_MS);
+  });
 }
 
 export function wasSharedWhenClosed(tabId) {
