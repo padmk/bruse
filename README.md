@@ -159,10 +159,12 @@ Report vulnerabilities as described in [SECURITY.md](SECURITY.md).
   the agent group, popup windows included, and on macOS `focus-guard.mjs` returns the front to the
   app that had it before the agent's input (Brave may show for a fraction of a second).
 - Password manager menus are frames of another extension, which make the browser cut off debugger
-  access. Fields the agent clicks or focuses get the opt-out attributes password managers honor, any
-  such frame that still appears is removed (only the frame, or a known password manager's wrapper)
-  before the command is retried, and password manager buttons
-  and live regions are left out of the accessibility tree.
+  access. Fields the agent clicks or focuses get the opt-out attributes password managers honor, and
+  password manager buttons and live regions are left out of the accessibility tree. When such a frame
+  still blocks a command or a state read, it is removed (only the frame, or a known password manager's
+  wrapper, also inside shadow roots), the debugger attaches again and the call is retried, up to three
+  times; a call that still fails says what was removed and what came back. A command for a cross-origin
+  frame goes to the frame's new debugger session after such a reattach.
 - The `js` tool is loaded up front (`_meta["anthropic/alwaysLoad"]`), so Claude Code does not spend a
   turn on tool search before the first browser call. A call returns at most 30,000 characters of text,
   cut at a line end with a note on reading the rest from the REPL; Claude Code would otherwise move a
