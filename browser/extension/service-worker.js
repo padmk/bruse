@@ -225,8 +225,9 @@ async function checkManagementAccess(session, namespace, method, args) {
   };
   const [first, second] = args;
   if (namespace === "tabs" && TAB_ARGUMENTS[method]) await requireTabs(tabIdsOf(method, args));
-  // Activating or highlighting a tab switches what the user sees in its window.
-  if (namespace === "tabs" && method === "update" && (second?.active || second?.highlighted || second?.selected)) await requireOwnWindow(session, (await chrome.tabs.get(first)).windowId);
+  // Activating or highlighting a tab switches what the user sees in its window, and so can unhighlighting
+  // the active tab, which activates another highlighted one.
+  if (namespace === "tabs" && method === "update" && ["active", "highlighted", "selected"].some((key) => second?.[key] !== undefined)) await requireOwnWindow(session, (await chrome.tabs.get(first)).windowId);
   if (namespace === "tabs" && method === "move" && second?.windowId !== undefined) await requireMoveInto(tabIdsOf(method, args), second.windowId);
   if (namespace === "tabs" && method === "group") {
     if (first.groupId !== undefined) {
