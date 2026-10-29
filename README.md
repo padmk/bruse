@@ -254,8 +254,11 @@ Report vulnerabilities as described in [SECURITY.md](SECURITY.md).
 - Clicks aim at the center of the element's visible part and check that the element receives them: a
   click by element number waits up to 1 s and a locator click up to its timeout for a covering element
   (an overlay, a toast) to go away, then fails naming what would receive the click instead (also when
-  the element has `pointer-events: none`). `{ force: true }` clicks the point anyway. Actions on an element that was removed or replaced
-  fail with a pointer to `getAXState()` instead of changing the detached node.
+  the element has `pointer-events: none`). `{ force: true }` clicks the point anyway. An action on an element that a page script replaced
+  since the read (Wikipedia's search field becomes a combo box) goes to the element that took its
+  place only when that one is new to the page and the only one of its name and role in that document,
+  and the old one was the only one in its read. Otherwise an action on a removed element fails with a
+  pointer to `getAXState()` instead of changing the detached node or another element of the same name.
 - `waitForLoadState({ state: "networkidle" })` waits until the tab has had no request in flight for
   500 ms. `waitForEvent("download")` takes the next download the tab starts, or a tab it opened (such
   as a `target=_blank` link to an attachment): a download counts only when that tab reported it, either

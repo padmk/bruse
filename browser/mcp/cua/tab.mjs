@@ -150,7 +150,8 @@ export class Tab {
   // The node of an element number. When a page script has replaced the element since the snapshot (a
   // search field that a widget takes over after load) and the page has not navigated, the element that
   // took its place is used; so is it for a number from an earlier snapshot whose element a later one no
-  // longer has, never the departed node itself, which may only be hidden.
+  // longer has, never the departed node itself, which may only be hidden. An element the page already
+  // had at that snapshot never counts as the replacement (see findReplacement).
   async nodeFor(index) {
     const ref = await this.withFrameSession(this.tracker.nodeRef(index));
     if (!ref.departed && (await isAttached(this.cdpSender(ref.sessionId), ref.backendNodeId))) return ref;
@@ -158,8 +159,11 @@ export class Tab {
     const page = await fetchPageTree((sessionId) => this.cdpSender(sessionId, { timeoutMs: PAGE_CODE_MS }), state.frames);
     // Only within the element's own document: after a navigation of its frame an element with the same
     // name is a different element, so the action fails and asks for a new state.
-    const replacement = findReplacement(simplifyTree(page), ref);
+    const root = simplifyTree(page);
+    const replacement = findReplacement(root, ref, (element) => this.tracker.addedSince(element, ref));
     if (!replacement) throw new Error(STALE_ELEMENT_MESSAGE);
+    // Further replacements must be new since this observation, including its hidden DOM elements.
+    this.tracker.recordSnapshot(root, page.domNodes);
     this.tracker.replaceNode(index, replacement);
     return this.withFrameSession(replacement);
   }
