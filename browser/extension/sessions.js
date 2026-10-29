@@ -138,6 +138,7 @@ chrome.webNavigation.onCreatedNavigationTarget.addListener(async ({ sourceTabId,
         const sessionId = reported.sessionId;
         if (!sessionId || state.tabs[tabId]) return null;
         state.tabs[tabId] = { sessionId, mark: null };
+        keepLoaded(tabId);
         openedFor.set(tabId, sessionId);
         await save(state);
         return { sessionId, state };
@@ -184,6 +185,12 @@ chrome.tabs.onActivated.addListener(({ tabId, windowId }) => {
 });
 
 // The window's agent group, if it still exists there.
+// Agent tabs are always in the background, which is where the browser discards tabs first to free
+// memory; a discarded tab loses its page and what the agent typed into it.
+function keepLoaded(tabId) {
+  chrome.tabs.update(tabId, { autoDiscardable: false }).catch(() => {});
+}
+
 async function agentGroup(windowId, state) {
   const groupId = state.windowGroups[windowId];
   if (groupId === undefined) return undefined;
@@ -231,6 +238,7 @@ async function groupAgentTabNow(tabId, sessionId) {
   }
   // Ownership is recorded even if grouping fails, so that the session's end still closes the tab.
   state.tabs[tabId] = { sessionId, mark: null };
+  keepLoaded(tabId);
   try {
     const { windowId } = await chrome.tabs.get(tabId);
     const groupId = await agentGroup(windowId, state);
@@ -238,7 +246,8 @@ async function groupAgentTabNow(tabId, sessionId) {
       await chrome.tabs.group({ tabIds: [tabId], groupId });
     } else {
       const created = await chrome.tabs.group({ tabIds: [tabId], createProperties: { windowId } });
-      await chrome.tabGroups.update(created, { title: GROUP_TITLE, color: GROUP_COLOR, collapsed: false });
+      // Collapsed, so that the tabs of several agent sessions take one chip in the user's tab strip.
+      await chrome.tabGroups.update(created, { title: GROUP_TITLE, color: GROUP_COLOR, collapsed: true });
       state.windowGroups[windowId] = created;
     }
   } finally {
@@ -288,7 +297,9 @@ async function endSessionNow(sessionId) {
   await save(state);
   // One by one, so a tab that is already gone does not keep the others open.
   await Promise.all(toClose.map((tabId) => chrome.tabs.remove(tabId).catch(() => {})));
+  // A kept tab is the user's again, so the browser may discard it like any other (see keepLoaded).
   await Promise.all(kept.map((tabId) => chrome.tabs.ungroup(tabId).catch(() => {})));
+  for (const tabId of kept) chrome.tabs.update(tabId, { autoDiscardable: true }).catch(() => {});
   // A kept tab has no owner now: unless the user shares it, no session may use it, so the debugger
   // leaves it, also while a dialog holds it.
   for (const tabId of kept) if (!(await anyoneMayAccess(tabId))) await detach(tabId);
