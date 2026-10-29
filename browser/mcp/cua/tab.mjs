@@ -3,15 +3,17 @@
 
 import { ariaSnapshot } from "./aria-snapshot.mjs";
 import { squareToQuad } from "./geometry.mjs";
-import { AXTracker, fetchPageTree } from "./ax-tree.mjs";
+import { AXTracker, fetchPageTree, findReplacement, simplifyTree } from "./ax-tree.mjs";
 import { createContentApi } from "./content.mjs";
-import { OFF_PAGE, PAGE_CODE_MS, callOn, clickAt, coveringElement, dragBetween, elementCenter, focusNode, pageException, prepareClick } from "./elements.mjs";
+import { OFF_PAGE, PAGE_CODE_MS, callOn, clickAt, coveringElement, dragBetween, elementCenter, focusNode, isAttached, pageException, prepareClick, STALE_ELEMENT_MESSAGE } from "./elements.mjs";
 import { pressChord } from "./keys.mjs";
 import { Locator, functionSource, isRegExp } from "./locator.mjs";
 import { emitImage, emitText } from "./output.mjs";
 import { DISPATCH_PASTE, SELECT_TEXT, SET_VALUE } from "./page-scripts.mjs";
 
 const SETTLE_LOAD_MS = 5_000;
+// How long after a click or key press a navigation it started is looked for.
+const NAVIGATION_START_MS = 50;
 // After an action, state reads wait until the DOM has had no mutations for QUIET_MS, for at most
 // SETTLE_WINDOW_MS from the action.
 const QUIET_MS = 60;
@@ -103,14 +105,38 @@ export class Tab {
     const loading = (info ?? (await this.info())).status === "loading";
     if (loading) await this.context.call("tabs.waitForLoad", { tabId: this.tabId, timeoutMs: SETTLE_LOAD_MS }).catch(() => {});
     if (sinceAction < SETTLE_WINDOW_MS) {
-      await this.evaluateInPage(`(${WAIT_FOR_QUIET_DOM})(${QUIET_MS}, ${SETTLE_WINDOW_MS - sinceAction})`).catch(() => sleep(QUIET_MS));
+      await this.waitForQuietDom(SETTLE_WINDOW_MS - sinceAction);
+      // The action may have started a navigation meanwhile (a form submission, a link): the new
+      // document is read once it has loaded, not while it is being parsed.
+      if ((await this.info()).status === "loading") {
+        await this.context.call("tabs.waitForLoad", { tabId: this.tabId, timeoutMs: SETTLE_LOAD_MS }).catch(() => {});
+        await this.waitForQuietDom(QUIET_MS);
+      }
       return true;
     }
     return loading;
   }
 
-  async afterInput() {
+  waitForQuietDom(maxMs) {
+    return this.evaluateInPage(`(${WAIT_FOR_QUIET_DOM})(${QUIET_MS}, ${maxMs})`).catch(() => sleep(QUIET_MS));
+  }
+
+  // `mayNavigate`: the input was a click or key press, which may start a navigation (a link, a form
+  // submission). The tab reports one within a few milliseconds; the call then waits until the new
+  // page has loaded, as Playwright's click does, so that the next url(), evaluate() or state read sees it.
+  async afterInput({ mayNavigate = false } = {}) {
     this.lastActionAt = Date.now();
+    if (!mayNavigate) return;
+    while (Date.now() - this.lastActionAt < NAVIGATION_START_MS) {
+      // A click may also close the tab.
+      const info = await this.info().catch(() => null);
+      if (!info) return;
+      if (info.status === "loading") {
+        await this.context.call("tabs.waitForLoad", { tabId: this.tabId, timeoutMs: SETTLE_LOAD_MS }).catch(() => {});
+        return;
+      }
+      await sleep(5);
+    }
   }
 
   // `userGesture` lets the code use APIs that need user activation (the clipboard). State reads run
@@ -121,10 +147,26 @@ export class Tab {
     return result.value;
   }
 
+  // The node of an element number. When a page script has replaced the element since the snapshot (a
+  // search field that a widget takes over after load) and the page has not navigated, the element that
+  // took its place is used; so is it for a number from an earlier snapshot whose element a later one no
+  // longer has, never the departed node itself, which may only be hidden.
+  async nodeFor(index) {
+    const ref = await this.withFrameSession(this.tracker.nodeRef(index));
+    if (!ref.departed && (await isAttached(this.cdpSender(ref.sessionId), ref.backendNodeId))) return ref;
+    const state = await this.pageState();
+    const page = await fetchPageTree((sessionId) => this.cdpSender(sessionId, { timeoutMs: PAGE_CODE_MS }), state.frames);
+    // Only within the element's own document: after a navigation of its frame an element with the same
+    // name is a different element, so the action fails and asks for a new state.
+    const replacement = findReplacement(simplifyTree(page), ref);
+    if (!replacement) throw new Error(STALE_ELEMENT_MESSAGE);
+    this.tracker.replaceNode(index, replacement);
+    return this.withFrameSession(replacement);
+  }
+
   // A cross-origin frame's session is looked up again by frame: the debugger may have attached anew
   // (after an idle detach) and given the frame a new session.
-  async nodeFor(index) {
-    const ref = this.tracker.nodeRef(index);
+  async withFrameSession(ref) {
     if (!ref.frameId) return ref;
     const frame = await this.frameWhere((f) => f.frameId === ref.frameId);
     return { ...ref, sessionId: frame.sessionId };
@@ -255,7 +297,7 @@ export class Tab {
   async click(target, options = {}) {
     await this.ensureNoDialog();
     await clickAt(this.cdpSender(), await this.pointFor(target, { hitTest: true, force: options.force }), options);
-    await this.afterInput();
+    await this.afterInput({ mayNavigate: true });
   }
 
   // Moves the pointer over an element or point, e.g. to open hover menus.
@@ -340,7 +382,7 @@ export class Tab {
     await this.ensureNoDialog();
     await this.focusTarget(elementIndex);
     await pressChord(this.cdpSender(), key, options);
-    await this.afterInput();
+    await this.afterInput({ mayNavigate: true });
   }
 
   async paste(elementIndex, text, { format = "text" } = {}) {

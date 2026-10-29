@@ -91,12 +91,14 @@ interface PlaywrightAPI {             // locators: getByRole/getByText/getByLabe
 
 ## Workflow
 
-- Start with \`await cua.getState()\` for an inventory, or go straight to \`cua.createBrowserTab("1", url)\` / \`cua.getTab(tabId)\`.
-  Browser "1" is the connected browser. Selecting or creating a tab displays its accessibility state.
+- To open a page, go straight to \`cua.createBrowserTab("1", url)\`; use \`await cua.getState()\` to find tabs the user already
+  has open and \`cua.getTab(tabId)\` to bind one. Browser "1" is the connected browser. Selecting or creating a tab displays its accessibility state.
 - Element numbers come from the latest \`getAXState()\` of that tab and stay stable for the same element
   while the page does not navigate. After actions, call \`getAXState()\`: it shows only what changed.
   Use \`{ disableDiffing: true }\` to see the full tree again.
 - Batch deterministic steps in one call, e.g. \`await tab.typeText(12, "query"); await tab.pressKey(null, "Return"); await tab.getAXState();\`.
+  Repeat a check over many elements in a loop within one call and print a summary, e.g.
+  \`for (const n of [6, 7, 8]) { const since = new Date().toISOString(); await tab.click(n); nodeRepl.write({ n, logs: (await tab.dev.logs()).filter((l) => l.timestamp >= since) }); }\`.
 - Prefer element indexes over coordinates. Use screenshots when the tree does not show what you need.
 - \`getAXState()\`, \`getScreenshot()\` and \`getState()\` display their result; use \`nodeRepl.write(value)\` and
   \`await nodeRepl.emitImage(bytes)\` for anything else.

@@ -14,7 +14,10 @@ export const OPT_OUT_OF_PASSWORD_MANAGERS = `
 // this = target element. Sets an input, textarea, select, contenteditable or checkable value and fires
 // the events frameworks listen for.
 export const SET_VALUE = `function (value) {${OPT_OUT_OF_PASSWORD_MANAGERS}
-  const el = this;
+  let el = this;
+  // A part of a built-in field, such as the day, month or year of a date input, stands for the field.
+  const host = el.getRootNode().host;
+  if (!(el instanceof HTMLInputElement) && host instanceof HTMLInputElement) el = host;
   const fire = (type) => el.dispatchEvent(new Event(type, { bubbles: true }));
   if (el instanceof HTMLSelectElement) {
     const option = [...el.options].find((o) => o.value === value) ?? [...el.options].find((o) => o.label.trim() === value || o.text.trim() === value);
@@ -32,6 +35,11 @@ export const SET_VALUE = `function (value) {${OPT_OUT_OF_PASSWORD_MANAGERS}
     el.focus();
     const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
     Object.getOwnPropertyDescriptor(proto, "value").set.call(el, value);
+    // Date, time, number and similar fields drop a value not in their format.
+    if (value !== "" && el.value === "") {
+      const formats = { date: "2026-11-03", time: "14:30", "datetime-local": "2026-11-03T14:30", month: "2026-11", week: "2026-W45", number: "12" };
+      throw new Error("The " + el.type + " field rejected " + JSON.stringify(value) + (formats[el.type] ? "; it takes a value like " + JSON.stringify(formats[el.type]) : ""));
+    }
     fire("input"); fire("change");
     return;
   }
