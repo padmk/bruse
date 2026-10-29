@@ -6,10 +6,11 @@
 import { spawnSync } from "node:child_process";
 import { createInterface } from "node:readline/promises";
 import { cpSync, existsSync, mkdirSync, renameSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { homedir, platform } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { HUB_VERSION_MISMATCH, STORE_EXTENSION_ID } from "../browser/mcp/config.mjs";
+import { HUB_VERSION_MISMATCH, PORT, STORE_EXTENSION_ID } from "../browser/mcp/config.mjs";
 import { agentClients, clientId, extensionDir, fail, installRoot, installed, manifest, note, onPath, product, requireNode, serverPath, source, step, moveToTrash } from "./lib.mjs";
 
 const PAIR_WAIT_MS = 10 * 60_000;
@@ -151,7 +152,7 @@ async function waitForExtension(callBrowser) {
 }
 
 // The reloaded extension reconnects within moments; it reports its version from then on.
-async function reloadExtension(callBrowser, connected) {
+async function reloadExtension(callBrowser, connected, build) {
   step("Updating the extension");
   await callBrowser("extension.reload").catch(() => {});
   const deadline = Date.now() + RELOAD_WAIT_MS;
@@ -159,7 +160,7 @@ async function reloadExtension(callBrowser, connected) {
   let info = null;
   while (Date.now() < deadline) {
     info = await callBrowser("browser.info").catch(() => null);
-    if (info?.version === manifest.version) {
+    if (runsThisCode(info, build)) {
       note(`Reloaded in ${info.name}.`);
       return;
     }
@@ -167,7 +168,9 @@ async function reloadExtension(callBrowser, connected) {
   }
   if (!info) fail(`The extension did not reconnect after the reload. On the extensions page of ${connected.name}, check that Developer mode and the ${product} extension are turned on.`);
   fail(
-    `The connected extension is version ${info.version ?? "unknown"}, not ${manifest.version}. It is probably loaded from another folder: remove it on the extensions page and load ${extensionDir}.`,
+    info.version === manifest.version
+      ? `The connected extension runs other code than ${extensionDir}, though its version is ${manifest.version}. It is probably loaded from another folder: remove it on the extensions page and load ${extensionDir}.`
+      : `The connected extension is version ${info.version ?? "unknown"}, not ${manifest.version}. It is probably loaded from another folder: remove it on the extensions page and load ${extensionDir}.`,
   );
 }
 
@@ -179,21 +182,35 @@ function checkStoreExtension(info) {
 
 const fromStore = (info) => info?.id === STORE_EXTENSION_ID;
 
+const portTaken = (error) =>
+  `No ${product} hub that knows the hub token answers on 127.0.0.1:${PORT} (${error.message}). A new extension pairs with whatever answers there, so do not load it now: find the program with \`lsof -nP -iTCP:${PORT} -sTCP:LISTEN\`, stop it and run setup again.`;
+// The version stays the same between releases, so the extension must also report this copy's code
+// fingerprint (`build`, see shared.js) to count as updated.
+const runsThisCode = (info, build) => info?.version === manifest.version && (!build || info.build === build);
+
 export async function setup({ clients } = {}) {
   requireNode();
   installFiles();
+  const { extensionBuild } = await import(join(installed, "extension", "shared.js"));
+  const build = await extensionBuild((file) => readFile(join(extensionDir, file), "utf8")).then(({ hash }) => hash, () => null);
   const registered = await registerServer(clients);
-  const { callBrowser } = await import(join(installed, "mcp", "browser-link.mjs"));
+  const { callBrowser, isNotConnected } = await import(join(installed, "mcp", "browser-link.mjs"));
   // A hub of an older version, run by an agent session started before the update, cannot be reached.
-  const connected = await callBrowser("browser.info").catch((error) => (error.code === HUB_VERSION_MISMATCH ? fail(error.message) : null));
+  // Before the extension is loaded, a hub that proved the hub token must hold the port (this process
+  // or an agent session): an extension without a pairing secret gives it to whatever answers there.
+  const connected = await callBrowser("browser.info").catch((error) => {
+    if (error.code === HUB_VERSION_MISMATCH) fail(error.message);
+    if (!isNotConnected(error)) fail(portTaken(error));
+    return null;
+  });
   if (fromStore(connected)) checkStoreExtension(connected);
-  else if (connected) await reloadExtension(callBrowser, connected);
+  else if (connected) await reloadExtension(callBrowser, connected, build);
   else {
     openExtensionsPage();
     const info = await waitForExtension(callBrowser);
     // An extension enabled from another folder, or an older copy, connects too; it must run this version.
     if (fromStore(info)) checkStoreExtension(info);
-    else if (info.version !== manifest.version) await reloadExtension(callBrowser, info);
+    else if (!runsThisCode(info, build)) await reloadExtension(callBrowser, info, build);
   }
   if (!registered) fail(`${product} is installed, but registering the MCP server failed for an agent CLI (see above).`);
   step(`${product} is ready. Start a new agent session to use it.`);
