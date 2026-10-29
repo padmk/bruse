@@ -1,0 +1,24 @@
+{
+  "revision": "81ca49424d16f35a8c3d32205225498692334676",
+  "suite": "real",
+  "agent": "claude",
+  "model": "claude-opus-5-5",
+  "effort": "medium",
+  "reps": 4,
+  "node": "v24.22.1",
+  "agentVersion": "2.1.312 (Claude Code)",
+  "browser": {
+    "name": "Brave",
+    "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36",
+    "version": "0.17.0",
+    "build": "f39ede858f5ea14cdc42a071956a7ef72f8f5162ac14792f95faee445869b339",
+    "id": "dcebpfjehgpkddgcdaipjemnndbdpmpc",
+    "paused": false,
+    "access": {
+      "mode": "agent-tabs",
+      "hiddenTabs": 16
+    }
+  },
+  "checkoutBuild": "f39ede858f5ea14cdc42a071956a7ef72f8f5162ac14792f95faee445869b339",
+  "startedAt": "2026-10-29T18:17:28.628Z"
+}

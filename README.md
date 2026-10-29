@@ -18,9 +18,11 @@ own, and it works in background tabs of your everyday browser profile. An agent 
 into one call, which saves turns. If your client's own browser tool already does what you need, a
 second tool may not add much.
 
-How Bruse compares with Claude in Chrome on real websites has not been measured for the current code
-yet. Earlier results, on test pages written for [the benchmark](bench/README.md), are kept there for
-reference; they do not show how fast typical work on real sites is.
+On six read and interaction tasks on public websites (Wikipedia, GitHub, the Python documentation, a
+paginated shop and a single-page app), measured on 2026-10-29 with the same model and prompts, Bruse's
+median run took 48 to 68 % less time and 38 to 74 % less money than Claude in Chrome, with all 96 runs
+of both tools passing. That is one computer, one model and eight runs per task; see
+[the benchmark](bench/README.md) for the method, every run and what the numbers do not cover.
 
 ## Requirements
 
