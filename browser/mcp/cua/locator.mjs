@@ -247,7 +247,7 @@ export class Locator {
     const { id, sessionId } = await this.resolveOne({ timeoutMs });
     const point = await this.tab.nodePoint(id, sessionId, { hitTest: true, force, timeoutMs: Math.max(0, deadline - Date.now()) });
     await clickAt(this.tab.cdpSender(), point, { mouseButton: button, clickCount, key: modifiers.join("+") });
-    await this.tab.afterInput();
+    await this.tab.afterInput({ mayNavigate: true });
   }
   async dblclick(options = {}) {
     return this.click({ ...options, clickCount: 2 });
@@ -286,7 +286,7 @@ export class Locator {
     const { id, cdp } = await this.resolveOne({ timeoutMs });
     await focusNode(cdp, id);
     await pressChord(this.tab.cdpSender(), key);
-    await this.tab.afterInput();
+    await this.tab.afterInput({ mayNavigate: true });
   }
 
   async setChecked(checked, options = {}) {

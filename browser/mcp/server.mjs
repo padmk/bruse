@@ -15,10 +15,9 @@ const DEFAULT_TIMEOUT_MS = 30_000;
 
 const JS_DESCRIPTION = `Control the user's browser by running JavaScript in a persistent REPL with the global \`cua\`.
 
-On the first call, or after js_reset, run exactly one entry call and read the documentation it returns:
-- \`await cua.getState()\` for an inventory of browsers and open tabs,
-- \`const tab = await cua.createBrowserTab("1", url)\` to open a background tab,
-- \`const tab = await cua.getTab(tabId)\` to bind an existing tab.
+On the first call, or after js_reset, run exactly one entry call; it also returns the documentation:
+- \`const tab = await cua.createBrowserTab("1", url)\` to open a page in a background tab (browser "1" is the connected browser),
+- \`await cua.getState()\` only to find tabs the user already has open, then \`const tab = await cua.getTab(tabId)\` to bind one.
 
 Then act by element number from the accessibility state and check the result in the same call, e.g.
 \`await tab.click(12); await tab.getAXState();\`. Later getAXState() calls return only changes.
@@ -193,7 +192,7 @@ async function handle(message) {
         protocolVersion: message.params?.protocolVersion ?? "2025-06-18",
         capabilities: { tools: {} },
         serverInfo: SERVER_INFO,
-        instructions: "Browser automation through the js tool's cua API. Start with cua.getState(), cua.createBrowserTab or cua.getTab.",
+        instructions: "Browser automation through the js tool's cua API. To open a page, start with cua.createBrowserTab(\"1\", url); cua.getState() lists the tabs the user already has open.",
       };
     case "ping":
       return {};

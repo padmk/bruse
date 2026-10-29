@@ -156,8 +156,9 @@ Report vulnerabilities as described in [SECURITY.md](SECURITY.md).
   turn on tool search before the first browser call. A call returns at most 30,000 characters of text,
   cut at a line end with a note on reading the rest from the REPL; Claude Code would otherwise move a
   result over 25,000 tokens (a busy page's first tree) to a file outside the agent's view.
-- State reads after an action wait until the DOM has had no mutations for 60 ms (at most 1 s from the
-  action) instead of a fixed delay.
+- A click or key press that starts a navigation returns once the new page has loaded. State reads
+  after an action wait until the DOM has had no mutations for 60 ms (at most 1 s from the action)
+  instead of a fixed delay.
 - Screenshots are captured in CSS pixels, so points in the image are the points `click([x, y])` takes.
 - `tab.hover()` and `locator.hover()` open hover menus; `tab.drag()` takes element numbers or points and
   `locator.dragTo()` drags onto another element; `tab.dev.requests()` lists recent network requests,

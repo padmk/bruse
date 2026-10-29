@@ -6,6 +6,7 @@ import { PASSWORD_MANAGER_ELEMENTS } from "../../extension/shared.js";
 
 const MAX_LINES = 3000;
 const MAX_TEXT = 300;
+const MAX_HELP = 80;
 const SKIPPED_ROLES = new Set(["InlineTextBox", "LineBreak", "ListMarker"]);
 // Wrappers without their own meaning; unnamed ones are flattened unless they group several children.
 const TRANSPARENT_ROLES = new Set(["generic", "none", "presentation", "group", "listitem", "paragraph", "section", "Section", "LayoutTable", "LayoutTableRow", "LayoutTableCell", "Pre", "time", "Abbr", "emphasis", "strong", "code", "mark", "subscript", "superscript", "DescriptionListTerm", "DescriptionListDetail", "blockquote", "figure", "Ruby", "label", "LabelText"]);
@@ -66,6 +67,16 @@ export function clip(text, max = MAX_TEXT) {
   return flat.length > max ? `${flat.slice(0, max)}…` : flat;
 }
 
+// The last path segment of a URL as a page name: "/wiki/Free_content" is "Free content".
+function pageNameOf(url) {
+  try {
+    const segment = new URL(url).pathname.replace(/\/+$/, "").split("/").pop();
+    return clip(decodeURIComponent(segment).replaceAll("_", " "), MAX_HELP);
+  } catch {
+    return "";
+  }
+}
+
 function shortUrl(url) {
   return String(url).replace(/^https?:\/\//, "").replace(/^www\./, "");
 }
@@ -105,8 +116,10 @@ function collectAttributes(domRoot, sessionId, attributes) {
 // plus DOM attributes. `cdpFor(sessionId)` returns a sender for that frame session (null: main).
 export async function fetchPageTree(cdpFor, outOfProcessFrames = []) {
   const main = cdpFor(null);
-  const [{ frameTree }, { root: domRoot }, { nodes: mainNodes }] = await Promise.all([
-    main("Page.getFrameTree"),
+  // Every frame's loader is read before its accessibility tree, and again afterwards (see
+  // dropLoadersThatChanged), so a tree is never labeled with a loader of a later document.
+  const { frameTree } = await main("Page.getFrameTree");
+  const [{ root: domRoot }, { nodes: mainNodes }] = await Promise.all([
     main("DOM.getDocument", { depth: -1, pierce: true }),
     main("Accessibility.getFullAXTree"),
   ]);
@@ -122,12 +135,12 @@ export async function fetchPageTree(cdpFor, outOfProcessFrames = []) {
   const remote = new Map(outOfProcessFrames.map((frame) => [frame.frameId, frame]));
   for (const frame of outOfProcessFrames) if (!frames.some((f) => f.id === frame.frameId)) frames.push({ id: frame.frameId, url: frame.url });
 
-  const trees = []; // { frameId, sessionId, nodes, ownerKey, main }
+  const trees = []; // { frameId, loaderId, sessionId, nodes, ownerKey, main }
   const unavailableFrames = [];
   await Promise.all(
     frames.map(async (frame, index) => {
       if (index === 0) {
-        trees.push({ frameId: frame.id, sessionId: null, nodes: mainNodes, ownerKey: null, main: true });
+        trees.push({ frameId: frame.id, loaderId: frame.loaderId, sessionId: null, nodes: mainNodes, ownerKey: null, main: true });
         return;
       }
       const remoteFrame = remote.get(frame.id);
@@ -135,16 +148,17 @@ export async function fetchPageTree(cdpFor, outOfProcessFrames = []) {
         if (remoteFrame) {
           const child = cdpFor(remoteFrame.sessionId);
           const parent = cdpFor(remoteFrame.parentSessionId);
+          const { frameTree: own } = await child("Page.getFrameTree");
           const [{ nodes }, { root }, { backendNodeId }] = await Promise.all([
             child("Accessibility.getFullAXTree"),
             child("DOM.getDocument", { depth: -1, pierce: true }),
             parent("DOM.getFrameOwner", { frameId: frame.id }),
           ]);
           collectAttributes(root, remoteFrame.sessionId, attributes);
-          trees.push({ frameId: frame.id, sessionId: remoteFrame.sessionId, nodes, ownerKey: `${sessionKey(remoteFrame.parentSessionId)}:${backendNodeId}` });
+          trees.push({ frameId: frame.id, loaderId: own.frame.loaderId, sessionId: remoteFrame.sessionId, nodes, ownerKey: `${sessionKey(remoteFrame.parentSessionId)}:${backendNodeId}` });
         } else {
           const [{ nodes }, { backendNodeId }] = await Promise.all([main("Accessibility.getFullAXTree", { frameId: frame.id }), main("DOM.getFrameOwner", { frameId: frame.id })]);
-          trees.push({ frameId: frame.id, sessionId: null, nodes, ownerKey: `main:${backendNodeId}` });
+          trees.push({ frameId: frame.id, loaderId: frame.loaderId, sessionId: null, nodes, ownerKey: `main:${backendNodeId}` });
         }
       } catch {
         unavailableFrames.push(frame);
@@ -172,7 +186,7 @@ export async function fetchPageTree(cdpFor, outOfProcessFrames = []) {
               child("Accessibility.getFullAXTree", { frameId: frame.id }),
               child("DOM.getFrameOwner", { frameId: frame.id }),
             ]);
-            trees.push({ frameId: frame.id, sessionId: remoteFrame.sessionId, nodes, ownerKey: `${sessionKey(remoteFrame.sessionId)}:${backendNodeId}` });
+            trees.push({ frameId: frame.id, loaderId: frame.loaderId, sessionId: remoteFrame.sessionId, nodes, ownerKey: `${sessionKey(remoteFrame.sessionId)}:${backendNodeId}` });
           } catch {
             unavailableFrames.push(frame);
           }
@@ -180,6 +194,7 @@ export async function fetchPageTree(cdpFor, outOfProcessFrames = []) {
       );
     }),
   );
+  await dropLoadersThatChanged(cdpFor, outOfProcessFrames, trees);
   const included = new Set(trees.map((tree) => tree.frameId));
   return {
     loaderId: frameTree.frame.loaderId,
@@ -192,13 +207,36 @@ export async function fetchPageTree(cdpFor, outOfProcessFrames = []) {
   };
 }
 
+// A frame's loader is read before its accessibility tree; a frame that navigated meanwhile would label
+// nodes of its new document with the old loader. The loaders are read again afterwards, and a tree whose
+// frame changed loader, or whose loader cannot be read, keeps none: its elements are then never matched
+// as replacements (see findReplacement).
+async function dropLoadersThatChanged(cdpFor, outOfProcessFrames, trees) {
+  const loaders = new Map(); // session key -> Map frameId -> loaderId
+  const read = async (sessionId) => {
+    const map = new Map();
+    const walk = (tree) => {
+      if (!tree) return;
+      map.set(tree.frame.id, tree.frame.loaderId);
+      for (const child of tree.childFrames ?? []) walk(child);
+    };
+    walk((await cdpFor(sessionId)("Page.getFrameTree").catch(() => ({ frameTree: null }))).frameTree);
+    loaders.set(sessionKey(sessionId), map);
+  };
+  await Promise.all([read(null), ...outOfProcessFrames.map((frame) => read(frame.sessionId))]);
+  for (const tree of trees) {
+    const now = loaders.get(sessionKey(tree.sessionId))?.get(tree.frameId);
+    if (!now || now !== tree.loaderId) tree.loaderId = null;
+  }
+}
+
 // Builds the simplified element tree: { key, node, sessionId, attrs, children }.
 export function simplifyTree(page) {
   const frameRoots = new Map(); // owner key -> [AX roots of child frames]
   const frameInfo = new Map(); // frameId -> { byId, sessionId }
   let mainRoot = null;
   for (const tree of page.trees) {
-    frameInfo.set(tree.frameId, { byId: new Map(tree.nodes.map((node) => [node.nodeId, node])), sessionId: tree.sessionId });
+    frameInfo.set(tree.frameId, { byId: new Map(tree.nodes.map((node) => [node.nodeId, node])), sessionId: tree.sessionId, loaderId: tree.loaderId });
     const root = tree.nodes.find((node) => !node.parentId) ?? tree.nodes[0];
     if (tree.main) mainRoot = { root, frameId: tree.frameId };
     else if (root) frameRoots.set(tree.ownerKey, [...(frameRoots.get(tree.ownerKey) ?? []), { root, frameId: tree.frameId }]);
@@ -238,8 +276,12 @@ export function simplifyTree(page) {
   // Element keys name a frame session by its frame, so element numbers survive a new debugger session.
   const frameKey = (sessionId) => (sessionId ? (page.sessionFrames.get(sessionId) ?? sessionId) : "main");
   const entry = (node, frameId, children) => {
-    const { sessionId } = frameInfo.get(frameId);
+    const { sessionId, loaderId } = frameInfo.get(frameId);
     return {
+      // The document the element belongs to: its own frame (also for frames that share the page's
+      // process) and the load of that frame.
+      documentFrameId: frameId,
+      loaderId,
       // Nodes without a DOM node get a key from their position when the tree is rendered.
       key: node.backendDOMNodeId !== undefined ? `b${frameKey(sessionId)}:${node.backendDOMNodeId}` : null,
       node,
@@ -277,11 +319,14 @@ function describe(element, pageHost) {
   const level = property(node, "level");
   if (name) parts.push(name);
   if (role === "heading" && level) parts.push(`Value: ${level}`);
-  else if (url) parts.push(`Value: ${linkTarget(url, pageHost)}`);
+  // An image's URL is its source file, which a reader of the tree does not act on.
+  else if (url && role !== "image" && role !== "img") parts.push(`Value: ${linkTarget(url, pageHost)}`);
   else if (value && value !== name) parts.push(`Value: ${value}`);
   if (!value && attrs.placeholder && attrs.placeholder !== name) parts.push(`Placeholder: ${clip(attrs.placeholder)}`);
-  const description = clip(node.description?.value ?? "");
-  if (description && description !== name) parts.push(`Help: ${description}`);
+  // A description (usually a title tooltip) is cut short, and left out when it only repeats the name or
+  // the page a link leads to, as Wikipedia's link titles do.
+  const description = clip(node.description?.value ?? "", MAX_HELP);
+  if (description && description !== name && !(url && description === pageNameOf(url))) parts.push(`Help: ${description}`);
   if (attrs.id && (SETTABLE_ROLES.has(role) || role === "button" || editable)) parts.push(`ID: ${attrs.id}`);
 
   return `${label}${states.length ? ` (${states.join(", ")})` : ""}${parts.length ? ` ${parts.join(", ")}` : ""}`;
@@ -299,6 +344,9 @@ export class AXTracker {
     this.nextIndex = 1;
     this.previous = null; // Map key -> { index, depth, text }
     this.backendByIndex = new Map();
+    // Elements of earlier snapshots of this document that later ones no longer have, such as a field a
+    // page script replaced between two reads; their numbers can only lead to a replacement.
+    this.departedByIndex = new Map();
   }
 
   indexFor(key, isRoot) {
@@ -322,7 +370,8 @@ export class AXTracker {
 
     const current = new Map();
     const order = [];
-    // Only elements in this snapshot can be acted on.
+    // Only elements in this snapshot can be acted on directly.
+    const before = this.backendByIndex;
     this.backendByIndex = new Map();
     const lastChildOf = new Map(); // parent key -> key of the previous sibling seen
     let focusedLine = null;
@@ -342,7 +391,7 @@ export class AXTracker {
       }
       const index = this.indexFor(element.key, depth === 0);
       const line = `${index} ${describe(element, pageHost)}`;
-      if (element.node.backendDOMNodeId !== undefined) this.backendByIndex.set(index, { backendNodeId: element.node.backendDOMNodeId, sessionId: element.sessionId, frameId: element.frameId });
+      if (element.node.backendDOMNodeId !== undefined) this.backendByIndex.set(index, nodeRefOf(element));
       const previousSibling = lastChildOf.get(parentKey) ?? null;
       lastChildOf.set(parentKey, element.key);
       current.set(element.key, { index, depth, line, parent: parentKey, previousSibling });
@@ -377,6 +426,8 @@ export class AXTracker {
     if (truncated) text += `\n… truncated after ${MAX_LINES} elements; scroll or use playwright locators for the rest.`;
     if (page.unavailableFrames.length) text += `\nCross-origin frames not included: ${page.unavailableFrames.map(shortUrl).join(", ")}`;
     this.previous = current;
+    for (const [index, ref] of before) if (!this.backendByIndex.has(index)) this.departedByIndex.set(index, ref);
+    for (const index of this.backendByIndex.keys()) this.departedByIndex.delete(index);
     return { text, focusedLine };
   }
 
@@ -387,12 +438,48 @@ export class AXTracker {
     return newNeighbourExisted && oldNeighbourRemains;
   }
 
-  // Returns { backendNodeId, sessionId, frameId } for an element number of the latest snapshot.
+  // Returns { backendNodeId, sessionId, frameId, role, name } for an element number of the latest
+  // snapshot, or of an earlier snapshot of this document with `departed: true` when it is gone since.
   nodeRef(index) {
-    const id = this.backendByIndex.get(index);
-    if (id === undefined) throw new Error(`Element ${index} is not in the latest accessibility state of this tab; call getAXState() again`);
-    return id;
+    const ref = this.backendByIndex.get(index);
+    if (ref !== undefined) return ref;
+    const departed = this.departedByIndex.get(index);
+    if (departed !== undefined) return { ...departed, departed: true };
+    throw new Error(`Element ${index} is not in the latest accessibility state of this tab; call getAXState() again`);
   }
+
+  // Points an element number at the element that replaced its node (see findReplacement).
+  replaceNode(index, ref) {
+    this.backendByIndex.set(index, ref);
+  }
+}
+
+function nodeRefOf({ node, sessionId, frameId, documentFrameId, loaderId }) {
+  return { backendNodeId: node.backendDOMNodeId, sessionId, frameId, documentFrameId, loaderId, role: node.role?.value ?? "", name: node.name?.value ?? "" };
+}
+
+// Text entry roles a page switches between when its script replaces a plain field with a widget, such
+// as a search field that becomes a combo box with suggestions.
+const TEXT_ENTRY_ROLES = new Set(["textbox", "searchbox", "combobox"]);
+const roleFamily = (role) => (TEXT_ENTRY_ROLES.has(role) ? "text entry" : role);
+
+// The element of a simplified tree that took the place of `ref`, whose node a page script removed: the
+// only element in the same document (the same frame, not navigated since) with the same accessible
+// name and role. Null when there is none or more than one, or when the old element had no name to
+// recognize it by.
+export function findReplacement(root, ref) {
+  if (!root || !ref.name) return null;
+  const matches = [];
+  const visit = (element) => {
+    const { node } = element;
+    const sameDocument = element.documentFrameId === ref.documentFrameId && element.loaderId === ref.loaderId && Boolean(ref.loaderId);
+    if (node.backendDOMNodeId !== undefined && sameDocument && (node.name?.value ?? "") === ref.name && roleFamily(node.role?.value ?? "") === roleFamily(ref.role)) {
+      matches.push(element);
+    }
+    for (const child of element.children) visit(child);
+  };
+  visit(root);
+  return matches.length === 1 ? nodeRefOf(matches[0]) : null;
 }
 
 function summarizeRanges(numbers) {
