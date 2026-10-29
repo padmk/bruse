@@ -18,6 +18,10 @@ const DIALOG_SAFE_METHODS = new Set(["Page.handleJavaScriptDialog", "Page.captur
 
 const sessions = new Map(); // tabId -> { lastUsed, dialog, console, requests, inflight (request id -> { session, frameId, url }), frames }
 const eventListeners = new Set();
+// Child session id -> frame id of cross-origin frames, kept after the sessions end: the next attach gives
+// the frames new sessions, and a command for an earlier one goes to the frame's new session.
+const frameOfSession = new Map();
+const MAX_REMEMBERED_FRAME_SESSIONS = 1_000;
 
 // Returns a function that removes the listener.
 export function onCdpEvent(listener) {
@@ -55,6 +59,8 @@ chrome.debugger.onEvent.addListener(({ tabId, sessionId: source }, method, param
   if (method === "Target.attachedToTarget") {
     if (params.targetInfo.type === "iframe") {
       session.frames.set(params.targetInfo.targetId, { sessionId: params.sessionId, url: params.targetInfo.url, parentSessionId: source ?? null });
+      frameOfSession.set(params.sessionId, params.targetInfo.targetId);
+      if (frameOfSession.size > MAX_REMEMBERED_FRAME_SESSIONS) frameOfSession.delete(frameOfSession.keys().next().value);
       enableChildSession(tabId, params.sessionId);
     } else if (params.targetInfo.type === "worker") {
       // A dedicated worker's script request starts in the page's session and reports no end there.
@@ -210,34 +216,141 @@ export async function detach(tabId) {
 
 // Removes frames that other extensions injected into the page (for example password manager menus).
 // The browser refuses debugger access to a tab while such a frame is present; this runs only after it
-// did, and removes no more than those frames.
+// did, and removes no more than those frames and known password manager wrappers that hold frames. Each
+// frame of the page is scripted on its own, so one that cannot be scripted does not stop the others.
+// Returns { removed, remaining, errors }: the elements removed, how many other extensions' frames the
+// page still holds a moment later, and why frames could not be scripted.
 async function removeForeignExtensionFrames(tabId) {
-  await chrome.scripting.executeScript({
-    target: { tabId, allFrames: true },
-    func: (ownOrigin, passwordManagerElements) => {
-      // Without focus the password manager does not bring its menu back right away.
-      if (document.activeElement && document.activeElement !== document.body) document.activeElement.blur();
-      for (const host of document.querySelectorAll("com-1password-button, com-1password-menu")) host.remove();
-      const roots = [document];
-      for (let i = 0; i < roots.length; i++) {
-        for (const el of roots[i].querySelectorAll("*")) {
-          const shadow = chrome.dom?.openOrClosedShadowRoot?.(el) ?? el.shadowRoot;
-          if (shadow) roots.push(shadow);
-          if (el.tagName === "IFRAME" && el.src.startsWith("chrome-extension://") && !el.src.startsWith(ownOrigin)) {
-            // Only the frame goes, and the wrapper element only of a known password manager menu,
-            // which would otherwise put the frame back.
-            const host = el.getRootNode().host;
-            if (host && new RegExp(passwordManagerElements, "i").test(host.localName)) host.remove();
-            else el.remove();
-          }
+  // The browser lists the page's own frames only, which are the ones that can hold such a frame.
+  const frames = (await chrome.webNavigation.getAllFrames({ tabId }).catch(() => null)) ?? [{ frameId: 0, url: "" }];
+  const report = { removed: 0, remaining: 0, errors: [] };
+  await Promise.all(
+    frames
+      .filter((frame) => !frame.url.startsWith("chrome-extension://"))
+      .map(async ({ frameId }) => {
+        try {
+          const [injection] = await chrome.scripting.executeScript({
+            target: { tabId, frameIds: [frameId] },
+            func: removeFramesInDocument,
+            args: [`chrome-extension://${chrome.runtime.id}/`, PASSWORD_MANAGER_ELEMENTS, FOREIGN_FRAME_SETTLE_MS],
+          });
+          report.removed += injection?.result?.removed ?? 0;
+          report.remaining += injection?.result?.remaining ?? 0;
+        } catch (error) {
+          report.errors.push(error.message);
         }
+      }),
+  );
+  return report;
+}
+
+// Runs as a content script in one frame of the page. Returns { removed, remaining }: the elements it
+// removed, and the other extensions' frames found after `settleMs` (a wrapper may put its frame back).
+async function removeFramesInDocument(ownOrigin, passwordManagerElements, settleMs) {
+  const wrapper = new RegExp(passwordManagerElements, "i");
+  const shadowOf = (el) => chrome.dom?.openOrClosedShadowRoot?.(el) ?? el.shadowRoot;
+  const isForeignFrame = (el) => el.tagName === "IFRAME" && el.src.startsWith("chrome-extension://") && !el.src.startsWith(ownOrigin);
+  // Every element of the document and of the shadow roots below it, open or closed.
+  const allElements = (root) => {
+    const elements = [];
+    const roots = [root];
+    for (let i = 0; i < roots.length; i++) {
+      for (const el of roots[i].querySelectorAll("*")) {
+        elements.push(el);
+        if (shadowOf(el)) roots.push(shadowOf(el));
       }
-    },
-    args: [`chrome-extension://${chrome.runtime.id}/`, PASSWORD_MANAGER_ELEMENTS],
-  });
+    }
+    return elements;
+  };
+  const holdsFrame = (el) => [...allElements(el), ...(shadowOf(el) ? allElements(shadowOf(el)) : [])].some((child) => child.tagName === "IFRAME");
+  const doomed = new Set();
+  for (const el of allElements(document)) {
+    // A known password manager's wrapper, also inside the page's shadow roots, goes as a whole when it
+    // holds a frame (whatever that frame's URL looks like from here): it would put the frame back.
+    if (/^com-1password-(button|menu)$/.test(el.localName) || (wrapper.test(el.localName) && holdsFrame(el))) doomed.add(el);
+    else if (isForeignFrame(el)) {
+      // Otherwise only the frame goes, or the known password manager wrapper whose shadow root holds it.
+      const host = el.getRootNode().host;
+      doomed.add(host && wrapper.test(host.localName) ? host : el);
+    }
+  }
+  // Without focus the password manager does not bring its menu back right away.
+  if (doomed.size && document.activeElement && document.activeElement !== document.body) document.activeElement.blur();
+  for (const el of doomed) el.remove();
+  if (!doomed.size) return { removed: 0, remaining: 0 };
+  await new Promise((resolve) => setTimeout(resolve, settleMs));
+  return { removed: doomed.size, remaining: allElements(document).filter(isForeignFrame).length };
 }
 
 const FOREIGN_FRAME_ERROR = /chrome-extension:\/\/ URL of different extension/;
+// The browser detached the debugger before the command was sent, for example because such a frame appeared.
+const NOT_ATTACHED_ERROR = /Debugger is not attached to the tab/;
+// Attempts at restoring debugger access after the first failure, and how long after a removal the page
+// is checked for frames that came back.
+const FOREIGN_FRAME_RETRIES = 3;
+const FOREIGN_FRAME_SETTLE_MS = 200;
+// How long a command for a frame waits for the frame's new session after the debugger attached anew.
+const FRAME_SESSION_WAIT_MS = 2_000;
+
+// Attaches to the tab when needed and runs `task(session)`. When another extension's frame blocks
+// debugger access, the frames are removed, the debugger attaches anew and the task runs again, a bounded
+// number of times; the final error says what removal did. The block shows as an error of the attach or
+// of a command, or as a command that found the debugger detached by the browser (it was not run); such a
+// command is sent again once, and then counts as blocked if removal finds such frames in the page.
+async function withDebuggerAccess(tabId, task) {
+  const removals = [];
+  let resent = false;
+  for (;;) {
+    let session;
+    try {
+      session = await attach(tabId);
+      return await task(session);
+    } catch (error) {
+      const detached = Boolean(session) && NOT_ATTACHED_ERROR.test(error.message);
+      if (!detached && !FOREIGN_FRAME_ERROR.test(error.message)) throw error;
+      if (detached && sessions.get(tabId) === session) await detach(tabId);
+      if (detached && !resent) {
+        resent = true;
+        continue;
+      }
+      if (removals.length >= FOREIGN_FRAME_RETRIES) throw new Error(foreignFrameFailure(error.message, removals));
+      const removal = await removeForeignExtensionFrames(tabId);
+      if (detached && !removal.removed) throw error;
+      removals.push(removal);
+      await detach(tabId);
+    }
+  }
+}
+
+function foreignFrameFailure(message, removals) {
+  const removed = removals.reduce((sum, removal) => sum + removal.removed, 0);
+  const remaining = removals.at(-1)?.remaining ?? 0;
+  const errors = [...new Set(removals.flatMap((removal) => removal.errors))];
+  const details = [`${removed} elements removed`, `${remaining} of another extension's frames back in the page afterwards`];
+  if (errors.length) details.push(`removal failed: ${errors.join("; ")}`);
+  return (
+    `${message}. Another extension's frame in the page (such as a password manager's menu) blocks debugger access to this tab, ` +
+    `and removing such frames did not restore it after ${removals.length} attempts (${details.join("; ")}). ` +
+    "Close that extension's menu or turn the extension off for this site, then retry."
+  );
+}
+
+// A frame's session from an earlier attach ended with it: the command goes to the frame's new session,
+// which the browser reports shortly after attaching.
+async function currentFrameSession(tabId, session, sessionId) {
+  if (!sessionId || [...session.frames.values()].some((frame) => frame.sessionId === sessionId)) return sessionId;
+  const frameId = frameOfSession.get(sessionId);
+  if (frameId === undefined) return sessionId;
+  const deadline = Date.now() + FRAME_SESSION_WAIT_MS;
+  for (;;) {
+    const frame = session.frames.get(frameId);
+    if (frame) return frame.sessionId;
+    if (Date.now() > deadline || sessions.get(tabId) !== session) {
+      throw new Error("The frame's debugger session ended when the debugger attached to the tab again, and the frame has no new session; call getAXState() again");
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+}
 
 const FILE_CHOOSER_INTERCEPT_MS = 60_000;
 const interceptTimers = new Map(); // tab id -> timer that switches file chooser interception off
@@ -252,8 +365,8 @@ export function sinceAgentInput(tabId) {
 chrome.tabs.onRemoved.addListener((tabId) => agentInputAt.delete(tabId));
 
 // Runs a CDP command on a tab, attaching first when needed. When another extension's frame blocks
-// debugger access, the frame is removed and the command retried once. `timeoutMs` shortens the wait
-// for commands that should be quick, so a stuck page fails them early.
+// debugger access, the frame is removed and the command retried (see withDebuggerAccess). `timeoutMs`
+// shortens the wait for commands that should be quick, so a stuck page fails them early.
 export async function cdp(tabId, method, params, sessionId, timeoutMs) {
   if (isPressInput(method, params)) agentInputAt.set(tabId, Date.now());
   // File chooser interception that nobody switches off (the agent's code was stopped) would leave the
@@ -268,18 +381,10 @@ export async function cdp(tabId, method, params, sessionId, timeoutMs) {
       }, FILE_CHOOSER_INTERCEPT_MS));
     }
   }
-  try {
-    return await sendChecked(tabId, method, params, sessionId, timeoutMs);
-  } catch (error) {
-    if (!FOREIGN_FRAME_ERROR.test(error.message)) throw error;
-    await removeForeignExtensionFrames(tabId).catch(() => {});
-    await detach(tabId);
-    return sendChecked(tabId, method, params, sessionId, timeoutMs);
-  }
+  return withDebuggerAccess(tabId, async (session) => sendChecked(tabId, session, method, params, await currentFrameSession(tabId, session, sessionId), timeoutMs));
 }
 
-async function sendChecked(tabId, method, params, sessionId, timeoutMs) {
-  const session = await attach(tabId);
+async function sendChecked(tabId, session, method, params, sessionId, timeoutMs) {
   if (session.dialog && !DIALOG_SAFE_METHODS.has(method) && !method.startsWith("Input.")) {
     throw new Error(`A JavaScript ${session.dialog.type} dialog is open on this tab ("${session.dialog.message}"); handle it with getJsDialog() first`);
   }
@@ -304,11 +409,12 @@ async function sendChecked(tabId, method, params, sessionId, timeoutMs) {
   }
 }
 
-export async function tabState(tabId) {
-  const session = await attach(tabId);
-  const frames = [...session.frames].map(([frameId, frame]) => ({ frameId, ...frame }));
-  const quietMs = session.inflight.size ? 0 : Date.now() - (session.networkActivityAt ?? session.attachedAt);
-  return { dialog: session.dialog, frames, inflightRequests: session.inflight.size, networkQuietMs: quietMs };
+export function tabState(tabId) {
+  return withDebuggerAccess(tabId, async (session) => {
+    const frames = [...session.frames].map(([frameId, frame]) => ({ frameId, ...frame }));
+    const quietMs = session.inflight.size ? 0 : Date.now() - (session.networkActivityAt ?? session.attachedAt);
+    return { dialog: session.dialog, frames, inflightRequests: session.inflight.size, networkQuietMs: quietMs };
+  });
 }
 
 export function consoleLogs(tabId) {
