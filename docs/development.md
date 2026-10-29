@@ -73,7 +73,9 @@ extension into headless Chrome for Testing and drive it through MCP sessions, th
 Each test file uses its own hub port, state directory and browser profile, so the tests never reach an
 installed Bruse or the browser it is connected to. They look for Chromium in Playwright's cache
 (`npx playwright install chromium`) or take its executable from `BRUSE_TEST_CHROME`. `test/harness.mjs`
-starts the browser, sessions and local test sites.
+starts the browser, sessions and local test sites, and `hubClient()` connects to the hub as a peer MCP
+server does, to send requests to the extension directly. `test/fixtures/password-manager` is an
+extension that shows a menu frame the way password managers do.
 
 ## Benchmarks
 
