@@ -16,6 +16,8 @@ import { agentClients, clientId, extensionDir, fail, installRoot, installed, man
 const PAIR_WAIT_MS = 10 * 60_000;
 const PAIR_HINT_MS = 45_000;
 const RELOAD_WAIT_MS = 30_000;
+// Homebrew installs leave SECURITY.md out, so the notice links to this version's copy in the repository.
+const SECURITY_URL = `https://github.com/padmk/bruse/blob/v${manifest.version}/SECURITY.md`;
 
 // Chromium browsers in the order they are offered; the first installed one gets its extensions page opened.
 const BROWSERS = [
@@ -26,8 +28,10 @@ const BROWSERS = [
   { name: "Vivaldi", app: "Vivaldi", page: "vivaldi://extensions" },
 ];
 
-// Copies next to the target first, so a failed copy leaves the previous installation working.
-function installFiles() {
+// Copies next to the target first, so a failed copy leaves the previous installation working. The
+// previous copy is set aside and put back when the new one cannot take its place; a process killed
+// between the two renames still leaves no copy at the installed path. `rename` lets tests make a rename fail.
+export function installFiles({ rename = renameSync } = {}) {
   step(`Installing ${product} ${manifest.version}`);
   if (source === installed) {
     note(`Already running from ${installRoot}`);
@@ -38,13 +42,44 @@ function installFiles() {
   cpSync(source, staged, { recursive: true, filter: (path) => !path.endsWith(".DS_Store") });
   if (existsSync(installed)) {
     const previous = join(installRoot, `browser.previous-${Date.now()}`);
-    renameSync(installed, previous);
-    renameSync(staged, installed);
+    rename(installed, previous);
+    try {
+      rename(staged, installed);
+    } catch (error) {
+      discard(staged);
+      try {
+        rename(previous, installed);
+      } catch (restoreError) {
+        fail(
+          `Could not install the new copy (${error.message}) or put the previous one back (${restoreError.message}). ` +
+            `The previous installation is kept in ${previous}; to restore it, run:\n  mv ${JSON.stringify(previous)} ${JSON.stringify(installed)}`,
+        );
+      }
+      fail(`Could not install the new copy (${error.message}); the previous installation in ${installed} is unchanged.`);
+    }
     moveToTrash(previous);
   } else {
-    renameSync(staged, installed);
+    rename(staged, installed);
   }
   note(installed);
+}
+
+// Moves a leftover staged copy to the Trash; a failure here must not hide the error that left it.
+function discard(path) {
+  try {
+    moveToTrash(path);
+  } catch {
+    note(`(Could not move ${path} to the Trash; remove it by hand.)`);
+  }
+}
+
+// Shown once, on the first install, before any agent client gets the server.
+function trustNotice() {
+  step(`${product} is meant for agents you trust`);
+  note("Code an agent runs in the `js` tool runs with your user account's permissions: your files, programs and network.");
+  note("Agents act in your browser profile and can use the accounts you are signed in to there.");
+  note("A separate browser profile keeps those sign-ins out of reach, but it is not a sandbox for this computer.");
+  note(`More in SECURITY.md: ${SECURITY_URL}`);
 }
 
 // A stable path such as /opt/homebrew/bin/node keeps working after Node upgrades; process.execPath is versioned.
@@ -191,7 +226,9 @@ const runsThisCode = (info, build) => info?.version === manifest.version && (!bu
 
 export async function setup({ clients } = {}) {
   requireNode();
+  const firstInstall = !existsSync(installed);
   installFiles();
+  if (firstInstall) trustNotice();
   const { extensionBuild } = await import(join(installed, "extension", "shared.js"));
   const build = await extensionBuild((file) => readFile(join(extensionDir, file), "utf8")).then(({ hash }) => hash, () => null);
   const registered = await registerServer(clients);

@@ -59,6 +59,9 @@ test("setup, reload, doctor and uninstall", { timeout: 180_000 }, async () => {
   const setup = run("setup");
   await until(() => setup.output().includes("Waiting for the extension to connect"), { timeoutMs: 60_000, message: "setup to wait" });
   assert.match(setup.output(), /No supported agent client found/);
+  // A first install says what agents can reach before any client gets the server.
+  assert.match(setup.output(), /meant for agents you trust/);
+  assert.ok(setup.output().indexOf("meant for agents you trust") < setup.output().indexOf("Registering the MCP server"), setup.output());
   assert.ok(setup.output().includes(join(installed, "browser", "mcp", "server.mjs")));
   browser = await launchBrowser(join(installed, "browser", "extension"));
   const first = await setup.done;
@@ -69,6 +72,7 @@ test("setup, reload, doctor and uninstall", { timeout: 180_000 }, async () => {
   const second = await run("setup").done;
   assert.equal(second.code, 0, second.output);
   assert.match(second.output, /Reloaded in/);
+  assert.doesNotMatch(second.output, /meant for agents you trust/);
   assert.match(second.output, /is ready/);
   assert.equal(readFileSync(secretPath, "utf8"), secret);
   const doctor = await run("doctor").done;
