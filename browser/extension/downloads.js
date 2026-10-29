@@ -5,8 +5,10 @@
 // A download that starts in a tab the waiting tab opened from the agent's input counts for the waiting
 // tab. Downloads that no tab reported are never handed out.
 
-import { cdp, onCdpEvent, sinceAgentInput } from "./cdp.js";
-import { agentOpenerChain, onTabOpened } from "./sessions.js";
+import { EXTENSION_WORK, cdp, onCdpEvent, sinceAgentInput } from "./cdp.js";
+import { ALL_TABS, accessMode, sharedTabs, wasSharedWhenClosed } from "./access.js";
+import { tabOwner } from "./agent-state.js";
+import { agentOpenerChain, onTabOpened, rememberedOwner } from "./sessions.js";
 import { AGENT_INPUT_WINDOW_MS } from "./shared.js";
 
 const MAX_REMEMBERED = 200;
@@ -32,7 +34,7 @@ function stopIntercepting(tabId) {
   if (!intercepting.has(tabId)) return;
   clearTimeout(intercepting.get(tabId));
   intercepting.delete(tabId);
-  cdp(tabId, "Fetch.disable", {}).catch(() => {});
+  cdp(tabId, "Fetch.disable", {}, undefined, undefined, EXTENSION_WORK).catch(() => {});
 }
 
 // Interception starts as early as possible, before it is known whether the agent opened the tab,
@@ -49,7 +51,7 @@ function intercept(tabId) {
   if (intercepting.has(tabId)) return;
   undecided.set(tabId, undecided.get(tabId) ?? []);
   intercepting.set(tabId, setTimeout(() => stopIntercepting(tabId), INTERCEPT_MS));
-  cdp(tabId, "Fetch.enable", { patterns: [{ urlPattern: "*", resourceType: "Document", requestStage: "Response" }] }).catch(() => intercepting.delete(tabId));
+  cdp(tabId, "Fetch.enable", { patterns: [{ urlPattern: "*", resourceType: "Document", requestStage: "Response" }] }, undefined, undefined, EXTENSION_WORK).catch(() => intercepting.delete(tabId));
 }
 
 // Tabs the agent or the user creates have no opener; only a page's opening can be a download.
@@ -88,7 +90,7 @@ onCdpEvent((tabId, method, params) => {
   const isFile = /attachment/i.test(header("content-disposition")) || (params.responseStatusCode < 300 && !RENDERED_TYPES.test(header("content-type")));
   const redirect = params.responseStatusCode >= 300 && params.responseStatusCode < 400;
   if (isFile && agentOpened.get(tabId) !== false) reportDownload(tabId, params.request.url, "held");
-  cdp(tabId, "Fetch.continueResponse", { requestId: params.requestId }).catch(() => {});
+  cdp(tabId, "Fetch.continueResponse", { requestId: params.requestId }, undefined, undefined, EXTENSION_WORK).catch(() => {});
   // A redirect is followed by the response that decides.
   if (!redirect) stopIntercepting(tabId);
 });
@@ -167,19 +169,66 @@ function expire(list) {
   for (let i = list.length - 1; i >= 0; i--) if (now - list[i].at > PAIRING_WINDOW_MS) list.splice(i, 1);
 }
 
-function assign(downloadId, sourceTabId) {
+// Why the waiting session may have a file that `tabId` downloaded, or null: "all-tabs" (the mode lets
+// it use every tab), "share" (the user shares the tab, also one that closed as it turned into the
+// download) or "owner" (the session owns the tab, also a popup that closed and was opened for it). A wait
+// in one tab never receives a file from a tab of another session that its tab opened.
+async function proofOfAccess(sessionId, tabId) {
+  if ((await accessMode()) === ALL_TABS) return "all-tabs";
+  // The tab may close during this check; tab IDs are not reused, so a share it closed with still counts.
+  if ((await sharedTabs()).has(tabId) || wasSharedWhenClosed(tabId)) return "share";
+  const open = await chrome.tabs.get(tabId).then(() => true, () => false);
+  const owner = open ? await tabOwner(tabId) : rememberedOwner(tabId);
+  return sessionId && owner === sessionId ? "owner" : null;
+}
+
+// A download's pairing with its source tab, made when the download is matched and withdrawn when that
+// match proves ambiguous (also before a deferred match is made); a grant that a waiting call holds
+// refers to it.
+const pairings = new Map(); // download id -> { valid }
+
+async function assign(downloadId, sourceTabId) {
   // A new tab whose opening is still being judged gets its downloads once that is decided.
   if (undecided.has(sourceTabId)) return undecided.get(sourceTabId).push(downloadId);
+  const pairing = pairings.get(downloadId) ?? { valid: true };
+  if (!pairing.valid) return;
+  remember(pairings, downloadId, pairing);
   const tabId = waitingTab(sourceTabId) ?? sourceTabId;
   remember(owners, downloadId, tabId);
-  for (const waiter of waiters) {
-    if (waiter.claimed === null && waiter.tabId === tabId) {
-      waiter.claimed = downloadId;
-      break;
-    }
+  for (const waiter of [...waiters]) {
+    if (waiter.claimed !== null || waiter.tabId !== tabId) continue;
+    const proof = await proofOfAccess(waiter.sessionId, sourceTabId);
+    // The pairing may have been withdrawn, or the waiter claimed or ended, while access was checked.
+    if (!pairing.valid) return;
+    if (!proof || waiter.claimed !== null || !waiters.has(waiter)) continue;
+    // From here the grant, not the tab, decides: the tab may close (a popup that turned into the
+    // download) without taking the file away; the user stopping the share or switching modes does.
+    waiter.claimed = downloadId;
+    waiter.grant = { source: sourceTabId, proof, pairing, revoked: false };
+    break;
   }
   update(downloadId);
 }
+
+// The user's explicit changes end grants that rested on them: stopping the share of a tab that is still
+// open (a closed tab's share ends with it, which is no revocation), or switching to agent tabs.
+// Decided at once, so a download that completes meanwhile cannot slip past the revocation.
+chrome.storage.onChanged.addListener((changes, area) => {
+  const revoke = (matches) => {
+    for (const waiter of waiters) {
+      if (!waiter.grant || waiter.grant.revoked || !matches(waiter.grant)) continue;
+      waiter.grant.revoked = true;
+      waiter.fail(new Error("The user stopped sharing the tab the download came from, or changed which tabs agents may use"));
+    }
+  };
+  if (area === "local" && changes.accessMode?.newValue !== undefined && changes.accessMode.newValue !== ALL_TABS) revoke((grant) => grant.proof === "all-tabs");
+  if (area === "session" && "sharedTabs" in changes) {
+    // Only shares this change removed; a tab that closed is marked before its share is removed (access.js).
+    const now = new Set(changes.sharedTabs.newValue ?? []);
+    const stopped = new Set((changes.sharedTabs.oldValue ?? []).filter((tabId) => !now.has(tabId) && !wasSharedWhenClosed(tabId)));
+    revoke((grant) => grant.proof === "share" && stopped.has(grant.source));
+  }
+});
 
 const pairedAt = new Map(); // download id -> when a report paired it
 
@@ -233,6 +282,8 @@ chrome.downloads.onCreated.addListener((item) => {
 
 function withdraw(downloadId) {
   owners.delete(downloadId);
+  if (pairings.has(downloadId)) pairings.get(downloadId).valid = false;
+  else remember(pairings, downloadId, { valid: false });
   for (const waiter of waiters) {
     if (waiter.claimed === downloadId) waiter.fail(new Error("Another download of the same URL started at the same moment, so it is unclear which file came from this tab; check the downloads folder"));
   }
@@ -247,18 +298,24 @@ chrome.downloads.onChanged.addListener((delta) => {
 // Resolves with the next download the tab starts once it completes. A newer wait for the same tab
 // replaces an older one that got nothing (for example one left by an earlier call), so the newer one
 // gets the next download.
-export function waitForDownload(tabId, timeoutMs) {
+// `caller` is the agent request's { session }; the file goes to it only from a tab it may use.
+export function waitForDownload(tabId, timeoutMs, caller) {
   // Attaching makes sure the tab reports downloads; the waiter is registered first so nothing is missed.
-  cdp(tabId, "Page.enable", {}).catch(() => {});
+  cdp(tabId, "Page.enable", {}, undefined, undefined, caller).catch(() => {});
   return new Promise((resolve, reject) => {
     const waiter = {
       tabId,
+      sessionId: caller?.session ?? null,
       claimed: null,
+      grant: null,
       settle: async (downloadId, state) => {
         clearTimeout(timer);
         waiters.delete(waiter);
         owners.delete(downloadId);
         finished.delete(downloadId);
+        pairings.delete(downloadId);
+        // The grant made when the download was matched decides, not the state of a tab that may have closed.
+        if (!waiter.grant || waiter.grant.revoked || !waiter.grant.pairing.valid) return reject(new Error("The download's match with this tab was withdrawn or its access revoked"));
         if (state === "interrupted") return reject(new Error("Download was interrupted"));
         const [item] = await chrome.downloads.search({ id: downloadId });
         resolve({ path: item.filename, url: item.finalUrl ?? item.url, mime: item.mime });

@@ -229,7 +229,7 @@ async function runOne(task, tool, rep) {
   }
   const log = await api("/api/log");
   const answer = run.result.result ?? "";
-  const ok = (() => { try { return task.check({ answer, log }); } catch { return false; } })();
+  const ok = (() => { try { return task.check({ answer, log, tool }); } catch { return false; } })();
   const usage = run.result.usage ?? {};
   const record = {
     task: task.id, suite, kind: task.kind, tool, rep, ok, model, effort, revision, answer: String(answer).slice(0, 400),

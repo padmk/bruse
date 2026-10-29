@@ -38,15 +38,21 @@ test("session closes its agent tabs and retains marked tabs", async () => {
   assert.equal(await present(c), true);
 });
 
-test("binding a user tab does not transfer ownership", async () => {
+test("a user tab stays hidden until shared, and binding a shared tab does not transfer ownership", async () => {
   const u = url("/page?user");
   await env.browser.cdp.send("Target.createTarget", { url: u });
   await waitPage(u, true);
+  const userTabId = await env.inPopup(`chrome.tabs.query({}).then((tabs) => tabs.find((tab) => tab.url === ${JSON.stringify(u)}).id)`);
   const s = await env.session();
+  assert.ok(!(await json(s, "await cua.listTabs({emit:false})")).some((t) => t.url === u), "an unshared tab is not listed");
+  assert.match(await s.js("await cua.getState();"), /not shared with agents/);
+  await assert.rejects(s.js(`await cua.getTab(${JSON.stringify(String(userTabId))});`), /not shared it/);
+  await env.share(userTabId);
   const tabs = await json(s, "await cua.listTabs({emit:false})");
-  const user = tabs.find((t) => t.url === u);
-  assert.ok(user);
-  await s.js(`await cua.getTab(${JSON.stringify(user.id)});`);
+  assert.ok(tabs.some((t) => t.url === u), "a shared tab is listed");
+  await s.js(`const user = await cua.getTab(${JSON.stringify(String(userTabId))});`);
+  await env.share(userTabId, false);
+  await assert.rejects(s.js("await user.getAXState();"), /not shared it/);
   await s.close();
   assert.equal(await present(u), true);
 });
@@ -108,7 +114,10 @@ test("a session that ends while its tab is being created leaves no tab behind", 
   }
 });
 
-test("agent tabs open in the background", async () => {
+test("agent tabs open in the background", async (t) => {
+  // The user's active tabs are visible to agents in "all tabs" mode only.
+  await env.setAccessMode("all-tabs");
+  t.after(() => env.setAccessMode("agent-tabs"));
   const s = await env.session();
   const before = await json(s, 'await (await (await cua.getBrowser()).capabilities.get("management")).tabs.query({active:true})');
   await s.js(`await cua.createBrowserTab('1', ${JSON.stringify(url("/page?background"))});`);
@@ -124,6 +133,8 @@ test("agent tabs open in the background", async () => {
 // Headless Chromium cannot move focus between windows, but it reports the newest window as the last
 // focused one, while the first window still has an active tab of its own.
 test("selected tab is the active tab of the last focused window", async (t) => {
+  await env.setAccessMode("all-tabs");
+  t.after(() => env.setAccessMode("agent-tabs"));
   const s = await env.session();
   const u1 = url("/page?window=1"),
     u2 = url("/page?window=2");
