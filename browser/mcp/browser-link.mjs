@@ -23,6 +23,8 @@ const NOT_CONNECTED = `The browser extension did not connect. Make sure the brow
 // cannot connect.
 const CLIENT_PROTOCOL = 2;
 const PROTOCOL_HEADER = "x-hub-protocol";
+// Whether a call failed only because no extension is connected to a hub that proved the hub token.
+export const isNotConnected = (error) => error?.message === NOT_CONNECTED;
 const OTHER_HUB = `The process listening on 127.0.0.1:${PORT} is not a browser hub of ${PRODUCT_NAME} ${VERSION}. Most likely an agent session started before an update still runs an older ${PRODUCT_NAME} MCP server, which this version cannot talk to. Restart (or end) the agent sessions that use ${PRODUCT_NAME}, then retry.`;
 const IMPOSTOR_HUB = `The process listening on 127.0.0.1:${PORT} did not prove that it is the browser hub (it does not know the hub token), so no request was sent to it.`;
 const HEX_NONCE = /^[0-9a-f]{64}$/;

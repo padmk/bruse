@@ -76,8 +76,9 @@ Start a new agent session afterwards: MCP servers load when a session starts.
 From a checkout or the unpacked zip, run them as `node bin/bruse.mjs <command>`. To update, run `bruse setup` again with
 the new version; it reloads the extension in the browser. Agent sessions started before the update
 keep working; while one of them holds the hub, setup and newer sessions say that the versions differ,
-and restarting the older sessions fixes it. To uninstall, run `bruse uninstall` and
-remove the extension on the browser's extensions page.
+and restarting the older sessions fixes it. To uninstall, run `bruse uninstall`, remove the extension on the
+browser's extensions page and, after a Homebrew install, run `brew uninstall bruse`. Agent sessions
+started before the uninstall keep the removed server until they end.
 
 ## Usage
 

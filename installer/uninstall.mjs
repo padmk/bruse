@@ -30,5 +30,9 @@ export async function uninstall() {
     moveToTrash(path);
     note(`Moved ${path} to the Trash`);
   }
-  step(`Remove the ${product} extension on the browser's extensions page to finish.`);
+  step("To finish");
+  note(`Remove the ${product} extension on the browser's extensions page.`);
+  // The bruse command itself is a Homebrew package when it runs from Homebrew's Cellar.
+  if (/\/Cellar\//.test(source)) note(`Run \`brew uninstall ${product.toLowerCase()}\` to remove the \`${product.toLowerCase()}\` command.`);
+  note(`Restart agent sessions started before now; they keep running the removed MCP server until they end.`);
 }
