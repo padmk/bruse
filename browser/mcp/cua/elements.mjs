@@ -18,7 +18,7 @@ export function pageException(exceptionDetails) {
   return new Error(exceptionDetails.exception?.description?.split("\n")[0] ?? exceptionDetails.text);
 }
 
-const STALE_ELEMENT_MESSAGE = "The element is no longer on the page (it was removed or replaced); call getAXState() for current element numbers";
+export const STALE_ELEMENT_MESSAGE = "The element is no longer on the page (it was removed or replaced); call getAXState() for current element numbers";
 
 // Calls a function with `this` = the node. A node that left the document fails instead of being
 // changed without any effect on the page.
@@ -40,6 +40,16 @@ export async function callOn(cdp, backendNodeId, functionDeclaration, args = [])
   } finally {
     // Remote handles pin their DOM nodes until released.
     cdp("Runtime.releaseObject", { objectId: object.objectId }).catch(() => {});
+  }
+}
+
+// Whether a node from an earlier snapshot is still in its document.
+export async function isAttached(cdp, backendNodeId) {
+  try {
+    return await callOn(cdp, backendNodeId, "function () { return true; }");
+  } catch (error) {
+    if (error.message.includes(STALE_ELEMENT_MESSAGE) || /No node with given id|does not belong to the document/i.test(error.message)) return false;
+    throw error;
   }
 }
 
