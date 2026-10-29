@@ -21,7 +21,8 @@ On the first call, or after js_reset, run exactly one entry call; it also return
 
 Then act by element number from the accessibility state and check the result in the same call, e.g.
 \`await tab.click(12); await tab.getAXState();\`. Later getAXState() calls return only changes.
-Top-level declarations persist between calls. Use nodeRepl.write(value) to output other values.`;
+Top-level declarations persist between calls. Use nodeRepl.write(value) to output other values.
+If a call says the browser extension did not connect, stop and tell the user; do not do the task another way, such as fetching pages from the REPL.`;
 
 const TOOLS = [
   {

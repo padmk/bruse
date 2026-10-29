@@ -16,7 +16,7 @@ const AUTH_TIMEOUT_MS = 5_000;
 // Connections that have not authenticated yet, at most; more are refused until some finish.
 const MAX_UNAUTHENTICATED = 32;
 const KEEPALIVE_MS = 20_000;
-const NOT_CONNECTED = `The browser extension did not connect. Make sure the browser is running and the ${PRODUCT_NAME} extension is enabled. If the extension was reinstalled, remove ${EXTENSION_SECRET_PATH} so that it can pair again.`;
+const NOT_CONNECTED = `The browser extension did not connect. Make sure the browser is running and the ${PRODUCT_NAME} extension is enabled, and run \`bruse doctor\`. If the extension was reinstalled, remove ${EXTENSION_SECRET_PATH} so that it can pair again.`;
 
 // How MCP servers authenticate to the hub and the hub to them (see connectClient). The hub announces it
 // in its challenge and on plain HTTP requests, so that servers of different versions can tell why they
