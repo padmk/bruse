@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { after, before, test } from "node:test";
-import { lastJson, startEnvironment, startSite, until } from "./harness.mjs";
+import { hubClient, lastJson, startEnvironment, startSite, until } from "./harness.mjs";
 
 let env, site;
 before(async () => {
@@ -83,6 +84,28 @@ test("concurrent sessions retain independent ownership", async () => {
   assert.equal(await json(b, "await tab.title()"), "Page");
   await b.close();
   await waitPage(ub, false);
+});
+
+test("a session that ends while its tab is being created leaves no tab behind", async () => {
+  const hub = await env.session();
+  await hub.js("await cua.getState();");
+  const client = await hubClient(env.port, env.stateDir);
+  try {
+    const sessionId = randomUUID();
+    const u = url("/page?race");
+    const created = client.call("tabs.create", { url: u, sessionId }).then(
+      (tab) => tab,
+      (error) => error,
+    );
+    await client.call("session.end", { sessionId });
+    const result = await created;
+    const tabs = await client.call("tabs.list");
+    assert.ok(!tabs.some((t) => t.url === u || t.pendingUrl === u), JSON.stringify(tabs));
+    assert.match(String(result?.message), /ended while its tab was being created/);
+  } finally {
+    client.close();
+    await hub.close();
+  }
 });
 
 test("agent tabs open in the background", async () => {

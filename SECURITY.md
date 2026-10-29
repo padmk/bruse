@@ -16,6 +16,7 @@ Bruse gives the agents you run full control of your browser: the code an agent s
 
 - driving the browser, reading tabs or receiving browser events without the hub token, from web pages (cross-origin or DNS-rebinding requests to `127.0.0.1:47615`) or from other accounts on the same computer;
 - a process posing as the hub or as the extension getting requests executed, or taking over an authenticated connection, once the extension has paired;
+- a process of another account that listens on the hub port (for example after the hub exited) receiving the hub token or an MCP server's requests, or answering them;
 - the hub crashing or misbehaving on input from an unauthenticated connection;
 - pairing state, hub token or exported files readable by other accounts;
 - tabs the user did not give the agent (not opened by its session and not bound with `getTab`) being closed or changed by session cleanup;

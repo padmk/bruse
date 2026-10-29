@@ -3,6 +3,7 @@
 // MCP servers (agent sessions) with their own state directory, and local test sites.
 
 import { spawn } from "node:child_process";
+import { createHmac, randomBytes, randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import http from "node:http";
@@ -62,15 +63,21 @@ export function findChromium() {
   return null;
 }
 
-// A copy of browser/ whose extension and servers use `port` for the hub.
-export function browserCopy(port) {
+// Replaces the value of `const name = …;` in a file of the copy.
+function setConstant(file, name, value) {
+  const source = readFileSync(file, "utf8");
+  const changed = source.replace(new RegExp(`(const ${name} = )[^;]+;`), `$1${value};`);
+  if (changed === source) throw new Error(`${name} not found in ${file}`);
+  writeFileSync(file, changed);
+}
+
+// A copy of browser/ whose extension and servers use `port` for the hub. `absentSessionGraceMs`
+// shortens how long the extension waits before it ends a session the hub no longer reports.
+export function browserCopy(port, { absentSessionGraceMs } = {}) {
   const dir = tempDir("browser");
   cpSync(join(root, "browser"), join(dir, "browser"), { recursive: true, filter: (path) => !path.endsWith(".DS_Store") });
-  const shared = join(dir, "browser", "extension", "shared.js");
-  const source = readFileSync(shared, "utf8");
-  const changed = source.replace(/HUB_PORT = \d+/, `HUB_PORT = ${port}`);
-  if (changed === source) throw new Error("HUB_PORT not found in shared.js");
-  writeFileSync(shared, changed);
+  setConstant(join(dir, "browser", "extension", "shared.js"), "HUB_PORT", port);
+  if (absentSessionGraceMs !== undefined) setConstant(join(dir, "browser", "extension", "sessions.js"), "ABSENT_SESSION_GRACE_MS", absentSessionGraceMs);
   return {
     dir,
     browserDir: join(dir, "browser"),
@@ -153,7 +160,11 @@ export async function launchBrowser(extensionDir) {
 
   async function prepare() {
     const portFile = join(profile, "DevToolsActivePort");
-    const [port, path] = await until(() => existsSync(portFile) && readFileSync(portFile, "utf8").trim().split("\n"), {
+    // The browser may be caught writing the file, before its second line (the path).
+    const [port, path] = await until(() => {
+      const lines = existsSync(portFile) ? readFileSync(portFile, "utf8").trim().split("\n") : [];
+      return lines.length >= 2 && lines;
+    }, {
       timeoutMs: 60_000,
       message: `Chromium to start (${stderr.slice(-500)})`,
     });
@@ -260,6 +271,46 @@ export function lastJson(text) {
   throw new Error(`No JSON in output:\n${text}`);
 }
 
+// A connection to the hub the way a peer MCP server makes it (mutual authentication with the token in
+// `stateDir`), for sending requests to the extension directly: `call(method, params)` resolves with the
+// result or rejects with the error.
+export async function hubClient(port, stateDir, { sessionId = randomUUID() } = {}) {
+  const token = readFileSync(join(stateDir, "hub-token"), "utf8").trim();
+  const hmac = (message) => createHmac("sha256", token).update(message).digest("hex");
+  const socket = new WebSocket(`ws://127.0.0.1:${port}/client`);
+  const nonce = randomBytes(32).toString("hex");
+  const pending = new Map();
+  let nextId = 1;
+  await new Promise((resolve, reject) => {
+    let hubNonce = null;
+    socket.addEventListener("message", ({ data }) => {
+      const message = JSON.parse(data);
+      if (message.type === "challenge") {
+        hubNonce = message.nonce;
+        socket.send(JSON.stringify({ type: "auth", nonce, mac: hmac(`client:${hubNonce}:${nonce}`) }));
+      } else if (message.type === "auth-ok") {
+        if (message.mac === hmac(`hub:${nonce}:${hubNonce}`)) resolve();
+        else reject(new Error("The hub did not prove the token"));
+      } else if (message.id !== undefined) {
+        pending.get(message.id)?.(message);
+        pending.delete(message.id);
+      }
+    });
+    socket.addEventListener("close", () => reject(new Error("The hub closed the connection")));
+  });
+  socket.send(JSON.stringify({ type: "hello", sessionId }));
+  return {
+    sessionId,
+    call: (method, params = {}) =>
+      new Promise((resolve, reject) => {
+        const id = nextId++;
+        pending.set(id, (reply) => (reply.error ? reject(new Error(reply.error)) : resolve(reply.result)));
+        socket.send(JSON.stringify({ id, method, params }));
+      }),
+    close: () => socket.close(),
+  };
+}
+
 // A local site serving `routes` ({ "/path": html string or (req, res) => void }) on 127.0.0.1 or localhost.
 export async function startSite(routes, host = "127.0.0.1") {
   const server = http.createServer((req, res) => {
@@ -274,10 +325,10 @@ export async function startSite(routes, host = "127.0.0.1") {
 }
 
 // Everything one test file needs: a browser copy on a free port, Chromium with its extension, a state
-// directory, and a way to start sessions. Call `close()` in after().
-export async function startEnvironment() {
+// directory, and a way to start sessions. Call `close()` in after(). `options` go to browserCopy.
+export async function startEnvironment(options = {}) {
   const port = await freePort();
-  const copy = browserCopy(port);
+  const copy = browserCopy(port, options);
   const stateDir = tempDir("state");
   const browser = await launchBrowser(copy.extensionDir);
   const sessions = [];

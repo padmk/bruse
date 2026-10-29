@@ -5,7 +5,12 @@ import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
 
 const GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
-const MAX_MESSAGE_BYTES = 64 * 1024 * 1024;
+// Until the hub authenticated a peer, it takes only messages the size of a handshake; afterwards
+// screenshots and page contents fit.
+const UNAUTHENTICATED_MESSAGE_BYTES = 8 * 1024;
+const AUTHENTICATED_MESSAGE_BYTES = 64 * 1024 * 1024;
+// A closed connection whose peer does not end it is cut off after this time.
+const CLOSE_GRACE_MS = 1_000;
 
 export function acceptUpgrade(request, socket) {
   const key = request.headers["sec-websocket-key"];
@@ -33,9 +38,12 @@ class WebSocketPeer extends EventEmitter {
     this.buffer = Buffer.alloc(0);
     this.fragments = [];
     this.fragmentBytes = 0;
+    this.maxMessageBytes = UNAUTHENTICATED_MESSAGE_BYTES;
     this.closed = false;
     socket.setNoDelay(true);
     socket.on("data", (chunk) => this.receive(chunk));
+    // The HTTP server keeps half-open sockets; a peer that ended its side is done.
+    socket.on("end", () => this.close());
     socket.on("close", () => this.finish());
     socket.on("error", () => this.finish());
   }
@@ -45,10 +53,16 @@ class WebSocketPeer extends EventEmitter {
     this.writeFrame(0x1, Buffer.from(text, "utf8"));
   }
 
+  // Raises the message size limit once the peer has authenticated.
+  authenticated() {
+    this.maxMessageBytes = AUTHENTICATED_MESSAGE_BYTES;
+  }
+
   close() {
     if (this.closed) return;
     this.writeFrame(0x8, Buffer.alloc(0));
     this.socket.end();
+    setTimeout(() => this.socket.destroy(), CLOSE_GRACE_MS).unref();
     this.finish();
   }
 
@@ -77,6 +91,7 @@ class WebSocketPeer extends EventEmitter {
   }
 
   receive(chunk) {
+    if (this.closed) return;
     // While a large frame is incomplete, chunks are collected and joined once it is complete.
     this.chunks ??= [];
     this.chunks.push(chunk);
@@ -86,7 +101,7 @@ class WebSocketPeer extends EventEmitter {
     this.chunks = [];
     this.chunkBytes = 0;
     this.needed = 0;
-    while (this.buffer.length >= 2) {
+    while (!this.closed && this.buffer.length >= 2) {
       const fin = (this.buffer[0] & 0x80) !== 0;
       const opcode = this.buffer[0] & 0x0f;
       const masked = (this.buffer[1] & 0x80) !== 0;
@@ -101,7 +116,7 @@ class WebSocketPeer extends EventEmitter {
         length = Number(this.buffer.readBigUInt64BE(2));
         offset = 10;
       }
-      if (length > MAX_MESSAGE_BYTES) return this.close();
+      if (length > this.maxMessageBytes) return this.close();
       // Clients must mask their frames (RFC 6455 section 5.1).
       if (!masked) return this.close();
       const maskOffset = offset;
@@ -121,7 +136,7 @@ class WebSocketPeer extends EventEmitter {
         if (opcode === 0x0 && !this.fragments.length) return this.close();
         this.fragmentBytes = (opcode === 0x1 ? 0 : this.fragmentBytes) + payload.length;
         if (opcode === 0x1) this.fragments = [];
-        if (this.fragmentBytes > MAX_MESSAGE_BYTES) return this.close();
+        if (this.fragmentBytes > this.maxMessageBytes) return this.close();
         this.fragments.push(payload);
         if (fin) {
           const message = Buffer.concat(this.fragments).toString("utf8");
