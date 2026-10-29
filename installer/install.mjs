@@ -17,7 +17,7 @@ const PAIR_WAIT_MS = 10 * 60_000;
 const PAIR_HINT_MS = 45_000;
 const RELOAD_WAIT_MS = 30_000;
 // Homebrew installs leave SECURITY.md out, so the notice links to this version's copy in the repository.
-const SECURITY_URL = `https://github.com/padmk/bruse/blob/v${manifest.version}/SECURITY.md`;
+const SECURITY_URL = `${manifest.homepage_url}/blob/v${manifest.version}/SECURITY.md`;
 
 // Chromium browsers in the order they are offered; the first installed one gets its extensions page opened.
 const BROWSERS = [

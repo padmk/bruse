@@ -198,11 +198,11 @@ function checkManagementArguments(namespace, method, args) {
 }
 
 // Arguments that keep management in the background and predictable: a new window opens unfocused
-// unless the caller says otherwise, and a new group opens in the window of its first tab instead of the
-// browser's current window.
+// unless the caller says otherwise (a maximized or fullscreen window cannot open unfocused), and a new
+// group opens in the window of its first tab instead of the browser's current window.
 async function withDefaults(namespace, method, args) {
   const [first, ...rest] = args;
-  if (namespace === "windows" && method === "create") return [{ focused: false, ...first }, ...rest];
+  if (namespace === "windows" && method === "create" && !["maximized", "fullscreen"].includes(first?.state)) return [{ focused: false, ...first }, ...rest];
   if (namespace === "tabs" && method === "group" && first.groupId === undefined && first.createProperties?.windowId === undefined) {
     const { windowId } = await chrome.tabs.get(tabIdsOf(method, args)[0]);
     return [{ ...first, createProperties: { ...first.createProperties, windowId } }, ...rest];
