@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.18.0
 
 - **Measured on public websites:** six tasks on Wikipedia, GitHub, the Python documentation, a paginated shop and TodoMVC, 8 runs per tool: Bruse's median run took 48 to 68 % less time and 38 to 74 % less money than Claude in Chrome, all 96 runs passing, in Brave on the code before the last fixes to replaced elements and tab shares (see `bench/README.md`). The `existing-tab` task now expects both tools to keep a tab the user did not share private.
 - **Setup checks the hub port before pairing:** before you load the extension, `bruse setup` stops unless a hub that knows the hub token holds `127.0.0.1:47615` (its own or an agent session's); a new extension gives its pairing secret to whatever answers there, and a program on the port had let setup wait while the extension paired with it.
