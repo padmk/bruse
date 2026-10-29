@@ -9,6 +9,11 @@ const GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 // screenshots and page contents fit.
 const UNAUTHENTICATED_MESSAGE_BYTES = 8 * 1024;
 const AUTHENTICATED_MESSAGE_BYTES = 64 * 1024 * 1024;
+// An unauthenticated peer that does not read its replies is cut off once this much output waits to be
+// sent; authenticated peers receive screenshots and page contents, so their output is not bounded.
+const UNAUTHENTICATED_OUTPUT_BYTES = 64 * 1024;
+// Control frames carry at most this much and are never fragmented (RFC 6455 section 5.5).
+const CONTROL_FRAME_BYTES = 125;
 // A closed connection whose peer does not end it is cut off after this time.
 const CLOSE_GRACE_MS = 1_000;
 
@@ -39,6 +44,7 @@ class WebSocketPeer extends EventEmitter {
     this.fragments = [];
     this.fragmentBytes = 0;
     this.maxMessageBytes = UNAUTHENTICATED_MESSAGE_BYTES;
+    this.maxOutputBytes = UNAUTHENTICATED_OUTPUT_BYTES;
     this.closed = false;
     socket.setNoDelay(true);
     socket.on("data", (chunk) => this.receive(chunk));
@@ -53,9 +59,10 @@ class WebSocketPeer extends EventEmitter {
     this.writeFrame(0x1, Buffer.from(text, "utf8"));
   }
 
-  // Raises the message size limit once the peer has authenticated.
+  // Raises the message size limit and lifts the output bound once the peer has authenticated.
   authenticated() {
     this.maxMessageBytes = AUTHENTICATED_MESSAGE_BYTES;
+    this.maxOutputBytes = Infinity;
   }
 
   close() {
@@ -88,6 +95,10 @@ class WebSocketPeer extends EventEmitter {
       header.writeBigUInt64BE(BigInt(payload.length), 2);
     }
     this.socket.write(Buffer.concat([header, payload]));
+    if (this.socket.writableLength > this.maxOutputBytes) {
+      this.socket.destroy();
+      this.finish();
+    }
   }
 
   receive(chunk) {
@@ -117,6 +128,7 @@ class WebSocketPeer extends EventEmitter {
         offset = 10;
       }
       if (length > this.maxMessageBytes) return this.close();
+      if (opcode >= 0x8 && (!fin || length > CONTROL_FRAME_BYTES)) return this.close();
       // Clients must mask their frames (RFC 6455 section 5.1).
       if (!masked) return this.close();
       const maskOffset = offset;

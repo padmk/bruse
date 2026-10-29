@@ -14,6 +14,7 @@ const SERVER_INFO = { name: "browser-control", version: VERSION };
 const DEFAULT_TIMEOUT_MS = 30_000;
 
 const JS_DESCRIPTION = `Control the user's browser by running JavaScript in a persistent REPL with the global \`cua\`.
+The code runs as Node.js on the user's computer with the user's permissions (files, processes, network).
 
 On the first call, or after js_reset, run exactly one entry call; it also returns the documentation:
 - \`const tab = await cua.createBrowserTab("1", url)\` to open a page in a background tab (browser "1" is the connected browser),

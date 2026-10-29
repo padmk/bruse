@@ -4,7 +4,7 @@
 // Browser events are broadcast to every session; each session filters them by tab.
 
 import { createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import { EXTENSION_ORIGINS, EXTENSION_SECRET_PATH, HUB_VERSION_MISMATCH, PORT, PRODUCT_NAME, STATE_DIR, TOKEN_PATH, VERSION } from "./config.mjs";
 import { acceptUpgrade, rejectUpgrade } from "./websocket.mjs";
@@ -97,6 +97,28 @@ const READ_ONLY_CDP = /^(DOM\.(getDocument|describeNode|getContentQuads|getBoxMo
 
 function isReadOnly(method, params) {
   return READ_ONLY_METHODS.has(method) || (method === "cdp" && READ_ONLY_CDP.test(params?.method ?? ""));
+}
+
+// The state directory and the secrets in it are the user's only, also when they existed with wider
+// permissions before.
+function ensureStateDir() {
+  mkdirSync(STATE_DIR, { recursive: true, mode: 0o700 });
+  chmodSync(STATE_DIR, 0o700);
+}
+
+// Replaces `path` with a new file that only the user can read, so that no reader sees it half written.
+function writePrivate(path, value) {
+  ensureStateDir();
+  const temp = `${path}.${randomBytes(8).toString("hex")}`;
+  try {
+    writeFileSync(temp, value, { mode: 0o600, flag: "wx" });
+    renameSync(temp, path);
+  } catch (error) {
+    try {
+      unlinkSync(temp);
+    } catch {}
+    throw error;
+  }
 }
 
 function link() {
@@ -253,7 +275,7 @@ function becomeHub() {
         if (!authenticated) {
           if (message.type === "pair" && typeof message.secret === "string" && message.secret.length >= 32 && !existsSync(EXTENSION_SECRET_PATH)) {
             try {
-              mkdirSync(STATE_DIR, { recursive: true, mode: 0o700 });
+              ensureStateDir();
               writeFileSync(EXTENSION_SECRET_PATH, message.secret, { mode: 0o600, flag: "wx" });
               activate(message.secret, String(message.nonce));
             } catch {
@@ -362,8 +384,7 @@ function becomeHub() {
     });
     server.once("error", reject);
     server.listen(PORT, "127.0.0.1", () => {
-      mkdirSync(STATE_DIR, { recursive: true, mode: 0o700 });
-      writeFileSync(TOKEN_PATH, token, { mode: 0o600 });
+      writePrivate(TOKEN_PATH, token);
       // Messages keep the extension's service worker alive while the hub exists.
       setInterval(() => extension?.send(JSON.stringify({ type: "keepalive" })), KEEPALIVE_MS).unref();
       resolve({
