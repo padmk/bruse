@@ -67,7 +67,9 @@ Start a new agent session afterwards: MCP servers load when a session starts.
 | `bruse version` | Print the version |
 
 From a checkout or the unpacked zip, run them as `node bin/bruse.mjs <command>`. To update, run `bruse setup` again with
-the new version; it reloads the extension in the browser. To uninstall, run `bruse uninstall` and
+the new version; it reloads the extension in the browser. Agent sessions started before the update
+keep working; while one of them holds the hub, setup and newer sessions say that the versions differ,
+and restarting the older sessions fixes it. To uninstall, run `bruse uninstall` and
 remove the extension on the browser's extensions page.
 
 ## Usage
@@ -98,9 +100,13 @@ The full API is in [browser/mcp/cua/docs.mjs](browser/mcp/cua/docs.mjs).
   screenshots, page text) is returned to the agent and so reaches the provider of the model it runs on.
   Bruse itself sends nothing anywhere: the server and the extension talk only over `127.0.0.1`.
 - **One browser.** The hub talks to one paired extension, in one browser profile, at a time.
-- **Who can drive it.** The hub accepts peer MCP servers only with the token in
-  `~/.local/share/bruse/state/hub-token` (mode 0600), so web pages and other users cannot drive it.
-  Hub and extension authenticate each other: on first connection the extension pairs by sending a
+- **Who can drive it.** The hub accepts peer MCP servers only when they prove that they read the token
+  in `~/.local/share/bruse/state/hub-token` (mode 0600), so web pages and other users cannot drive it.
+  The proof works in both directions, with HMAC keyed with the token over fresh nonces, and the token
+  itself is never sent: a server sends no request until the hub has proved the token too, so a process
+  of another user that takes the port after the hub exits gets neither the token nor any request.
+  Until a connection has authenticated, the hub takes only small messages from it and only a few such
+  connections at a time. Hub and extension authenticate each other: on first connection the extension pairs by sending a
   random secret, which the hub stores in `~/.local/share/bruse/state/extension-secret` (0600);
   every later connection proves that secret in both directions with HMAC over fresh nonces. The
   extension executes requests only on an authenticated connection, so a process posing as the hub on
@@ -143,6 +149,11 @@ Report vulnerabilities as described in [SECURITY.md](SECURITY.md).
   stay the user's. `markDeliverable()` and `markHandoff()` keep a tab, which then leaves the group.
   Tabs bound with `getTab` stay untouched, and other tabs in the group, such as ones the user moves
   there, leave it once no live session has a tab in it.
+- A session also ends when its MCP server is gone without ending it (killed, also while it was the
+  hub). The hub tells the extension which sessions are live, its own and those of the servers connected
+  to it, and the other servers reconnect at once when their hub goes away; a session that owns tabs and
+  stays off that list for 45 s ends as above, so its marked tabs stay. While no hub runs, no tab is
+  closed.
 - Agent work keeps the user's app in front. Brave brings its window forward when a page opens a tab
   or window (`target=_blank`, `window.open`); tabs opened by agent pages become background tabs in
   the agent group, popup windows included, and on macOS `focus-guard.mjs` returns the front to the

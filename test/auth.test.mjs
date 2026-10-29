@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
-import { randomBytes } from "node:crypto";
+import { createHmac, randomBytes } from "node:crypto";
 import { readFileSync, renameSync, statSync } from "node:fs";
 import http from "node:http";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
-import { startEnvironment, until } from "./harness.mjs";
+import { hubClient, startEnvironment, until } from "./harness.mjs";
 
 let env;
 let hub;
@@ -48,6 +48,44 @@ function sendFrame(socket, value) {
   socket.write(frame);
 }
 
+// A WebSocket connection that speaks frames directly: `messages` holds the hub's messages parsed,
+// `next(matches)` waits for the next (matching) one.
+async function rawPeer(path, origin) {
+  const result = await upgrade(path, origin);
+  assert.ok(result.socket, `upgrade of ${path} rejected: ${result.status}`);
+  const { socket } = result;
+  const peer = { socket, messages: [], closed: false, send: (value) => sendFrame(socket, value), destroy: () => socket.destroy() };
+  let data = result.head;
+  let taken = 0;
+  const parseFrames = () => {
+    while (data.length >= 2) {
+      let length = data[1] & 127;
+      let offset = 2;
+      if (length === 126) {
+        if (data.length < 4) return;
+        length = data.readUInt16BE(2);
+        offset = 4;
+      }
+      if (data.length < offset + length) return;
+      if ((data[0] & 0x0f) === 0x1) peer.messages.push(JSON.parse(data.subarray(offset, offset + length).toString()));
+      data = data.subarray(offset + length);
+    }
+  };
+  socket.on("data", (chunk) => {
+    data = Buffer.concat([data, chunk]);
+    parseFrames();
+  });
+  socket.on("close", () => (peer.closed = true));
+  socket.on("error", () => {});
+  parseFrames();
+  peer.next = async (matches = () => true) => {
+    const message = await until(() => peer.messages.slice(taken).find(matches), { message: `a message on ${path}` });
+    taken = peer.messages.indexOf(message) + 1;
+    return message;
+  };
+  return peer;
+}
+
 async function rejectedExtension(message) {
   const result = await upgrade("/extension", `chrome-extension://${env.browser.extensionId}`);
   assert.ok(result.socket, `extension upgrade rejected: ${result.status}`);
@@ -80,11 +118,9 @@ test("first connection pairs and protects credentials", { timeout: 120_000 }, as
   assert.equal(statSync(join(env.stateDir, "hub-token")).mode & 0o777, 0o600);
 });
 
-test("hub rejects incorrect tokens and web origins", { timeout: 60_000 }, async () => {
-  const token = readFileSync(join(env.stateDir, "hub-token"), "utf8").trim();
+test("hub rejects web origins", { timeout: 60_000 }, async () => {
   for (const [path, origin] of [
-    ["/client?token=wrong", undefined],
-    [`/client?token=${token}`, "https://example.com"],
+    ["/client", "https://example.com"],
     ["/extension", "https://example.com"],
     ["/extension", "chrome-extension://abcdefghijklmnopabcdefghijklmnop"],
   ]) {
@@ -102,19 +138,99 @@ test("hub accepts the Chrome Web Store copy of the extension", { timeout: 60_000
 });
 
 test("hub rejects requests addressed to another host name", { timeout: 60_000 }, async () => {
-  const token = readFileSync(join(env.stateDir, "hub-token"), "utf8").trim();
-  const accepted = await upgrade(`/client?token=${token}`);
+  const accepted = await upgrade("/client");
   accepted.socket?.destroy();
-  assert.ok(accepted.socket, "the right token on 127.0.0.1 connects");
+  assert.ok(accepted.socket, "a client on 127.0.0.1 connects");
   // A page on a domain that resolves to 127.0.0.1 sends its own name as Host.
   for (const [path, origin] of [
-    [`/client?token=${token}`, undefined],
+    ["/client", undefined],
     ["/extension", `chrome-extension://${env.browser.extensionId}`],
   ]) {
     const result = await upgrade(path, origin, `rebind.example:${env.port}`);
     result.socket?.destroy();
     assert.equal(result.status, 403);
   }
+});
+
+test("a client must prove the hub token", { timeout: 60_000 }, async () => {
+  const impostor = await rawPeer("/client");
+  try {
+    const challenge = await impostor.next();
+    assert.equal(challenge.type, "challenge");
+    assert.equal(challenge.protocol, 2);
+    impostor.send({ type: "auth", nonce: "1".repeat(64), mac: createHmac("sha256", "wrong").update(`client:${challenge.nonce}:${"1".repeat(64)}`).digest("hex") });
+    await until(() => impostor.closed, { message: "client with a wrong MAC to be closed" });
+    assert.ok(!impostor.messages.some((message) => message.type === "auth-ok"), "unauthenticated client received auth-ok");
+  } finally {
+    impostor.destroy();
+  }
+  // hubClient proves the token and checks the hub's proof.
+  const client = await hubClient(env.port, env.stateDir);
+  try {
+    assert.ok((await client.call("browser.info")).version);
+  } finally {
+    client.close();
+  }
+});
+
+test("an older client that presents the token in the URL is served", { timeout: 60_000 }, async () => {
+  const token = readFileSync(join(env.stateDir, "hub-token"), "utf8").trim();
+  assert.equal((await upgrade(`/client?token=${"0".repeat(64)}`)).socket, undefined, "a wrong token in the URL is refused");
+  const older = await rawPeer(`/client?token=${token}`);
+  try {
+    older.send({ type: "hello", sessionId: "older" });
+    older.send({ id: 1, method: "browser.info", params: {} });
+    const reply = await older.next((message) => message.id === 1);
+    assert.equal(reply.error, undefined);
+    assert.ok(reply.result.version);
+    assert.ok(!older.messages.some((message) => message.type === "challenge"), "an older client got the new handshake");
+  } finally {
+    older.destroy();
+  }
+});
+
+test("unauthenticated connections get small messages only", { timeout: 60_000 }, async () => {
+  for (const [path, origin] of [
+    ["/client", undefined],
+    ["/extension", `chrome-extension://${env.browser.extensionId}`],
+  ]) {
+    const peer = await rawPeer(path, origin);
+    try {
+      await peer.next();
+      // The start of a 1 MiB message: the hub refuses it before it arrives in full.
+      const header = Buffer.from([0x81, 0x80 | 127, 0, 0, 0, 0, 0, 0x10, 0, 0, 1, 2, 3, 4]);
+      peer.socket.write(Buffer.concat([header, Buffer.alloc(1024, 0x20)]));
+      await until(() => peer.closed, { timeoutMs: 2_000, message: `${path} connection with an oversized message to be closed` });
+    } finally {
+      peer.destroy();
+    }
+  }
+  await call(hub);
+});
+
+test("hub bounds the connections that have not authenticated", { timeout: 60_000 }, async () => {
+  const peers = [];
+  try {
+    for (let i = 0; i < 32; i++) {
+      const peer = await rawPeer("/client");
+      peers.push(peer);
+      await peer.next();
+    }
+    const refused = await upgrade("/client");
+    refused.socket?.destroy();
+    assert.equal(refused.status, 503);
+  } finally {
+    for (const peer of peers) peer.destroy();
+  }
+  await until(
+    async () => {
+      const client = await hubClient(env.port, env.stateDir).catch(() => null);
+      client?.close();
+      return client;
+    },
+    { message: "hub to take clients again" },
+  );
+  await call(hub);
 });
 
 test("impostors cannot authenticate or replace the pairing", { timeout: 120_000 }, async () => {
