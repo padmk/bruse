@@ -2,11 +2,11 @@
 // lifecycle, agent tab groups, raw CDP commands, browser management, history and downloads. Page
 // logic lives in the MCP server.
 
-import { ALL_TABS, accessMode, anyoneMayAccess, audienceOf, bothAudiences, endShareOfClosedTab, mayAccess, requireAccess, visibleTabs } from "./access.js";
+import { ALL_TABS, accessMode, anyoneMayAccess, audienceOf, bothAudiences, endShareOfClosedTab, mayAccess, requireAccess, requireOwnWindow, seesWindow, visibleTabs } from "./access.js";
 import { EXTENSION_WORK, attachedTabIds, cdp, consoleLogs, detach, networkRequests, onCdpEvent, setDebugGate, tabState } from "./cdp.js";
 import { waitForDownload } from "./downloads.js";
 import { PAUSED_ERROR, isPaused } from "./pause.js";
-import { agentTabs, createAgentTab, endSession, markTab, noteAgentInput, onTabOpened, openingSession, setLiveSessions } from "./sessions.js";
+import { agentTabs, createAgentTab, createAgentTabs, endSession, markTab, noteAgentInput, onTabOpened, openingSession, setLiveSessions } from "./sessions.js";
 import { checkRequest } from "./guard.js";
 import { MANAGEMENT_METHODS, extensionBuild, isPressInput } from "./shared.js";
 
@@ -74,6 +74,13 @@ const handlers = {
 
   "tabs.get": async ({ tabId }) => tabInfo(await chrome.tabs.get(tabId)),
 
+  // The active tab of the window the user used last, when the session may use it.
+  "tabs.selected": async (_, session) => {
+    const window = await chrome.windows.getLastFocused({ windowTypes: ["normal"] }).catch(() => null);
+    const [tab] = window ? await chrome.tabs.query({ windowId: window.id, active: true }) : [];
+    return tab && (await mayAccess(session, tab.id)) ? tabInfo(tab) : null;
+  },
+
   "tabs.create": async ({ url }, session) => {
     const tab = await createAgentTab(session, async () => {
       const window = await chrome.windows.getLastFocused({ windowTypes: ["normal"] });
@@ -132,8 +139,10 @@ const handlers = {
     if (!MANAGEMENT_METHODS[namespace]?.includes(method)) throw new Error(`${namespace}.${method} is not available`);
     if (namespace === "bookmarks") await requirePermission("bookmarks", "the bookmarks");
     checkManagementArguments(namespace, method, args);
-    await checkManagementAccess(session, namespace, method, args);
-    return withoutHiddenTabs(session, namespace, await chrome[namespace][method](...args));
+    const call = await withDefaults(namespace, method, args);
+    await checkManagementAccess(session, namespace, method, call);
+    const opening = OPENING_METHODS[`${namespace}.${method}`];
+    return withoutHiddenTabs(session, namespace, await (opening ? opening(session, call) : chrome[namespace][method](...call)));
   },
 
   // Picks up edited extension files without visiting the extensions page.
@@ -182,37 +191,102 @@ function tabIdsOf(method, args) {
 // navigates them (pages are opened and driven through tab objects).
 function checkManagementArguments(namespace, method, args) {
   if (namespace === "tabs" && TAB_ARGUMENTS[method]) tabIdsOf(method, args);
+  if (namespace === "windows" && method === "create" && args[0] !== undefined && (typeof args[0] !== "object" || args[0] === null)) throw new Error("management.windows.create takes an object of properties");
   if (namespace === "tabs" && method === "update" && (args[1] === undefined || (typeof args[1] === "object" && args[1] !== null && "url" in args[1]))) {
     throw new Error("management.tabs.update takes a tab ID and properties without url; bind the tab with cua.getTab and use tab.goto to navigate");
   }
 }
 
-// Management calls may act only on tabs, windows and groups whose tabs the session may reach.
+// Arguments that keep management in the background and predictable: a new window opens unfocused
+// unless the caller says otherwise, and a new group opens in the window of its first tab instead of the
+// browser's current window.
+async function withDefaults(namespace, method, args) {
+  const [first, ...rest] = args;
+  if (namespace === "windows" && method === "create") return [{ focused: false, ...first }, ...rest];
+  if (namespace === "tabs" && method === "group" && first.groupId === undefined && first.createProperties?.windowId === undefined) {
+    const { windowId } = await chrome.tabs.get(tabIdsOf(method, args)[0]);
+    return [{ ...first, createProperties: { ...first.createProperties, windowId } }, ...rest];
+  }
+  return args;
+}
+
+// Management calls may act only on tabs and groups whose tabs the session may reach, and change, switch
+// tabs in or move tabs into only the session's own windows (see access.js).
 async function checkManagementAccess(session, namespace, method, args) {
   if ((await accessMode()) === ALL_TABS) return;
   const requireTabs = async (tabs) => {
     for (const tabId of tabs) await requireAccess(session, tabId);
   };
+  const groupTabs = async (groupId) => (await chrome.tabs.query({ groupId })).map((tab) => tab.id);
+  // Tabs that leave their window for `windowId` move into it, which must be the session's.
+  const requireMoveInto = async (tabIds, windowId) => {
+    const tabs = await Promise.all(tabIds.map((tabId) => chrome.tabs.get(tabId)));
+    if (tabs.some((tab) => tab.windowId !== windowId)) await requireOwnWindow(session, windowId);
+  };
+  const [first, second] = args;
   if (namespace === "tabs" && TAB_ARGUMENTS[method]) await requireTabs(tabIdsOf(method, args));
+  // Activating or highlighting a tab switches what the user sees in its window.
+  if (namespace === "tabs" && method === "update" && (second?.active || second?.highlighted || second?.selected)) await requireOwnWindow(session, (await chrome.tabs.get(first)).windowId);
+  if (namespace === "tabs" && method === "move" && second?.windowId !== undefined) await requireMoveInto(tabIdsOf(method, args), second.windowId);
+  if (namespace === "tabs" && method === "group") {
+    if (first.groupId !== undefined) {
+      // Joining a group changes it, so the session must reach every tab in it.
+      await requireTabs(await groupTabs(first.groupId));
+      await requireMoveInto(tabIdsOf(method, args), (await chrome.tabGroups.get(first.groupId)).windowId);
+    } else {
+      await requireMoveInto(tabIdsOf(method, args), first.createProperties.windowId);
+    }
+  }
   // A new window may take an existing tab, which moves it.
-  if (namespace === "windows" && method === "create" && args[0]?.tabId !== undefined) await requireTabs([args[0].tabId]);
-  if (namespace === "windows" && method === "remove") await requireTabs((await chrome.tabs.query({ windowId: args[0] })).map((tab) => tab.id));
-  if (namespace === "tabGroups" && (method === "update" || method === "move")) await requireTabs((await chrome.tabs.query({ groupId: args[0] })).map((tab) => tab.id));
+  if (namespace === "windows" && method === "create" && first.tabId !== undefined) await requireTabs([first.tabId]);
+  if (namespace === "windows" && (method === "update" || method === "remove")) await requireOwnWindow(session, first);
+  if (namespace === "tabGroups" && (method === "update" || method === "move")) await requireTabs(await groupTabs(first));
+  if (namespace === "tabGroups" && method === "move" && second?.windowId !== undefined && second.windowId !== (await chrome.tabGroups.get(first)).windowId) {
+    await requireOwnWindow(session, second.windowId);
+  }
 }
 
-// Tabs the session may not reach are left out of management results, and so are groups without any
-// tab it may reach.
+// Management calls that open tabs. Like tabs.create, in every access mode, they open the tabs for the
+// session: its own, in the agent group, closed when it ends.
+const OPENING_METHODS = {
+  // The duplicate is the session's; the original keeps its owner or share. The browser activates a
+  // duplicate, so the tab that was active in its window becomes active again.
+  "tabs.duplicate": async (session, [tabId]) => {
+    const { windowId } = await chrome.tabs.get(tabId);
+    const [active] = await chrome.tabs.query({ windowId, active: true });
+    const [duplicate] = await createAgentTabs(session, async () => [await chrome.tabs.duplicate(tabId)]);
+    if (active && active.id !== duplicate.id) await chrome.tabs.update(active.id, { active: true }).catch(() => {});
+    return chrome.tabs.get(duplicate.id);
+  },
+  // A tab moved into the new window with `tabId` keeps its owner or share; the others are new.
+  "windows.create": async (session, [options]) => {
+    let window;
+    await createAgentTabs(session, async () => {
+      window = await chrome.windows.create(options);
+      return (await chrome.tabs.query({ windowId: window.id })).filter((tab) => tab.id !== options.tabId);
+    });
+    return chrome.windows.get(window.id, { populate: true });
+  },
+};
+
+// Tabs the session may not reach are left out of management results, and so are windows and groups
+// without any tab it may reach.
 async function withoutHiddenTabs(session, namespace, result) {
   if ((await accessMode()) === ALL_TABS) return result;
   const filterTabs = async (tabs) => (await visibleTabs(session, tabs)).shown;
   if (namespace === "tabs" && Array.isArray(result)) return filterTabs(result);
-  // A single tab (a duplicate is a new tab nobody owns) shows only its ID unless the session may use it.
-  if (namespace === "tabs" && result && typeof result === "object" && isTabId(result.id)) {
-    return (await filterTabs([result])).length ? result : { id: result.id, windowId: result.windowId };
+  if (namespace === "tabs" && result && typeof result === "object" && isTabId(result.id) && !(await filterTabs([result])).length) {
+    throw new Error("This tab is not one of this session's tabs, and the user has not shared it");
   }
-  if (namespace === "windows") {
-    const filterWindow = async (window) => (Array.isArray(window?.tabs) ? { ...window, tabs: await filterTabs(window.tabs) } : window);
-    return Array.isArray(result) ? Promise.all(result.map(filterWindow)) : filterWindow(result);
+  if (namespace === "windows" && result && typeof result === "object") {
+    const filterWindow = async (window) => (Array.isArray(window.tabs) ? { ...window, tabs: await filterTabs(window.tabs) } : window);
+    if (Array.isArray(result)) {
+      const shown = [];
+      for (const window of result) if (await seesWindow(session, window.id)) shown.push(await filterWindow(window));
+      return shown;
+    }
+    if (!(await seesWindow(session, result.id))) throw new Error("This window holds no tab of this session or shared by the user");
+    return filterWindow(result);
   }
   if (namespace === "tabGroups") {
     const visible = async (group) => (await filterTabs(await chrome.tabs.query({ groupId: group.id }))).length > 0;

@@ -19,7 +19,8 @@ Bruse gives the agents you run full control of your browser: the code an agent s
 - a process of another account that listens on the hub port (for example after the hub exited) receiving the hub token or an MCP server's requests, or answering them;
 - the hub crashing or misbehaving on input from an unauthenticated connection;
 - pairing state, hub token or exported files readable by other accounts;
-- an agent session seeing the title or address of, reading, driving, closing or rearranging a tab that it did not open and the user did not share (in the default "agent tabs" mode), including through the management capability, frame sessions or events, or by naming another session;
+- an agent session seeing the title or address of, reading, driving, closing or moving a tab that it did not open and the user did not share (in the default "agent tabs" mode), including through the management capability, frame sessions or events, or by naming another session;
+- in that mode, an agent session seeing a window or tab group that holds none of its tabs and no shared tab, changing, focusing or closing a window that holds such a tab, moving tabs into such a window or into a group it cannot fully reach, or making a tab active in such a window;
 - a debugger staying attached to a tab after the user stopped sharing it;
 - tabs the user did not give the agent (not opened by its session and not shared or bound with `getTab`) being closed or changed by session cleanup;
 - the release artifacts, the installer and the Homebrew formula.
