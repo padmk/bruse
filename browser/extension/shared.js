@@ -35,3 +35,25 @@ export function unresponsivePageError(method, seconds) {
 export function isUnresponsivePageError(message) {
   return /The page did not respond within /.test(message ?? "");
 }
+
+// A fingerprint of the extension's code: SHA-256 over manifest.json and every file it reaches through
+// the manifest, module imports, HTML script and style links and quoted page names such as
+// "offscreen.html", read with `readText(path)` (a path relative to the extension folder). The extension
+// reports it, and the installer and the benchmark compute it from a folder, so they can tell whether
+// the browser runs that folder's code; the version alone stays the same between releases.
+export async function extensionBuild(readText) {
+  const files = new Map();
+  const visit = async (file) => {
+    if (files.has(file)) return;
+    files.set(file, await readText(file));
+    const text = files.get(file);
+    const found = file === "manifest.json"
+      ? [JSON.parse(text).background?.service_worker, JSON.parse(text).action?.default_popup]
+      : [...text.matchAll(/from\s+"\.\/([\w.-]+)"|import\(\s*"\.\/([\w.-]+)"\s*\)|(?:src|href)="([\w.-]+\.(?:js|css))"|"([\w-]+\.html)"/g)].map((m) => m.slice(1).find(Boolean));
+    for (const next of found) if (next) await visit(next);
+  };
+  await visit("manifest.json");
+  const data = new TextEncoder().encode([...files].sort(([a], [b]) => (a < b ? -1 : 1)).map(([name, text]) => `${name}\0${text}`).join("\0"));
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", data));
+  return { hash: [...digest].map((byte) => byte.toString(16).padStart(2, "0")).join(""), files: [...files.keys()].sort() };
+}

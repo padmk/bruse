@@ -2,7 +2,7 @@
 // installation instructions for agents.
 
 import { execFileSync } from "node:child_process";
-import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -15,7 +15,9 @@ const skip = (path) => !path.endsWith(".DS_Store") && !path.endsWith("icon-sourc
 
 mkdirSync(stage, { recursive: true });
 cpSync(join(root, "browser"), join(stage, "browser"), { recursive: true, filter: skip });
-for (const file of ["install.mjs", "lib.mjs", "doctor.mjs", "uninstall.mjs"]) cpSync(join(root, "installer", file), join(stage, "installer", file));
+// Every installer module except this build script, so a module that the installer starts to import
+// is never left out.
+for (const file of readdirSync(join(root, "installer"))) if (file.endsWith(".mjs") && file !== "package.mjs") cpSync(join(root, "installer", file), join(stage, "installer", file));
 cpSync(join(root, "bin", "bruse.mjs"), join(stage, "bin", "bruse.mjs"));
 cpSync(join(root, "installer", "Install.command"), join(stage, `Install ${name}.command`));
 chmodSync(join(stage, `Install ${name}.command`), 0o755);

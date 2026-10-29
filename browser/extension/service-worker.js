@@ -8,7 +8,7 @@ import { waitForDownload } from "./downloads.js";
 import { PAUSED_ERROR, isPaused } from "./pause.js";
 import { agentTabs, createAgentTab, endSession, markTab, noteAgentInput, onTabOpened, openingSession, setLiveSessions } from "./sessions.js";
 import { checkRequest } from "./guard.js";
-import { MANAGEMENT_METHODS, isPressInput } from "./shared.js";
+import { MANAGEMENT_METHODS, extensionBuild, isPressInput } from "./shared.js";
 
 const OFFSCREEN_ALARM = "offscreen-check";
 const LOAD_TIMEOUT_MS = 20_000;
@@ -58,13 +58,16 @@ function browserName() {
   return brands.find((brand) => !/Chromium|Not.?A.?Brand/i.test(brand)) ?? "Chromium";
 }
 
+// The fingerprint of the code this extension runs (see shared.js), computed once per worker start.
+const build = extensionBuild((file) => fetch(chrome.runtime.getURL(file)).then((response) => response.text())).catch(() => ({ hash: null }));
+
 // Each handler gets the request's parameters and `session`, the agent session the hub says the request
 // comes from. Tab methods check access first (see access.js).
 const handlers = {
   "browser.info": async (_, session) => {
     const mode = await accessMode();
     const { hidden } = await visibleTabs(session, await chrome.tabs.query({}));
-    return { name: browserName(), userAgent: navigator.userAgent, version: chrome.runtime.getManifest().version, id: chrome.runtime.id, paused: await isPaused(), access: { mode, hiddenTabs: hidden } };
+    return { name: browserName(), userAgent: navigator.userAgent, version: chrome.runtime.getManifest().version, build: (await build).hash, id: chrome.runtime.id, paused: await isPaused(), access: { mode, hiddenTabs: hidden } };
   },
 
   "tabs.list": async (_, session) => (await visibleTabs(session, await chrome.tabs.query({}))).shown.map(tabInfo),

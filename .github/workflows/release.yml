@@ -50,12 +50,14 @@ jobs:
           (cd out && shasum -a 256 Bruse-*.zip > checksums.txt)
           if [ -f "$RUNNER_TEMP/notes.md" ]; then cp "$RUNNER_TEMP/notes.md" out/notes.md; fi
       - name: Smoke-test the package as users get it
-        # Unpacked, the installer's modules load and the server answers initialize.
+        # Unpacked, the command and every installer module load (with their imports), and the server
+        # answers initialize.
         run: |
           t="$RUNNER_TEMP/unzipped"; mkdir -p "$t"
           ditto -x -k out/Bruse-*.zip "$t"
           cd "$t"/Bruse-*
-          node --check installer/install.mjs
+          node bin/bruse.mjs version
+          for m in installer/*.mjs; do node --input-type=module -e "await import('$PWD/$m')"; done
           printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' \
             | BROWSER_CONTROL_STATE_DIR="$RUNNER_TEMP/state" node browser/mcp/server.mjs | grep -q '"serverInfo"'
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2

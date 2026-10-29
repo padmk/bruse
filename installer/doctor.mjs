@@ -1,5 +1,6 @@
 // Checks an installation step by step and says what to do about each problem.
 
+import { readFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { MIN_NODE_MAJOR, agentClients, clientId, installed, installedVersion, manifest, note, product, serverPath, source, step } from "./lib.mjs";
@@ -42,11 +43,17 @@ export async function doctor() {
   const browserDir = copy ? installed : source;
   const { EXTENSION_SECRET_PATH, STORE_EXTENSION_ID } = await import(join(browserDir, "mcp", "config.mjs"));
   const { callBrowser } = await import(join(browserDir, "mcp", "browser-link.mjs"));
+  // The version stays the same between releases, so the code's fingerprint tells a browser that has
+  // not reloaded the extension since an update.
+  const { extensionBuild } = await import(join(browserDir, "extension", "shared.js"));
+  const localBuild = extensionBuild((file) => readFile(join(browserDir, "extension", file), "utf8")).then(({ hash }) => hash, () => null);
   if (existsSync(EXTENSION_SECRET_PATH)) ok("Paired with an extension");
   else bad("No extension has paired yet; load the extension (see `bruse setup`).");
   try {
     const info = await callBrowser("browser.info");
-    if (info.version === manifest.version) ok(`Connected to ${info.name}, extension ${info.version}`);
+    const build = await localBuild;
+    if (info.version === manifest.version && build && info.build !== build) bad(`Connected to ${info.name}, but its extension ${info.version} runs other code than ${join(browserDir, "extension")}, most likely from before an update; reload the extension (\`bruse setup\` does that).`);
+    else if (info.version === manifest.version) ok(`Connected to ${info.name}, extension ${info.version}`);
     else if (STORE_EXTENSION_ID && info.id === STORE_EXTENSION_ID) note(`Connected to ${info.name}; its extension from the Chrome Web Store is ${info.version} and updates to ${manifest.version} on its own.`);
     else bad(`Connected to ${info.name}, but its extension is ${info.version ? `version ${info.version}` : "an older version"}; run \`bruse setup\`.`);
     if (info.paused) bad(`Agents are paused in ${info.name}; resume them from the ${product} icon in the toolbar.`);
