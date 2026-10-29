@@ -10,7 +10,7 @@
 
 import { tabOwner } from "./agent-state.js";
 
-export const AGENT_TABS = "agent-tabs";
+const AGENT_TABS = "agent-tabs";
 export const ALL_TABS = "all-tabs";
 
 const name = chrome.runtime.getManifest().name;
@@ -85,7 +85,7 @@ export function bothAudiences(a, b) {
   return a.filter((sessionId) => b.includes(sessionId));
 }
 
-export function notSharedError(tabId) {
+function notSharedError(tabId) {
   return new Error(
     `Tab ${tabId} is not one of this session's tabs, and the user has not shared it. ${name} lets agents use the tabs they open and the tabs the user shares. Ask the user to switch to that tab and click "Share this tab" in the ${name} toolbar popup, then retry; or open the page in your own tab with cua.createBrowserTab.`,
   );

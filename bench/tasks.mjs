@@ -1,15 +1,12 @@
 // Benchmark tasks. Prompts are identical for every browser tool; check() grades the final answer and the
 // server log. "timed" tasks are repeated for timing; "capability" tasks test what a tool can do at all.
-import { ORIGIN_A, orders, products, reportCsv } from "./server.mjs";
-
-const norm = (s) => String(s ?? "").toLowerCase().replace(/\s+/g, " ");
-const numbersIn = (s) => (String(s ?? "").replace(/(\d)[\s ](?=\d{3}\b)/g, "$1").match(/\d+(?:[.,]\d+)?/g) ?? []).map((n) => Number(n.replace(",", ".")));
+import { norm, onlyNumber, rules } from "./grading.mjs";
+import { ORIGIN_A, STOCK, chartSales, orders, products, reportCsv } from "./server.mjs";
 
 const refundSum = orders.filter((o) => o.customer === "Nowak Logistics" && o.status === "Zwrot").reduce((a, o) => a + o.amount, 0);
 const cheapest27 = products.filter((p) => p.category === "Monitory" && p.inches >= 27).sort((a, b) => a.price - b.price)[0];
+const [bestMonth, bestSales] = chartSales.reduce((best, entry) => (entry[1] > best[1] ? entry : best));
 const septemberRevenue = Number(reportCsv.split("\n").find((l) => l.startsWith("2026-09")).split(";")[1].replace(",", "."));
-
-const rules = "Używaj wyłącznie przeglądarki. Odpowiedz krótko, bez opisu kroków.";
 
 export const tasks = [
   {
@@ -25,7 +22,7 @@ export const tasks = [
     kind: "timed",
     title: "Odczyt danych z tabeli (250 wierszy)",
     prompt: `Otwórz ${ORIGIN_A}/zamowienia. Podaj sumę kwot wszystkich zamówień klienta „Nowak Logistics” ze statusem „Zwrot”. Odpowiedz tylko liczbą z dwoma miejscami po przecinku. ${rules}`,
-    check: ({ answer }) => numbersIn(answer).some((n) => Math.abs(n - refundSum) < 0.011),
+    check: ({ answer }) => onlyNumber(answer, refundSum, { tolerance: 0.005 }),
     expected: refundSum.toFixed(2),
   },
   {
@@ -92,7 +89,27 @@ export const tasks = [
     title: "Pobranie pliku i odczyt wartości",
     prompt: `Otwórz ${ORIGIN_A}/raporty w przeglądarce, pobierz raport CSV przyciskiem na stronie i podaj przychód za 2026-09 z pobranego pliku. Do odczytania pobranego pliku możesz użyć narzędzia Read. Jeśli nie możesz go odczytać, napisz „brak dostępu”. Odpowiedz krótko, bez opisu kroków.`,
     // The file must have been downloaded; the number alone could come from elsewhere.
-    check: ({ answer, log }) => log.downloads > 0 && numbersIn(answer).some((n) => Math.abs(n - septemberRevenue) < 0.011),
+    check: ({ answer, log }) => log.downloads > 0 && onlyNumber(answer, septemberRevenue, { tolerance: 0.005, restated: "2026-09" }),
     expected: String(septemberRevenue),
+  },
+  {
+    id: "server-form",
+    kind: "timed",
+    title: "Formularz odrzucany przez serwer",
+    prompt: `Otwórz ${ORIGIN_A}/zamowienie i zamów 15 palet papieru z dostawą pod kod pocztowy 00950, Warszawa. Jeśli serwer odrzuci zamówienie, popraw dane według jego komunikatu (gdy brakuje towaru, zamów tyle, ile jest) i wyślij ponownie. To zamówienie testowe, możesz je wysłać bez pytania. Podaj numer przyjętego zamówienia. ${rules}`,
+    // The server knows the rules, so the order it accepted proves the corrections; the number alone could be guessed.
+    check: ({ answer, log }) => {
+      const order = log.orders.at(-1);
+      return log.orders.length === 1 && order.quantity === STOCK && order.postal === "00-950" && /warszawa/i.test(order.city) && norm(answer).includes(norm(order.id));
+    },
+    expected: `jedno zamówienie: ${STOCK} palet, 00-950, numer ZH-…`,
+  },
+  {
+    id: "chart",
+    kind: "timed",
+    title: "Odczyt wartości z wykresu",
+    prompt: `Otwórz ${ORIGIN_A}/wykres. Który miesiąc miał najwyższą sprzedaż i ile wynosiła? Odpowiedz w formacie: miesiąc, wartość. ${rules}`,
+    check: ({ answer }) => norm(answer).includes(norm(bestMonth)) && onlyNumber(answer, bestSales),
+    expected: `${bestMonth}, ${bestSales}`,
   },
 ];

@@ -2,10 +2,10 @@
 // payment frame). Submissions and page events are recorded in memory and read back through /api/log.
 import http from "node:http";
 
-export const PORT_A = 47901;
-export const PORT_B = 47902;
+const PORT_A = 47901;
+const PORT_B = 47902;
 export const ORIGIN_A = `http://127.0.0.1:${PORT_A}`;
-export const ORIGIN_B = `http://localhost:${PORT_B}`;
+const ORIGIN_B = `http://localhost:${PORT_B}`;
 
 function rng(seed) {
   let s = seed >>> 0;
@@ -38,7 +38,7 @@ export const products = Array.from({ length: 120 }, (_, i) => {
   };
 });
 
-const log = { signups: [], payments: [], sessions: [], downloads: 0 };
+const log = { signups: [], payments: [], sessions: [], downloads: 0, orders: [], rejected: 0 };
 
 const css = `body{font-family:system-ui,sans-serif;margin:0;color:#1d2327;background:#f6f7f7}
 header{background:#1d2327;color:#fff;padding:14px 32px;font-weight:600}
@@ -154,6 +154,31 @@ function articlePage() {
 
 export const reportCsv = "miesiac;przychod;koszty\n2026-07;182340,50;120410,00\n2026-08;175980,20;118300,75\n2026-09;201447,90;131020,10\n";
 
+// An order form whose rules only the server knows: the postal code format and the stock. A rejected
+// order shows the server's reason, so the agent must read it, correct the form and send it again.
+export const STOCK = 12;
+function orderPage() {
+  return page(
+    "Zamówienie hurtowe",
+    `<h1>Zamówienie hurtowe: papier A4</h1><form id=f class="card"><label for=q>Liczba palet</label><input id=q name=quantity inputmode=numeric><label for=z>Kod pocztowy dostawy</label><input id=z name=postal><label for=m>Miasto</label><input id=m name=city><button>Zamów</button></form><p id=msg role=status></p>`,
+    `document.getElementById('f').onsubmit=async(e)=>{e.preventDefault();const g=(id)=>document.getElementById(id).value.trim();const msg=document.getElementById('msg');msg.textContent='Wysyłanie…';
+const r=await fetch('/api/order',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({quantity:g('q'),postal:g('z'),city:g('m')})});const j=await r.json();
+msg.textContent=r.ok?'Przyjęto zamówienie '+j.id+'.':'Serwer odrzucił zamówienie: '+j.error;msg.style.color=r.ok?'#1a7f37':'#b32d2e'};`,
+  );
+}
+
+// Monthly sales drawn on a canvas: the values are not in the page's text or accessibility tree, so a
+// tool must look at the page (or read the page's script, which either tool can).
+export const chartSales = [["Styczeń", 42], ["Luty", 38], ["Marzec", 51], ["Kwiecień", 47], ["Maj", 63], ["Czerwiec", 58], ["Lipiec", 71], ["Sierpień", 66], ["Wrzesień", 54]];
+function chartPage() {
+  return page(
+    "Sprzedaż miesięczna",
+    `<h1>Sprzedaż miesięczna (tys. zł)</h1><canvas id=c width=720 height=320 aria-label="Wykres sprzedaży"></canvas>`,
+    `const c=document.getElementById('c').getContext('2d');c.font='13px sans-serif';
+${JSON.stringify(chartSales)}.forEach(([m,v],i)=>{const x=30+i*76,h=v*3.5;c.fillStyle='#3b6fb6';c.fillRect(x,290-h,48,h);c.fillStyle='#222';c.fillText(String(v),x+14,284-h);c.fillText(m,x,308)});`,
+  );
+}
+
 function reportsPage() {
   return page("Raporty", `<h1>Raporty</h1><p>Raport kwartalny jest dostępny tylko jako plik CSV.</p><a href="/raport.csv" download="raport-q3.csv"><button>Pobierz CSV</button></a>`);
 }
@@ -184,6 +209,8 @@ function handler(origin) {
       case "/bramka": return html(gatewayPage());
       case "/notatki": return html(notesPage());
       case "/raporty": return html(reportsPage());
+      case "/zamowienie": return html(orderPage());
+      case "/wykres": return html(chartPage());
       case "/artykul": return html(articlePage());
       case "/raport.csv": log.downloads++; return send(res, 200, "text/csv; charset=utf-8", reportCsv);
       case "/api/sync": return json(500, { error: "sync failed" });
@@ -193,6 +220,18 @@ function handler(origin) {
         log.signups.push({ ...data, code, at: Date.now() });
         return json(200, { code });
       }
+      case "/api/order": {
+        const { quantity, postal, city } = JSON.parse(await readBody(req));
+        const n = Number(quantity);
+        const reason = !/^\d{2}-\d{3}$/.test(postal ?? "") ? "kod pocztowy musi mieć format NN-NNN"
+          : !Number.isInteger(n) || n < 1 ? "liczba palet musi być dodatnią liczbą całkowitą"
+          : n > STOCK ? `w magazynie jest tylko ${STOCK} palet`
+          : !city ? "podaj miasto" : null;
+        if (reason) { log.rejected++; return json(422, { error: reason }); }
+        const id = `ZH-${7300 + log.orders.length}`;
+        log.orders.push({ quantity: n, postal, city, id, at: Date.now() });
+        return json(200, { id });
+      }
       case "/api/pay": {
         const data = JSON.parse(await readBody(req));
         const id = `TX-${(880000 + log.payments.length * 7).toString(36).toUpperCase()}`;
@@ -201,7 +240,7 @@ function handler(origin) {
       }
       case "/api/session": log.sessions.push({ code: await readBody(req), at: Date.now() }); return json(200, {});
       case "/api/log": return json(200, log);
-      case "/api/reset": Object.assign(log, { signups: [], payments: [], sessions: [], downloads: 0 }); return json(200, {});
+      case "/api/reset": Object.assign(log, { signups: [], payments: [], sessions: [], downloads: 0, orders: [], rejected: 0 }); return json(200, {});
       default: return send(res, 404, "text/plain", "not found");
     }
   };

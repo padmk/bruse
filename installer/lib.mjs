@@ -10,7 +10,7 @@ import { moreClients } from "./clients.mjs";
 import { DATA_DIR } from "../browser/mcp/config.mjs";
 
 export const MIN_NODE_MAJOR = 22;
-export const MCP_NAME = "bruse";
+const MCP_NAME = "bruse";
 
 // The browser files this command ships with.
 export const source = join(dirname(fileURLToPath(import.meta.url)), "..", "browser");
