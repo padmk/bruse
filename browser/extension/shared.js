@@ -36,16 +36,33 @@ export function isUnresponsivePageError(message) {
   return /The page did not respond within /.test(message ?? "");
 }
 
-// A fingerprint of the extension's code: SHA-256 over manifest.json and every file it reaches through
-// the manifest, module imports, HTML script and style links and quoted page names such as
-// "offscreen.html", read with `readText(path)` (a path relative to the extension folder). The extension
-// reports it, and the installer and the benchmark compute it from a folder, so they can tell whether
-// the browser runs that folder's code; the version alone stays the same between releases.
+// Manifest fields that say how a copy is distributed, not what it runs: "key" pins the ID of the
+// unpacked extension and the store package leaves it out, and a browser that installs the store's
+// package may add its own key and "update_url" to the manifest it keeps.
+const DISTRIBUTION_FIELDS = ["key", "update_url"];
+
+// The manifest as the fingerprint sees it: without the distribution fields and with sorted keys, so the
+// unpacked folder, the store package (whose manifest is written again) and the copy a browser installed
+// from it agree, while any other change to the manifest, such as a permission or the version, counts.
+function canonicalManifest(text) {
+  const manifest = JSON.parse(text);
+  for (const field of DISTRIBUTION_FIELDS) delete manifest[field];
+  const sorted = (value) =>
+    Array.isArray(value) ? value.map(sorted) : value && typeof value === "object" ? Object.fromEntries(Object.keys(value).sort().map((key) => [key, sorted(value[key])])) : value;
+  return JSON.stringify(sorted(manifest));
+}
+
+// A fingerprint of the extension's code: SHA-256 over manifest.json (see canonicalManifest) and every
+// file it reaches through the manifest, module imports, HTML script and style links and quoted page
+// names such as "offscreen.html", read with `readText(path)` (a path relative to the extension folder).
+// The extension reports it, and the installer and the benchmark compute it from a folder, so they can
+// tell whether the browser runs that folder's code; the version alone stays the same between releases.
 export async function extensionBuild(readText) {
   const files = new Map();
   const visit = async (file) => {
     if (files.has(file)) return;
-    files.set(file, await readText(file));
+    const raw = await readText(file);
+    files.set(file, file === "manifest.json" ? canonicalManifest(raw) : raw);
     const text = files.get(file);
     const found = file === "manifest.json"
       ? [JSON.parse(text).background?.service_worker, JSON.parse(text).action?.default_popup]

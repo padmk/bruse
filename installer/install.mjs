@@ -174,10 +174,11 @@ async function reloadExtension(callBrowser, connected, build) {
   );
 }
 
-// The Chrome Web Store's copy updates itself; reloading it would not change its version.
-function checkStoreExtension(info) {
-  if (info.version === manifest.version) note(`Connected to ${info.name}, extension from the Chrome Web Store.`);
-  else note(`The extension from the Chrome Web Store is version ${info.version}; the browser updates it to ${manifest.version} on its own.`);
+// The Chrome Web Store's copy updates itself; reloading it would not change its version or its code.
+function checkStoreExtension(info, build) {
+  if (info.version !== manifest.version) note(`The extension from the Chrome Web Store is version ${info.version}; the browser updates it to ${manifest.version} on its own.`);
+  else if (build && info.build !== build) note(`The extension from the Chrome Web Store runs other code than ${extensionDir}, though its version is ${manifest.version}; \`bruse doctor\` says how to match them.`);
+  else note(`Connected to ${info.name}, extension from the Chrome Web Store.`);
 }
 
 const fromStore = (info) => info?.id === STORE_EXTENSION_ID;
@@ -203,13 +204,13 @@ export async function setup({ clients } = {}) {
     if (!isNotConnected(error)) fail(portTaken(error));
     return null;
   });
-  if (fromStore(connected)) checkStoreExtension(connected);
+  if (fromStore(connected)) checkStoreExtension(connected, build);
   else if (connected) await reloadExtension(callBrowser, connected, build);
   else {
     openExtensionsPage();
     const info = await waitForExtension(callBrowser);
     // An extension enabled from another folder, or an older copy, connects too; it must run this version.
-    if (fromStore(info)) checkStoreExtension(info);
+    if (fromStore(info)) checkStoreExtension(info, build);
     else if (!runsThisCode(info, build)) await reloadExtension(callBrowser, info, build);
   }
   if (!registered) fail(`${product} is installed, but registering the MCP server failed for an agent CLI (see above).`);

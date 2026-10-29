@@ -52,9 +52,13 @@ export async function doctor() {
   try {
     const info = await callBrowser("browser.info");
     const build = await localBuild;
-    if (info.version === manifest.version && build && info.build !== build) bad(`Connected to ${info.name}, but its extension ${info.version} runs other code than ${join(browserDir, "extension")}, most likely from before an update; reload the extension (\`bruse setup\` does that).`);
+    // The Chrome Web Store's copy updates itself, so reloading it changes nothing.
+    if (STORE_EXTENSION_ID && info.id === STORE_EXTENSION_ID) {
+      if (info.version !== manifest.version) note(`Connected to ${info.name}; its extension from the Chrome Web Store is ${info.version} and updates to ${manifest.version} on its own.`);
+      else if (build && info.build !== build) bad(`Connected to ${info.name}, but its extension ${info.version} from the Chrome Web Store runs other code than ${join(browserDir, "extension")}; install the ${product} release that matches it, or remove the store's extension and load that folder instead.`);
+      else ok(`Connected to ${info.name}, extension ${info.version} from the Chrome Web Store`);
+    } else if (info.version === manifest.version && build && info.build !== build) bad(`Connected to ${info.name}, but its extension ${info.version} runs other code than ${join(browserDir, "extension")}, most likely from before an update; reload the extension (\`bruse setup\` does that).`);
     else if (info.version === manifest.version) ok(`Connected to ${info.name}, extension ${info.version}`);
-    else if (STORE_EXTENSION_ID && info.id === STORE_EXTENSION_ID) note(`Connected to ${info.name}; its extension from the Chrome Web Store is ${info.version} and updates to ${manifest.version} on its own.`);
     else bad(`Connected to ${info.name}, but its extension is ${info.version ? `version ${info.version}` : "an older version"}; run \`bruse setup\`.`);
     if (info.paused) bad(`Agents are paused in ${info.name}; resume them from the ${product} icon in the toolbar.`);
   } catch (error) {
