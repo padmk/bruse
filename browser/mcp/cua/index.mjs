@@ -30,6 +30,10 @@ browser when the user asks for it. Arguments and results follow the chrome.* API
 ${Object.entries(MANAGEMENT_METHODS)
   .map(([namespace, methods]) => `- ${namespace}: ${methods.join(", ")}`)
   .join("\n")}
+In the default access mode, management sees only the tabs of this session and the tabs the user shared, and only
+windows and groups that hold one. It changes, focuses, activates tabs in or moves tabs into only windows whose every
+tab is this session's or shared. Tabs that windows.create and tabs.duplicate open are this session's, like those of
+cua.createBrowserTab, and close when it ends; windows.create opens an unfocused window unless focused is set.
 Change only what the user asked for, confirm before deleting bookmarks or closing user tabs, and report what changed.`;
 
 // Browser organization through the allow-listed WebExtensions methods, e.g. management.tabs.query({}).
@@ -208,8 +212,7 @@ export function createCua() {
         new: () => createBrowserTab(BROWSER_ID),
         // Every window has an active tab; the selected one is in the window the user used last.
         selected: async () => {
-          const focused = await call("browser.manage", { namespace: "windows", method: "getLastFocused", args: [{ windowTypes: ["normal"] }] });
-          const active = (await call("tabs.list")).find((tab) => tab.active && tab.windowId === focused.id);
+          const active = await call("tabs.selected");
           return active ? bind(active) : undefined;
         },
       },

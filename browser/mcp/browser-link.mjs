@@ -92,7 +92,7 @@ const HUB_CLOSING = "The browser hub is shutting down";
 let draining = false;
 const HUB_GONE = "The browser hub went away while the request was in flight, so it may or may not have taken effect; check the page before repeating an action";
 // Requests that only read state; they are resent through a new hub when the old one exits mid-call.
-const READ_ONLY_METHODS = new Set(["browser.info", "tabs.list", "tabs.get", "tabs.agent", "tabs.waitForLoad", "page.state", "page.console", "page.network", "history.search"]);
+const READ_ONLY_METHODS = new Set(["browser.info", "tabs.list", "tabs.get", "tabs.selected", "tabs.agent", "tabs.waitForLoad", "page.state", "page.console", "page.network", "history.search"]);
 const READ_ONLY_CDP = /^(DOM\.(getDocument|describeNode|getContentQuads|getBoxModel|getFrameOwner|resolveNode)|Accessibility\.|Page\.(getFrameTree|getLayoutMetrics|captureScreenshot)|Runtime\.(getProperties|releaseObject|releaseObjectGroup))$/;
 
 function isReadOnly(method, params) {

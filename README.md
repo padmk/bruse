@@ -132,11 +132,22 @@ The full API is in [browser/mcp/cua/docs.mjs](browser/mcp/cua/docs.mjs).
 - **Agents use their own tabs and the tabs you share.** By default an agent session sees and uses
   only the tabs it opened (and tabs their pages opened from its input), plus the tabs you share: click
   the Bruse icon on a tab and **Share this tab**; **Stop** ends the share and detaches the debugger at
-  once, and an agent waiting for a download from the tab does not get the file. Your other tabs stay hidden: agents do not see their titles or addresses (only how many there
-  are), and cannot read, drive, close or rearrange them, nor the tabs of other agent sessions. The
-  extension enforces this for every request, using the session the hub says the request comes from,
-  not one the request names. Under **Access** in the popup you can let agents use all tabs instead.
-  Shares end when the browser restarts. A shared tab is shared with every agent session, not with one.
+  once, and an agent waiting for a download from the tab does not get the file. The extension checks
+  every request against this, using the session the hub says the request comes from, not one the
+  request names:
+  - Your other tabs, and the tabs of other agent sessions, are hidden: agents do not see their titles
+    or addresses (only how many there are), and cannot read, drive, close or move them.
+  - Agent tabs open in the background in your window, in the collapsed "Claude" tab group. A window
+    counts as the agent's only when every tab in it is the agent's or shared. Agents do not see
+    windows and tab groups without a tab of theirs or a shared tab. They cannot resize, focus or close
+    your windows, move tabs into them or into groups holding tabs they cannot use, or make a tab the
+    active one in them, so they do not switch the tab you are looking at.
+  - Tabs an agent opens through the browser's management functions (a new window, a duplicated tab)
+    are its own, like the tabs it opens directly, and close when its session ends.
+
+  Under **Access** in the popup you can let agents use all tabs instead. Shares end when the browser
+  restarts. A shared tab is shared with every agent session, not with one, and nothing locks it to one
+  agent: actions of several agents on the same shared tab can interleave.
 - **Tab isolation is not account isolation, and not a sandbox.** An agent can still open any site in a
   tab of its own, in your profile, where you are signed in; only a separate browser profile keeps your
   accounts out of reach. Isolation limits what an agent does through Bruse's browser API; code in the

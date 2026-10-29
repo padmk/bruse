@@ -215,14 +215,15 @@ function rememberEnded(sessionId) {
   }
 }
 
-// Opens a tab for the session with `create()` (which resolves with the new tab) and records it as the
-// session's, in the agent group. A tab whose session ended meanwhile is closed, and the call fails.
-export async function createAgentTab(sessionId, create) {
+// Opens tabs for the session with `create()` (which resolves with the new tabs) and records them as the
+// session's, in the agent group of their window. Tabs whose session ended meanwhile are closed, and the
+// call fails.
+export async function createAgentTabs(sessionId, create) {
   creating.set(sessionId, (creating.get(sessionId) ?? 0) + 1);
   try {
-    const tab = await create();
-    await serialized(() => groupAgentTabNow(tab.id, sessionId));
-    return tab;
+    const tabs = await create();
+    await serialized(() => groupAgentTabsNow(tabs.map((tab) => tab.id), sessionId));
+    return tabs;
   } finally {
     const count = creating.get(sessionId) - 1;
     if (count) creating.set(sessionId, count);
@@ -230,25 +231,39 @@ export async function createAgentTab(sessionId, create) {
   }
 }
 
-async function groupAgentTabNow(tabId, sessionId) {
+// createAgentTabs for one tab, which `create()` resolves with.
+export async function createAgentTab(sessionId, create) {
+  const [tab] = await createAgentTabs(sessionId, async () => [await create()]);
+  return tab;
+}
+
+async function groupAgentTabsNow(tabIds, sessionId) {
+  if (!tabIds.length) return;
   const state = await load();
   if (endedSessions.has(sessionId)) {
-    if (!KEPT_MARKS.has(state.tabs[tabId]?.mark)) await chrome.tabs.remove(tabId).catch(() => {});
-    throw new Error("The agent session ended while its tab was being created; the tab was closed");
+    await Promise.all(tabIds.filter((tabId) => !KEPT_MARKS.has(state.tabs[tabId]?.mark)).map((tabId) => chrome.tabs.remove(tabId).catch(() => {})));
+    throw new Error(tabIds.length === 1 ? "The agent session ended while its tab was being created; the tab was closed" : "The agent session ended while its tabs were being created; the tabs were closed");
   }
-  // Ownership is recorded even if grouping fails, so that the session's end still closes the tab.
-  state.tabs[tabId] = { sessionId, mark: null };
-  keepLoaded(tabId);
+  // Ownership is recorded even if grouping fails, so that the session's end still closes the tabs.
+  for (const tabId of tabIds) {
+    state.tabs[tabId] = { sessionId, mark: null };
+    keepLoaded(tabId);
+  }
   try {
-    const { windowId } = await chrome.tabs.get(tabId);
-    const groupId = await agentGroup(windowId, state);
-    if (groupId !== undefined) {
-      await chrome.tabs.group({ tabIds: [tabId], groupId });
-    } else {
-      const created = await chrome.tabs.group({ tabIds: [tabId], createProperties: { windowId } });
-      // Collapsed, so that the tabs of several agent sessions take one chip in the user's tab strip.
-      await chrome.tabGroups.update(created, { title: GROUP_TITLE, color: GROUP_COLOR, collapsed: true });
-      state.windowGroups[windowId] = created;
+    const byWindow = new Map();
+    for (const tab of await Promise.all(tabIds.map((tabId) => chrome.tabs.get(tabId).catch(() => null)))) {
+      if (tab) byWindow.set(tab.windowId, [...(byWindow.get(tab.windowId) ?? []), tab.id]);
+    }
+    for (const [windowId, ids] of byWindow) {
+      const groupId = await agentGroup(windowId, state);
+      if (groupId !== undefined) {
+        await chrome.tabs.group({ tabIds: ids, groupId });
+      } else {
+        const created = await chrome.tabs.group({ tabIds: ids, createProperties: { windowId } });
+        // Collapsed, so that the tabs of several agent sessions take one chip in the user's tab strip.
+        await chrome.tabGroups.update(created, { title: GROUP_TITLE, color: GROUP_COLOR, collapsed: true });
+        state.windowGroups[windowId] = created;
+      }
     }
   } finally {
     await save(state);
