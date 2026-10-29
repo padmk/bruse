@@ -8,8 +8,8 @@ import { anyoneMayAccess } from "./access.js";
 import { detach, onCdpEvent, sinceAgentInput } from "./cdp.js";
 import { AGENT_INPUT_WINDOW_MS } from "./shared.js";
 
-const GROUP_TITLE = "Claude";
-const GROUP_COLOR = "orange";
+const GROUP_TITLE = chrome.runtime.getManifest().name;
+const GROUP_COLOR = "grey";
 // Marked tabs survive session cleanup: deliverables are results for the user, handoffs wait for later work.
 const KEPT_MARKS = new Set(["deliverable", "handoff"]);
 

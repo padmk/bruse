@@ -141,7 +141,7 @@ The full API is in [browser/mcp/cua/docs.mjs](browser/mcp/cua/docs.mjs).
   request names:
   - Your other tabs, and the tabs of other agent sessions, are hidden: agents do not see their titles
     or addresses (only how many there are), and cannot read, drive, close or move them.
-  - Agent tabs open in the background in your window, in the collapsed "Claude" tab group. A window
+  - Agent tabs open in the background in your window, in the collapsed grey "Bruse" tab group. A window
     counts as the agent's only when every tab in it is the agent's or shared. Agents do not see
     windows and tab groups without a tab of theirs or a shared tab. They cannot resize, focus or close
     your windows, move tabs into them or into groups holding tabs they cannot use, or make a tab the
@@ -229,7 +229,7 @@ Report vulnerabilities as described in [SECURITY.md](SECURITY.md).
 
 ## Behavior
 
-- Agent tabs open without focus in the window's "Claude" tab group, which all agent sessions share and
+- Agent tabs open without focus in the window's grey "Bruse" tab group, which all agent sessions share and
   which starts collapsed, so that many sessions' tabs take one chip in the tab strip;
   the extension remembers which session owns each tab, also across extension reloads. When a session
   ends, its unmarked tabs close, including tabs its pages opened in response to the agent's input: the
