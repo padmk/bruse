@@ -50,7 +50,11 @@ a checkout of this repository, run `node bin/bruse.mjs setup`.
 Setup:
 
 - copies the extension and the MCP server to `~/.local/share/bruse/browser`, replacing a previous
-  version (`~/.local/share/bruse` holds everything Bruse keeps, the pairing state included);
+  version (`~/.local/share/bruse` holds everything Bruse keeps, the pairing state included). When the
+  new copy cannot take the place of the previous one, setup puts the previous one back and stops; if
+  that fails too, it keeps it next to the installed path and prints the command that restores it;
+- on a first install, says what agents can reach through Bruse (your user account's permissions and
+  the accounts signed in to your browser profile) and links to [SECURITY.md](SECURITY.md);
 - lists the agent clients it finds (Claude Code, Codex, Cursor, VS Code and Insiders, GitHub Copilot CLI,
   Gemini CLI, Claude Desktop, Devin Desktop, Windsurf) and registers the MCP server as `bruse` with the
   ones you pick; Enter picks all of them. `bruse setup --clients claude-code,codex` picks without
