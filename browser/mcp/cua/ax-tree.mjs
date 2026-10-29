@@ -96,10 +96,12 @@ export function property(node, name) {
 
 const sessionKey = (sessionId) => sessionId ?? "main";
 
-// Records DOM attributes of one document, keyed by session and backend node ID.
-function collectAttributes(domRoot, sessionId, attributes) {
+// Records DOM attributes of one document, keyed by session and backend node ID, and adds the key of every
+// element, also hidden ones, to `domNodes` (see domNodeKey).
+function collectAttributes(domRoot, sessionId, attributes, domNodes, frameKey) {
   const walk = (domNode) => {
     if (domNode.attributes) {
+      domNodes.add(`${frameKey}:${domNode.backendNodeId}`);
       const attrs = {};
       for (let i = 0; i < domNode.attributes.length; i += 2) attrs[domNode.attributes[i]] = domNode.attributes[i + 1];
       attributes.set(`${sessionKey(sessionId)}:${domNode.backendNodeId}`, { id: attrs.id, placeholder: attrs.placeholder, tag: domNode.localName });
@@ -124,7 +126,8 @@ export async function fetchPageTree(cdpFor, outOfProcessFrames = []) {
     main("Accessibility.getFullAXTree"),
   ]);
   const attributes = new Map();
-  collectAttributes(domRoot, null, attributes);
+  const domNodes = new Set();
+  collectAttributes(domRoot, null, attributes, domNodes, "main");
 
   const frames = [];
   const collect = (tree) => {
@@ -154,7 +157,7 @@ export async function fetchPageTree(cdpFor, outOfProcessFrames = []) {
             child("DOM.getDocument", { depth: -1, pierce: true }),
             parent("DOM.getFrameOwner", { frameId: frame.id }),
           ]);
-          collectAttributes(root, remoteFrame.sessionId, attributes);
+          collectAttributes(root, remoteFrame.sessionId, attributes, domNodes, frame.id);
           trees.push({ frameId: frame.id, loaderId: own.frame.loaderId, sessionId: remoteFrame.sessionId, nodes, ownerKey: `${sessionKey(remoteFrame.parentSessionId)}:${backendNodeId}` });
         } else {
           const [{ nodes }, { backendNodeId }] = await Promise.all([main("Accessibility.getFullAXTree", { frameId: frame.id }), main("DOM.getFrameOwner", { frameId: frame.id })]);
@@ -203,6 +206,7 @@ export async function fetchPageTree(cdpFor, outOfProcessFrames = []) {
     sessionFrames: new Map(outOfProcessFrames.map((frame) => [frame.sessionId, frame.frameId])),
     trees,
     attributes,
+    domNodes,
     unavailableFrames: [...new Map(unavailableFrames.filter((f) => !included.has(f.id)).map((f) => [f.id, f.url])).values()],
   };
 }
@@ -347,6 +351,9 @@ export class AXTracker {
     // Elements of earlier snapshots of this document that later ones no longer have, such as a field a
     // page script replaced between two reads; their numbers can only lead to a replacement.
     this.departedByIndex = new Map();
+    this.snapshot = 0;
+    // DOM element key (see domNodeKey) -> number of the first snapshot of this document whose DOM had it.
+    this.firstSnapshotOf = new Map();
   }
 
   indexFor(key, isRoot) {
@@ -367,6 +374,7 @@ export class AXTracker {
       pageHost = new URL(page.url).host;
     } catch {}
     if (!root) return { text: "The page has no accessibility tree yet.", focusedLine: null };
+    const identities = this.recordSnapshot(root, page.domNodes);
 
     const current = new Map();
     const order = [];
@@ -391,7 +399,10 @@ export class AXTracker {
       }
       const index = this.indexFor(element.key, depth === 0);
       const line = `${index} ${describe(element, pageHost)}`;
-      if (element.node.backendDOMNodeId !== undefined) this.backendByIndex.set(index, nodeRefOf(element));
+      if (element.node.backendDOMNodeId !== undefined) {
+        const unique = Boolean(element.node.name?.value) && identities.get(identityOf(element)) === 1;
+        this.backendByIndex.set(index, { ...nodeRefOf(element), snapshot: this.snapshot, unique });
+      }
       const previousSibling = lastChildOf.get(parentKey) ?? null;
       lastChildOf.set(parentKey, element.key);
       current.set(element.key, { index, depth, line, parent: parentKey, previousSibling });
@@ -431,6 +442,26 @@ export class AXTracker {
     return { text, focusedLine };
   }
 
+  // Numbers a new snapshot, notes the DOM elements it is the first to have, and returns how many of its
+  // elements, also those past the rendered lines, share each identity (see identityOf). The DOM and the
+  // accessibility tree are read at the same time, so elements of the tree count as present too.
+  recordSnapshot(root, domNodes) {
+    this.snapshot += 1;
+    const note = (key) => {
+      if (!this.firstSnapshotOf.has(key)) this.firstSnapshotOf.set(key, this.snapshot);
+    };
+    for (const key of domNodes) note(key);
+    const identities = new Map();
+    const visit = (element) => {
+      if (element.node.backendDOMNodeId !== undefined) note(domNodeKey(element));
+      const identity = identityOf(element);
+      if (identity !== null) identities.set(identity, (identities.get(identity) ?? 0) + 1);
+      for (const child of element.children) visit(child);
+    };
+    visit(root);
+    return identities;
+  }
+
   reordered(before, now, current) {
     if (before.previousSibling === now.previousSibling) return false;
     const newNeighbourExisted = now.previousSibling === null || this.previous.has(now.previousSibling);
@@ -448,10 +479,24 @@ export class AXTracker {
     throw new Error(`Element ${index} is not in the latest accessibility state of this tab; call getAXState() again`);
   }
 
-  // Points an element number at the element that replaced its node (see findReplacement).
-  replaceNode(index, ref) {
-    this.backendByIndex.set(index, ref);
+  // Whether a page script added the element after the snapshot `ref` comes from: its DOM node was not in
+  // the document then, not even hidden.
+  addedSince(element, ref) {
+    const first = this.firstSnapshotOf.get(domNodeKey(element));
+    return first === undefined || first > ref.snapshot;
   }
+
+  // Points an element number at the element that replaced its node (see findReplacement). The number
+  // can lead to a further replacement only by an element added after this one took its place.
+  replaceNode(index, ref) {
+    this.backendByIndex.set(index, { ...ref, snapshot: this.snapshot, unique: true });
+  }
+}
+
+// The key of an element's DOM node in fetchPageTree's `domNodes`: backend node IDs are unique within a
+// renderer process, which is the main frame's or that of a cross-origin frame session.
+function domNodeKey(element) {
+  return `${element.frameId ?? "main"}:${element.node.backendDOMNodeId}`;
 }
 
 function nodeRefOf({ node, sessionId, frameId, documentFrameId, loaderId }) {
@@ -463,23 +508,30 @@ function nodeRefOf({ node, sessionId, frameId, documentFrameId, loaderId }) {
 const TEXT_ENTRY_ROLES = new Set(["textbox", "searchbox", "combobox"]);
 const roleFamily = (role) => (TEXT_ENTRY_ROLES.has(role) ? "text entry" : role);
 
-// The element of a simplified tree that took the place of `ref`, whose node a page script removed: the
-// only element in the same document (the same frame, not navigated since) with the same accessible
-// name and role. Null when there is none or more than one, or when the old element had no name to
-// recognize it by.
-export function findReplacement(root, ref) {
-  if (!root || !ref.name) return null;
+// What tells an element apart from the others of its document: the document (its frame and that frame's
+// load), accessible name and role. Elements without a DOM node or a known load have none.
+function identityOf(element) {
+  const { node } = element;
+  if (node.backendDOMNodeId === undefined || !element.loaderId) return null;
+  return JSON.stringify([element.documentFrameId, element.loaderId, node.name?.value ?? "", roleFamily(node.role?.value ?? "")]);
+}
+
+// The element of a simplified tree that took the place of `ref`, whose node a page script removed or
+// hid: the only element in the same document (the same frame, not navigated since) with the same
+// accessible name and role, when `ref` was the only one in its snapshot and `addedSince(element)`
+// says the page added this element after that snapshot. An element that was already in the document
+// then, even hidden, is another element, not a replacement. Null when there is no such element, when
+// the old element had no name to recognize it by, or when either is ambiguous.
+export function findReplacement(root, ref, addedSince) {
+  if (!root || !ref.name || !ref.unique || !ref.loaderId) return null;
+  const identity = JSON.stringify([ref.documentFrameId, ref.loaderId, ref.name, roleFamily(ref.role)]);
   const matches = [];
   const visit = (element) => {
-    const { node } = element;
-    const sameDocument = element.documentFrameId === ref.documentFrameId && element.loaderId === ref.loaderId && Boolean(ref.loaderId);
-    if (node.backendDOMNodeId !== undefined && sameDocument && (node.name?.value ?? "") === ref.name && roleFamily(node.role?.value ?? "") === roleFamily(ref.role)) {
-      matches.push(element);
-    }
+    if (identityOf(element) === identity) matches.push(element);
     for (const child of element.children) visit(child);
   };
   visit(root);
-  return matches.length === 1 ? nodeRefOf(matches[0]) : null;
+  return matches.length === 1 && addedSince(matches[0]) ? nodeRefOf(matches[0]) : null;
 }
 
 function summarizeRanges(numbers) {
