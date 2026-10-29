@@ -45,3 +45,30 @@ Requirements: the Bruse extension and Claude in Chrome in the same Brave profile
 in with an account that allows `--chrome` (an API-key or inference-only token does not). The runner opens
 and closes tabs in the front Brave window and moves downloaded `raport-q3*.csv` files to the Trash, so do
 not use Brave while it runs.
+
+## Codex
+
+`node bench/run.mjs --agent codex --model <model> --effort <effort>` runs the same tasks in `codex exec`
+with Bruse against the browser use bundled with the ChatGPT app (`--tools bruse,openai`). Codex's own
+browser plugin needs the app as its host, so the runner points it at a bridge to that runtime
+(`OPENAI_CUA_BRIDGE`, by default `~/dev/brave-cua-mcp/src/server.mjs`); both tools drive the same Brave.
+Apps, web search and the other REPLs are disabled and the sandbox is read-only. Codex reports tokens, not
+cost; input tokens include cached ones.
+
+Median of the passed runs out of 3, `2026-10-28T23-33-32-618Z` (gpt-6.1-sol, effort low) and
+`2026-10-28T23-49-24-770Z` (gpt-6.1-terra, effort medium):
+
+| Task | Sol: Bruse | Sol: OpenAI | Terra: Bruse | Terra: OpenAI |
+| --- | --- | --- | --- | --- |
+| Header of a large page | 11.4 s, 104k, 3/3 | 17.0 s, 149k, 3/3 | 8.3 s, 103k, 3/3 | 9.4 s, 113k, 3/3 |
+| Sum from a 250-row table | 17.7 s, 152k, 3/3 | 17.7 s, 120k, 3/3 | 12.4 s, 152k, 3/3 | 12.1 s, 115k, 3/3 |
+| Three-step form | 19.8 s, 177k, 3/3 | 32.5 s, 347k, 1/3 | 26.5 s, 347k, 3/3 | 0/3 |
+| Catalog search with pagination | 31.2 s, 323k, 3/3 | 28.9 s, 261k, 3/3 | 17.8 s, 238k, 3/3 | 18.7 s, 215k, 3/3 |
+| QA with the console | 22.0 s, 177k, 3/3 | 34.1 s, 358k, 3/3 | 23.0 s, 316k, 3/3 | 25.0 s, 385k, 3/3 |
+| Form in a cross-origin frame | 16.7 s, 113k, 3/3 | 18.1 s, 143k, 3/3 | 10.0 s, 122k, 3/3 | 13.1 s, 142k, 3/3 |
+| Download and read a file | 19.1 s, 156k, 3/3 | 0/3 | 12.6 s, 149k, 2/3 | 0/3 |
+
+The OpenAI tool's failures are its policies, not errors: it stops before accepting the form's terms to
+ask the user again although the prompt gave consent, and its permission check refuses the download. In
+an interactive session the user would answer those prompts. The failed Bruse download run is the model
+answering without calling a tool.
