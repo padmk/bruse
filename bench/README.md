@@ -20,8 +20,14 @@ which Claude Code normally has, to open the downloaded file.
 ```sh
 node bench/run.mjs --reps 5 --capability-reps 3     # all tasks, both tools
 node bench/run.mjs --tasks table,form --reps 3       # a subset
+node bench/run.mjs --suite real --reps 8            # tasks on public websites (tasks-real.mjs)
 node bench/report.mjs bench/results/<timestamp>     # summary; pass several directories to combine runs
 ```
+
+`tasks-real.mjs` holds tasks on public websites: Wikipedia's site search, a GitHub directory listing and
+releases page, the Python documentation's search, a paginated shop (books.toscrape.com) and a
+single-page app (TodoMVC). None needs a password, because Claude in Chrome declines to type one on
+public sites. Every run's conversation goes to `transcripts/` next to `runs.jsonl`.
 
 ## Published results
 

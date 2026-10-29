@@ -12,8 +12,9 @@ accessibility trees with diffs, input by element number, Playwright-style locato
 and downloads. It works in the tabs where you are already signed in, and nothing is written into the
 browser's or the system's configuration.
 
-In [the benchmark against Claude in Chrome](bench/README.md), the same model finished each task 56 to
-87 % faster and 26 to 88 % cheaper with Bruse.
+In [the benchmark against Claude in Chrome](bench/README.md), on seven test pages written for it rather
+than real sites, the same model's median run took 56 to 87 % less time and 26 to 88 % less money with
+Bruse. These results do not show how much faster typical work on real sites is.
 
 ## Requirements
 
@@ -95,15 +96,20 @@ The full API is in [browser/mcp/cua/docs.mjs](browser/mcp/cua/docs.mjs).
 
 ## Security and privacy
 
-- **The agent gets your browser.** Code sent to the `js` tool runs as your user with Node.js
-  privileges and acts in your signed-in tabs. The agent is told to confirm irreversible or
-  outward-facing steps with you, but that is an instruction to the model, not a guarantee.
+- **The agent gets your browser and runs code on your computer.** Code sent to the `js` tool runs as
+  your user with Node.js privileges: it can read and write your files, use the network and start
+  programs, also when the agent client has its own shell turned off. It acts in your signed-in tabs,
+  and page content may try to steer the agent. The agent is told to confirm irreversible or
+  outward-facing steps with you, but that is an instruction to the model, not a guarantee. To keep
+  agents away from your accounts, install the extension in a separate browser profile without
+  important sign-ins.
 - **You can stop it at any moment.** Click the Bruse icon in the toolbar and **Pause agents** (or
   **Cancel** on the browser's "started debugging" bar): the extension detaches from every tab at once
   and refuses agent requests until you resume. Agent tabs stay open, so you can look at what was done.
 - **Page content goes to your model provider.** What the agent reads from a tab (accessibility trees,
   screenshots, page text) is returned to the agent and so reaches the provider of the model it runs on.
-  Bruse itself sends nothing anywhere: the server and the extension talk only over `127.0.0.1`.
+  The server and the extension themselves talk only over `127.0.0.1`; code the agent runs in the `js`
+  tool can still reach the network.
 - **One browser.** The hub talks to one paired extension, in one browser profile, at a time.
 - **Who can drive it.** The hub accepts peer MCP servers only when they prove that they read the token
   in `~/.local/share/bruse/state/hub-token` (mode 0600), so web pages and other users cannot drive it.

@@ -19,8 +19,9 @@ files a tab downloads.
 That information goes to one place: the Bruse MCP server on the same computer, over a connection to
 `127.0.0.1` that only that server can answer (the two authenticate each other). The server passes it to
 the agent that asked for it. The agent is a program you chose, such as Claude Code or Codex, and sends
-what it reads to the AI model provider you use with it, under that provider's terms. Bruse sends nothing
-anywhere else.
+what it reads to the AI model provider you use with it, under that provider's terms. Bruse itself sends
+nothing anywhere else; code the agent chooses to run in Bruse's JavaScript tool runs on your computer with
+your permissions and can reach the network.
 
 ## What is stored
 
