@@ -171,12 +171,16 @@ The full API is in [browser/mcp/cua/docs.mjs](browser/mcp/cua/docs.mjs).
   uploads, downloads and exports use. Technical confirmations cannot tell an irreversible click from any
   other at the input level and would interrupt every step, so the agent is instructed to confirm such
   steps with you instead.
-- **Pages, not the browser.** The extension lets agents open and drive web pages (and blank, data and
-  file pages), not the browser's internal pages or the extension's own pages, where the pause switch
-  and the access settings are. Raw DevTools commands are limited to the domains that act on the page in
-  the tab (`Accessibility`, `Animation`, `CSS`, `DOM`, `DOMSnapshot`, `Emulation`, `Input`, `Log`,
-  `Network`, `Overlay`, `Page`, `Performance`, `Runtime`), without the cookie and cache commands and
-  `Page.addScriptToEvaluateOnNewDocument`. A frame's session works only with the tab it belongs to.
+- **Pages, not the browser.** The extension lets agents open and drive web pages (and data and file
+  pages, `about:blank` and `about:srcdoc`), not the browser's internal pages or the extension's own
+  pages, where the pause switch and the access settings are; other `about:` addresses, which the browser
+  turns into its internal pages, are refused. The extension's storage is open only to its own pages
+  and service worker, not to scripts it runs in web pages. Raw DevTools commands are limited to the
+  domains that act on the page in the tab (`Accessibility`, `Animation`, `CSS`, `DOM`, `DOMSnapshot`,
+  `Emulation`, `Input`, `Log`, `Network`, `Overlay`, `Page`, `Performance`, `Runtime`), without the
+  cookie and cache commands and `Page.addScriptToEvaluateOnNewDocument`, and run JavaScript only in the
+  page's own contexts, never in the isolated worlds where extensions' content scripts run. A frame's
+  session works only with the tab it belongs to.
 - **Who can drive it.** The hub accepts peer MCP servers only when they prove that they read the token
   in `~/.local/share/bruse/state/hub-token` (mode 0600), so web pages and other users cannot drive it.
   The proof works in both directions, with HMAC keyed with the token over fresh nonces, and the token
