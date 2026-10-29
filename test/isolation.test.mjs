@@ -94,6 +94,8 @@ test("an own tab in a user window cannot become the active tab", async () => {
   const { s, ownTab } = await sessionWithTab(url("/page?active-own"));
   await assert.rejects(s.js(`await m.tabs.update(${ownTab.id}, { active: true });`), /holds tabs that are not this session's/);
   await assert.rejects(s.js(`await m.tabs.update(${ownTab.id}, { highlighted: true });`), /holds tabs that are not this session's/);
+  // Unhighlighting the active tab activates another highlighted tab of the window.
+  await assert.rejects(s.js(`await m.tabs.update(${ownTab.id}, { highlighted: false });`), /holds tabs that are not this session's/);
   await s.js(`await m.tabs.update(${ownTab.id}, { muted: true });`);
   const own = await ownWindow(s, url("/page?active-window"));
   await s.js(`await m.tabs.update(${own.tabId}, { active: true });`);
