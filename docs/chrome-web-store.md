@@ -20,8 +20,8 @@ What to enter in the Chrome Web Store Developer Dashboard for Bruse. The package
   > number or with Playwright-style locators, handle dialogs, uploads and downloads, and reach into
   > cross-origin frames. When an agent session ends, its tabs close, except the ones it marked for you.
   >
-  > Bruse itself sends nothing anywhere. The extension talks only to the Bruse program on 127.0.0.1,
-  > and the two authenticate each other, so web pages and other programs cannot drive your browser.
+  > The extension sends nothing anywhere. It talks only to the Bruse program on 127.0.0.1, and the
+  > two authenticate each other, so web pages and other users' programs cannot drive your browser.
   > There are no servers, accounts or analytics. What your agent reads from a page goes to the agent,
   > and from there to the AI model provider you use with it. Click the Bruse icon and choose Pause
   > agents to stop all agent access at once.
