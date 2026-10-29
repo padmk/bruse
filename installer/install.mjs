@@ -52,7 +52,7 @@ export function installFiles({ rename = renameSync } = {}) {
       } catch (restoreError) {
         fail(
           `Could not install the new copy (${error.message}) or put the previous one back (${restoreError.message}). ` +
-            `The previous installation is kept in ${previous}; to restore it, run:\n  mv ${JSON.stringify(previous)} ${JSON.stringify(installed)}`,
+            `The previous installation is kept in ${previous}; to restore it, run:\n  mv ${shellQuote(previous)} ${shellQuote(installed)}`,
         );
       }
       fail(`Could not install the new copy (${error.message}); the previous installation in ${installed} is unchanged.`);
@@ -63,6 +63,9 @@ export function installFiles({ rename = renameSync } = {}) {
   }
   note(installed);
 }
+
+// Single quotes keep the shell from expanding `$` and backquotes in a path.
+const shellQuote = (path) => `'${path.replace(/'/g, "'\\''")}'`;
 
 // Moves a leftover staged copy to the Trash; a failure here must not hide the error that left it.
 function discard(path) {

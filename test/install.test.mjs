@@ -45,5 +45,5 @@ test("a failed restore keeps the backup and says how to restore it", { timeout: 
   assert.equal(backups.length, 1);
   const backup = join(root, backups[0]);
   assert.equal(readFileSync(join(backup, "previous.txt"), "utf8"), "previous");
-  assert.ok(output.includes(`mv ${JSON.stringify(backup)} ${JSON.stringify(installed)}`), output);
+  assert.ok(output.includes(`mv '${backup}' '${installed}'`), output);
 });
