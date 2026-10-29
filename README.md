@@ -131,7 +131,7 @@ The full API is in [browser/mcp/cua/docs.mjs](browser/mcp/cua/docs.mjs).
 - **Agents use their own tabs and the tabs you share.** By default an agent session sees and uses
   only the tabs it opened (and tabs their pages opened from its input), plus the tabs you share: click
   the Bruse icon on a tab and **Share this tab**; **Stop** ends the share and detaches the debugger at
-  once. Your other tabs stay hidden: agents do not see their titles or addresses (only how many there
+  once, and an agent waiting for a download from the tab does not get the file. Your other tabs stay hidden: agents do not see their titles or addresses (only how many there
   are), and cannot read, drive, close or rearrange them, nor the tabs of other agent sessions. The
   extension enforces this for every request, using the session the hub says the request comes from,
   not one the request names. Under **Access** in the popup you can let agents use all tabs instead.

@@ -310,15 +310,26 @@ export function waitForDownload(tabId, timeoutMs, caller) {
       grant: null,
       settle: async (downloadId, state) => {
         clearTimeout(timer);
-        waiters.delete(waiter);
         owners.delete(downloadId);
         finished.delete(downloadId);
-        pairings.delete(downloadId);
-        // The grant made when the download was matched decides, not the state of a tab that may have closed.
-        if (!waiter.grant || waiter.grant.revoked || !waiter.grant.pairing.valid) return reject(new Error("The download's match with this tab was withdrawn or its access revoked"));
-        if (state === "interrupted") return reject(new Error("Download was interrupted"));
-        const [item] = await chrome.downloads.search({ id: downloadId });
-        resolve({ path: item.filename, url: item.finalUrl ?? item.url, mime: item.mime });
+        // The grant made when the download was matched decides, not the state of a tab that may have
+        // closed. The waiter and its pairing stay registered until the result goes out, so that stopping
+        // the share, switching modes or a doubted match while the item is looked up still ends the grant.
+        const granted = () => waiters.has(waiter) && waiter.grant && !waiter.grant.revoked && waiter.grant.pairing.valid;
+        const withdrawn = () => new Error("The download's match with this tab was withdrawn or its access revoked");
+        try {
+          if (!granted()) throw withdrawn();
+          if (state === "interrupted") throw new Error("Download was interrupted");
+          const [item] = await chrome.downloads.search({ id: downloadId });
+          if (!granted()) throw withdrawn();
+          if (!item) throw new Error("The download is no longer in the browser's list of downloads");
+          resolve({ path: item.filename, url: item.finalUrl ?? item.url, mime: item.mime });
+        } catch (error) {
+          reject(error);
+        } finally {
+          waiters.delete(waiter);
+          pairings.delete(downloadId);
+        }
       },
     };
     const timer = setTimeout(() => {

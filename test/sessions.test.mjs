@@ -57,6 +57,23 @@ test("a user tab stays hidden until shared, and binding a shared tab does not tr
   assert.equal(await present(u), true);
 });
 
+test("shares stopped at the same time, also by a closing tab, all end", async () => {
+  const urls = [1, 2, 3].map((n) => url(`/page?share=${n}`));
+  for (const u of urls) await env.browser.cdp.send("Target.createTarget", { url: u });
+  for (const u of urls) await waitPage(u, true);
+  const ids = await env.inPopup(`chrome.tabs.query({}).then((tabs) => ${JSON.stringify(urls)}.map((u) => tabs.find((tab) => tab.url === u).id))`);
+  for (const id of ids) await env.share(id);
+  const shared = () => env.inPopup(`chrome.storage.session.get("sharedTabs").then(({ sharedTabs }) => sharedTabs ?? [])`);
+  assert.deepEqual((await shared()).toSorted(), ids.toSorted());
+  // Two Stop clicks in the popup, while the third tab closes and the service worker ends its share.
+  await env.inPopup(`import("./access.js").then((access) => Promise.all([access.setShared(${ids[0]}, false), access.setShared(${ids[1]}, false), chrome.tabs.remove(${ids[2]})]))`);
+  await waitPage(urls[2], false);
+  await until(async () => (await shared()).length === 0, { timeoutMs: 5000, message: "every share to end" });
+  const s = await env.session();
+  for (const id of ids.slice(0, 2)) await assert.rejects(s.js(`await cua.getTab(${JSON.stringify(String(id))});`), /not shared it/);
+  await s.close();
+});
+
 test("input-created link and popup tabs are reported and closed", async () => {
   const s = await env.session();
   await s.js(`const tab = await cua.createBrowserTab('1', ${JSON.stringify(url("/"))});`);
