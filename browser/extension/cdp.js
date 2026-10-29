@@ -60,6 +60,7 @@ chrome.debugger.onEvent.addListener(({ tabId, sessionId: source }, method, param
     if (params.targetInfo.type === "iframe") {
       session.frames.set(params.targetInfo.targetId, { sessionId: params.sessionId, url: params.targetInfo.url, parentSessionId: source ?? null });
       frameOfSession.set(params.sessionId, params.targetInfo.targetId);
+      tabOfFrameSession.set(params.sessionId, tabId);
       if (frameOfSession.size > MAX_REMEMBERED_FRAME_SESSIONS) frameOfSession.delete(frameOfSession.keys().next().value);
       enableChildSession(tabId, params.sessionId);
     } else if (params.targetInfo.type === "worker") {
@@ -160,6 +161,39 @@ function rawSend(tabId, method, params = {}, sessionId, timeoutMs) {
 const attaching = new Map(); // tabId -> Promise<session> while the first attach is in flight
 
 // Concurrent commands for a tab share one attach.
+// The tab each frame session was attached in.
+const tabOfFrameSession = new Map(); // frame session id -> tab id
+chrome.tabs.onRemoved.addListener((tabId) => {
+  for (const [sessionId, owner] of tabOfFrameSession) if (owner === tabId) tabOfFrameSession.delete(sessionId);
+});
+
+// The tabs the debugger is attached to.
+export function attachedTabIds() {
+  return [...sessions.keys()];
+}
+
+// Whether the agent session behind a command may use the tab now, or, for the extension's own work,
+// whether any session may (see access.js); the service worker sets it. Every command names its caller:
+// { session } for an agent's request, or EXTENSION_WORK (download interception); a missing caller is a
+// programming error, not a fallback. It is
+// asked before the debugger attaches, again once an attach completes, before every command and before
+// each recovery step that changes the page, so a share the user stops or an access setting the user
+// changes while a command, an attach or a recovery is in flight ends it instead of letting it reach the
+// tab.
+let mayDebug = async () => true;
+
+export const EXTENSION_WORK = Object.freeze({ extension: true });
+const NO_ACCESS = "No agent session may use this tab now (the user stopped sharing it or changed the access setting)";
+
+export function setDebugGate(gate) {
+  mayDebug = gate;
+}
+
+async function requireDebugAccess(tabId, caller) {
+  if (caller !== EXTENSION_WORK && !(caller && "session" in caller)) throw new Error("A debugger command was sent without its caller");
+  if (!(await mayDebug(tabId, caller))) throw new Error(NO_ACCESS);
+}
+
 function attach(tabId) {
   const existing = sessions.get(tabId);
   if (existing) {
@@ -172,6 +206,9 @@ function attach(tabId) {
 
 async function attachNow(tabId) {
   if (await isPaused()) throw new Error(PAUSED_ERROR);
+  // An attach is shared by concurrent callers, so it asks whether any session may use the tab; each
+  // caller's own access is checked once it completes (withDebuggerAccess).
+  await requireDebugAccess(tabId, EXTENSION_WORK);
   let reattached = false;
   try {
     await chrome.debugger.attach({ tabId }, PROTOCOL_VERSION);
@@ -187,6 +224,10 @@ async function attachNow(tabId) {
   if (await isPaused()) {
     await detach(tabId);
     throw new Error(PAUSED_ERROR);
+  }
+  if (!(await mayDebug(tabId, EXTENSION_WORK))) {
+    await detach(tabId);
+    throw new Error(NO_ACCESS);
   }
   // After a service worker restart the session is still attached but its state is gone. Turning
   // auto-attach and Runtime off first makes the browser report frames and execution contexts again.
@@ -297,13 +338,16 @@ const FRAME_SESSION_WAIT_MS = 2_000;
 // number of times; the final error says what removal did. The block shows as an error of the attach or
 // of a command, or as a command that found the debugger detached by the browser (it was not run); such a
 // command is sent again once, and then counts as blocked if removal finds such frames in the page.
-async function withDebuggerAccess(tabId, task) {
+async function withDebuggerAccess(tabId, task, caller) {
   const removals = [];
   let resent = false;
   for (;;) {
     let session;
+    await requireDebugAccess(tabId, caller);
     try {
       session = await attach(tabId);
+      // The attach may be shared with other callers and outlast the caller's access.
+      await requireDebugAccess(tabId, caller);
       return await task(session);
     } catch (error) {
       const detached = Boolean(session) && NOT_ATTACHED_ERROR.test(error.message);
@@ -314,6 +358,8 @@ async function withDebuggerAccess(tabId, task) {
         continue;
       }
       if (removals.length >= FOREIGN_FRAME_RETRIES) throw new Error(foreignFrameFailure(error.message, removals));
+      // Removing frames changes the page, so the caller's access is checked again after the failed attempt.
+      await requireDebugAccess(tabId, caller);
       const removal = await removeForeignExtensionFrames(tabId);
       if (detached && !removal.removed) throw error;
       removals.push(removal);
@@ -367,7 +413,12 @@ chrome.tabs.onRemoved.addListener((tabId) => agentInputAt.delete(tabId));
 // Runs a CDP command on a tab, attaching first when needed. When another extension's frame blocks
 // debugger access, the frame is removed and the command retried (see withDebuggerAccess). `timeoutMs`
 // shortens the wait for commands that should be quick, so a stuck page fails them early.
-export async function cdp(tabId, method, params, sessionId, timeoutMs) {
+export async function cdp(tabId, method, params, sessionId, timeoutMs, caller) {
+  // A frame session is used only with the tab it was attached in, so access to one tab never reaches
+  // another. (After the debugger attached anew, currentFrameSession maps an old session to the frame's new one.)
+  if (sessionId && tabOfFrameSession.get(sessionId) !== tabId) {
+    throw new Error("This frame does not belong to the tab; call getAXState() again");
+  }
   if (isPressInput(method, params)) agentInputAt.set(tabId, Date.now());
   // File chooser interception that nobody switches off (the agent's code was stopped) would leave the
   // tab's file inputs dead; it ends on its own after a while.
@@ -381,10 +432,14 @@ export async function cdp(tabId, method, params, sessionId, timeoutMs) {
       }, FILE_CHOOSER_INTERCEPT_MS));
     }
   }
-  return withDebuggerAccess(tabId, async (session) => sendChecked(tabId, session, method, params, await currentFrameSession(tabId, session, sessionId), timeoutMs));
+  return withDebuggerAccess(tabId, async (session) => sendChecked(tabId, session, method, params, await currentFrameSession(tabId, session, sessionId), timeoutMs, caller), caller);
 }
 
-async function sendChecked(tabId, session, method, params, sessionId, timeoutMs) {
+async function sendChecked(tabId, session, method, params, sessionId, timeoutMs, caller) {
+  await requireDebugAccess(tabId, caller);
+  // The session may have been detached while access was checked; withDebuggerAccess then attaches anew,
+  // which asks the gate again.
+  if (sessions.get(tabId) !== session) throw new Error("Debugger is not attached to the tab");
   if (session.dialog && !DIALOG_SAFE_METHODS.has(method) && !method.startsWith("Input.")) {
     throw new Error(`A JavaScript ${session.dialog.type} dialog is open on this tab ("${session.dialog.message}"); handle it with getJsDialog() first`);
   }
@@ -409,12 +464,12 @@ async function sendChecked(tabId, session, method, params, sessionId, timeoutMs)
   }
 }
 
-export function tabState(tabId) {
+export function tabState(tabId, caller) {
   return withDebuggerAccess(tabId, async (session) => {
     const frames = [...session.frames].map(([frameId, frame]) => ({ frameId, ...frame }));
     const quietMs = session.inflight.size ? 0 : Date.now() - (session.networkActivityAt ?? session.attachedAt);
     return { dialog: session.dialog, frames, inflightRequests: session.inflight.size, networkQuietMs: quietMs };
-  });
+  }, caller);
 }
 
 export function consoleLogs(tabId) {

@@ -67,13 +67,83 @@ button:focus-visible {
   outline-offset: 2px;
 }
 
-body.paused button {
+body.paused #toggle {
   background: var(--on);
   color: #06210f;
 }
 
 #hint {
   margin-top: 10px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+details {
+  margin-top: 12px;
+}
+
+summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+#sharing {
+  margin-top: 12px;
+}
+
+#sharing ul {
+  margin: 6px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+#sharing li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+  font-size: 12px;
+}
+
+#sharing li span {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+button.secondary {
+  background: color-mix(in srgb, currentColor 14%, transparent);
+  color: inherit;
+}
+
+button:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+button.link {
+  width: auto;
+  padding: 2px 0;
+  background: none;
+  color: var(--accent);
+}
+
+fieldset {
+  margin: 8px 0 0;
+  padding: 0;
+  border: 0;
+}
+
+legend {
+  padding: 0;
   color: var(--muted);
   font-size: 12px;
 }

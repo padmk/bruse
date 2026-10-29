@@ -11,12 +11,14 @@
     "tabGroups",
     "alarms",
     "storage",
-    "history",
     "downloads",
     "scripting",
     "offscreen",
-    "bookmarks",
     "webNavigation"
+  ],
+  "optional_permissions": [
+    "history",
+    "bookmarks"
   ],
   "background": {
     "service_worker": "service-worker.js",

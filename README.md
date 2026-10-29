@@ -9,8 +9,9 @@ An MCP server gives the agent (Claude Code, Codex or another MCP client) a persi
 with a `cua` object that reads and operates your Chromium browser's tabs in the background, without
 taking focus or moving the cursor. The API follows the shape of Codex's browser computer use: numbered
 accessibility trees with diffs, input by element number, Playwright-style locators, dialogs, uploads
-and downloads. It works in the tabs where you are already signed in, and nothing is written into the
-browser's or the system's configuration.
+and downloads. Its tabs open in your browser profile, where you are already signed in; by default an
+agent uses only the tabs it opens and the tabs you share with it. Nothing is written into the browser's
+or the system's configuration.
 
 In [the benchmark against Claude in Chrome](bench/README.md), on seven test pages written for it rather
 than real sites, the same model's median run took 56 to 87 % less time and 26 to 88 % less money with
@@ -100,9 +101,10 @@ The full API is in [browser/mcp/cua/docs.mjs](browser/mcp/cua/docs.mjs).
   your user with Node.js privileges: it can read and write your files, use the network and start
   programs, also when the agent client has its own shell turned off. It acts in your signed-in tabs,
   and page content may try to steer the agent. The agent is told to confirm irreversible or
-  outward-facing steps with you, but that is an instruction to the model, not a guarantee. To keep
-  agents away from your accounts, install the extension in a separate browser profile without
-  important sign-ins.
+  outward-facing steps with you, but that is an instruction to the model, not a guarantee. Tabs the
+  agent opens are in your browser profile, where you are signed in, so a page can still steer the agent
+  within the sites it visits. To keep agents away from your accounts altogether, install the extension
+  in a separate browser profile without important sign-ins.
 - **You can stop it at any moment.** Click the Bruse icon in the toolbar and **Pause agents** (or
   **Cancel** on the browser's "started debugging" bar): the extension detaches from every tab at once
   and refuses agent requests until you resume. Agent tabs stay open, so you can look at what was done.
@@ -111,6 +113,20 @@ The full API is in [browser/mcp/cua/docs.mjs](browser/mcp/cua/docs.mjs).
   The server and the extension themselves talk only over `127.0.0.1`; code the agent runs in the `js`
   tool can still reach the network.
 - **One browser.** The hub talks to one paired extension, in one browser profile, at a time.
+- **Agents use their own tabs and the tabs you share.** By default an agent session sees and uses
+  only the tabs it opened (and tabs their pages opened from its input), plus the tabs you share: click
+  the Bruse icon on a tab and **Share this tab**; **Stop** ends the share and detaches the debugger at
+  once. Your other tabs stay hidden: agents do not see their titles or addresses (only how many there
+  are), and cannot read, drive, close or rearrange them, nor the tabs of other agent sessions. The
+  extension enforces this for every request, using the session the hub says the request comes from,
+  not one the request names. Under **Access** in the popup you can let agents use all tabs instead.
+  Shares end when the browser restarts.
+- **Pages, not the browser.** The extension lets agents open and drive web pages (and blank, data and
+  file pages), not the browser's internal pages or the extension's own pages, where the pause switch
+  and the access settings are. Raw DevTools commands are limited to the domains that act on the page in
+  the tab (`Accessibility`, `Animation`, `CSS`, `DOM`, `DOMSnapshot`, `Emulation`, `Input`, `Log`,
+  `Network`, `Overlay`, `Page`, `Performance`, `Runtime`), without the cookie and cache commands and
+  `Page.addScriptToEvaluateOnNewDocument`. A frame's session works only with the tab it belongs to.
 - **Who can drive it.** The hub accepts peer MCP servers only when they prove that they read the token
   in `~/.local/share/bruse/state/hub-token` (mode 0600), so web pages and other users cannot drive it.
   The proof works in both directions, with HMAC keyed with the token over fresh nonces, and the token
@@ -143,7 +159,7 @@ The extension asks for these permissions:
 | `tabs`, `tabGroups` | Listing tabs, opening agent tabs in the background and grouping them |
 | `webNavigation` | Telling which tab a page opened, so new tabs and downloads go to the right session |
 | `downloads` | Reporting the files a tab downloaded |
-| `history`, `bookmarks` | `browser.history()` and the `management` capability, when the agent is asked to use them |
+| `history`, `bookmarks` (optional) | `browser.history()` and bookmarks in the `management` capability; off until you turn them on under **Access** in the popup, and the browser asks you to confirm |
 | `storage` | The pairing secret and which session owns which tab |
 | `offscreen`, `alarms` | Keeping the connection to the local hub open |
 

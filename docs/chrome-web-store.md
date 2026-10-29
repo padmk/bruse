@@ -20,6 +20,9 @@ What to enter in the Chrome Web Store Developer Dashboard for Bruse. The package
   > number or with Playwright-style locators, handle dialogs, uploads and downloads, and reach into
   > cross-origin frames. When an agent session ends, its tabs close, except the ones it marked for you.
   >
+  > By default an agent sees and uses only the tabs it opens and the tabs you share with it: click the
+  > Bruse icon and choose Share this tab. Your other tabs stay hidden from agents.
+  >
   > The extension sends nothing anywhere. It talks only to the Bruse program on 127.0.0.1, and the
   > two authenticate each other, so web pages and other users' programs cannot drive your browser.
   > There are no servers, accounts or analytics. What your agent reads from a page goes to the agent,
@@ -52,8 +55,10 @@ What to enter in the Chrome Web Store Developer Dashboard for Bruse. The package
   - `webNavigation`: Tells which tab a page opened, so new tabs and downloads go to the right agent
     session.
   - `downloads`: Reports the file a tab downloaded to the agent that started the download.
-  - `history`: Lets the agent find a page the user visited, when the user asks for it.
-  - `bookmarks`: Lets the agent organize bookmarks, when the user asks for it.
+  - `history` (optional, off until the user turns it on in the popup): Lets the agent find a page the
+    user visited, when the user asks for it.
+  - `bookmarks` (optional, off until the user turns it on in the popup): Lets the agent organize
+    bookmarks, when the user asks for it.
   - `storage`: Stores the pairing secret, which session owns which tab, and whether the user paused
     agents.
   - `offscreen`: Keeps the connection to the local Bruse program open (a service worker would be

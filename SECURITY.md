@@ -19,7 +19,9 @@ Bruse gives the agents you run full control of your browser: the code an agent s
 - a process of another account that listens on the hub port (for example after the hub exited) receiving the hub token or an MCP server's requests, or answering them;
 - the hub crashing or misbehaving on input from an unauthenticated connection;
 - pairing state, hub token or exported files readable by other accounts;
-- tabs the user did not give the agent (not opened by its session and not bound with `getTab`) being closed or changed by session cleanup;
+- an agent session seeing the title or address of, reading, driving, closing or rearranging a tab that it did not open and the user did not share (in the default "agent tabs" mode), including through the management capability, frame sessions or events, or by naming another session;
+- a debugger staying attached to a tab after the user stopped sharing it;
+- tabs the user did not give the agent (not opened by its session and not shared or bound with `getTab`) being closed or changed by session cleanup;
 - the release artifacts, the installer and the Homebrew formula.
 
 Pairing trusts the first connection by design: an extension without a pairing secret gives its new secret to whatever listens on the port, and a hub without `extension-secret` accepts the first extension that pairs. See [Security in the README](README.md#security-and-privacy).
