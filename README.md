@@ -13,15 +13,23 @@ and downloads. Its tabs open in your browser profile, where you are already sign
 agent uses only the tabs it opens and the tabs you share with it. Nothing is written into the browser's
 or the system's configuration.
 
-In [the benchmark against Claude in Chrome](bench/README.md), on seven test pages written for it rather
-than real sites, the same model's median run took 56 to 87 % less time and 26 to 88 % less money with
-Bruse. These results do not show how much faster typical work on real sites is.
+Bruse is one browser tool for every MCP client you use, including ones without a browser tool of their
+own, and it works in background tabs of your everyday browser profile. An agent can batch many steps
+into one call, which saves turns. If your client's own browser tool already does what you need, a
+second tool may not add much.
+
+How Bruse compares with Claude in Chrome on real websites has not been measured for the current code
+yet. Earlier results, on test pages written for [the benchmark](bench/README.md), are kept there for
+reference; they do not show how fast typical work on real sites is.
 
 ## Requirements
 
 - macOS (Linux works too, but is tested less), with Node.js 22 or newer
 - A Chromium browser: Brave, Chrome, Edge, Chromium or Vivaldi
 - An MCP client; setup registers the server with the supported ones you pick (see [Install](#install))
+- A browser that allows extensions loaded in Developer mode and their `debugger` permission. A browser
+  your organization manages may block either by policy; then an administrator has to allow the
+  extension.
 
 ## Install
 
@@ -62,6 +70,10 @@ A zip downloaded from the internet is quarantined: macOS refuses to open the uns
 `Install Bruse.command` until you allow it in System Settings › Privacy & Security (**Open Anyway**).
 
 Start a new agent session afterwards: MCP servers load when a session starts.
+
+Bruse does not update itself. To update, get the new version (`brew upgrade bruse`, or a newer zip or
+checkout) and run `bruse setup`, which replaces the installed copy and reloads the extension; `bruse
+doctor` tells you when the browser still runs older extension code.
 
 ## Commands
 
@@ -121,7 +133,26 @@ The full API is in [browser/mcp/cua/docs.mjs](browser/mcp/cua/docs.mjs).
   are), and cannot read, drive, close or rearrange them, nor the tabs of other agent sessions. The
   extension enforces this for every request, using the session the hub says the request comes from,
   not one the request names. Under **Access** in the popup you can let agents use all tabs instead.
-  Shares end when the browser restarts.
+  Shares end when the browser restarts. A shared tab is shared with every agent session, not with one.
+- **Tab isolation is not account isolation, and not a sandbox.** An agent can still open any site in a
+  tab of its own, in your profile, where you are signed in; only a separate browser profile keeps your
+  accounts out of reach. Isolation limits what an agent does through Bruse's browser API; code in the
+  `js` tool runs as your user and could read the hub token like any program of yours, so it does not
+  stop an agent that sets out to get around it.
+- **Why there is no list of allowed sites.** Such a list would keep an agent that a page steered, or
+  that simply erred, out of signed-in sites the task never needed. A first version, with a confirmation
+  the agent could click itself, was dropped. Enforced on every navigation of agent tabs, a list would
+  hold better now that agents cannot open the extension's pages and raw DevTools commands are limited,
+  but it would still not stop an agent from sending what it read elsewhere, and every task would need
+  its sign-in redirects, payment pages and other domains allowed, a list users would widen until it
+  limits little. A browser profile without important sign-ins protects those accounts fully and needs no
+  list, so that is the recommendation; a list stays an option if users ask for one.
+- **Why `fetch` stays in the REPL, and confirmations stay instructions.** Turning off `fetch` would not
+  stop the network, since Node.js modules and processes reach it too; a real limit means running the
+  REPL as a separate process with restricted permissions, which would also cut off the files that
+  uploads, downloads and exports use. Technical confirmations cannot tell an irreversible click from any
+  other at the input level and would interrupt every step, so the agent is instructed to confirm such
+  steps with you instead.
 - **Pages, not the browser.** The extension lets agents open and drive web pages (and blank, data and
   file pages), not the browser's internal pages or the extension's own pages, where the pause switch
   and the access settings are. Raw DevTools commands are limited to the domains that act on the page in
@@ -139,12 +170,20 @@ The full API is in [browser/mcp/cua/docs.mjs](browser/mcp/cua/docs.mjs).
   every later connection proves that secret in both directions with HMAC over fresh nonces. The
   extension executes requests only on an authenticated connection, so a process posing as the hub on
   the port gets nothing, and one posing as the extension cannot replace it.
-- **Pairing trusts the first connection.** While the extension has no secret (on first install or
-  after a reinstall) it offers its new secret to whatever listens on the port, and while the hub has
-  no `extension-secret` it accepts the first extension that pairs. Pair while the hub is your own
-  session. After reinstalling the extension, move `extension-secret` to the Trash so that the new
-  extension can pair; it connects again within a second.
+- **Pairing trusts the first connection.** While the extension has no secret (on first install or after
+  a reinstall) it offers its new secret to whatever listens on the port, and while the hub has no
+  `extension-secret` it accepts the first extension that pairs. A program already running on the
+  computer, also of another user, could take either side in that moment: as the hub it would drive agent
+  tabs in your profile, as the extension it would receive agent requests and could answer them with
+  made-up pages. `bruse setup` checks that a hub that knows the token holds the port before you load the
+  extension, and stops otherwise; the remaining window is a program that pairs as the extension while
+  setup waits, or an extension loaded without setup while no hub runs. Pairing through the browser's
+  native messaging would close it; it is the intended fix and not built into a release yet. After
+  reinstalling the extension, move `extension-secret` to the Trash so that the new extension can pair;
+  it connects again within a second.
 
+- **No independent audit yet.** No external security audit of Bruse has been published. The changes
+  are reviewed by models and covered by end-to-end tests, which do not replace one.
 - **Nothing third-party.** The server and the extension use only Node.js built-ins and browser APIs:
   no npm dependencies, no code downloaded at run time, no telemetry. The extension's only network connection is the
   WebSocket to `127.0.0.1`; requests to websites are made by the pages themselves, for example when
@@ -228,6 +267,11 @@ Report vulnerabilities as described in [SECURITY.md](SECURITY.md).
   in the page may take up to 30 s.
 - The `management` capability organizes tabs but cannot navigate them; pages are opened and driven
   through tab objects.
+- Agent tabs are kept from being discarded when the browser frees memory, since a discarded tab loses
+  its page and what the agent typed. A tab that is discarded anyway (one the user shares, or by hand)
+  fails page calls with a message to reload it.
+- Without a connected extension, every browser call waits 8 s and fails, and agents are told to stop
+  and tell the user rather than reach the pages another way; `bruse doctor` shows what is missing.
 - The first call of a new session connects within about 0.5 s. While no session runs, the offscreen
   document retries twice a second; the browser logs the refused connections on the extension's card
   under **Errors**, which is expected.
