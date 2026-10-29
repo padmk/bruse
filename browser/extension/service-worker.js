@@ -140,6 +140,12 @@ const handlers = {
   },
 };
 
+// Methods that need the tab's loaded page, which a tab the browser discarded to free memory no longer
+// has; tabs.navigate and tabs.history load a new one. Checked after access, so that only a tab the
+// session may use is reported as discarded.
+const LOADED_PAGE_METHODS = new Set(["cdp", "page.state", "page.console", "page.network", "downloads.wait"]);
+const DISCARDED = "The browser discarded this tab to free memory, so its page and anything typed into it are gone. Load it again with tab.reload() or tab.goto(url), then read the state.";
+
 // Methods that act on the tab in params.tabId.
 const TAB_METHODS = new Set(["tabs.get", "tabs.navigate", "tabs.history", "tabs.waitForLoad", "tabs.close", "tabs.mark", "cdp", "page.state", "page.console", "page.network", "downloads.wait"]);
 
@@ -333,6 +339,7 @@ async function handle(gen, text) {
     if (!SESSIONLESS_METHODS.has(method) && !("session" in message)) throw new Error(OUTDATED_HUB);
     await checkRequest(method, params ?? {});
     if (TAB_METHODS.has(method)) await requireAccess(session, params?.tabId);
+    if (LOADED_PAGE_METHODS.has(method) && (await chrome.tabs.get(params.tabId).catch(() => null))?.discarded) throw new Error(DISCARDED);
     return JSON.stringify({ id, result: (await handler(params ?? {}, session)) ?? null });
   } catch (error) {
     return JSON.stringify({ id, error: error?.message ?? String(error) });

@@ -167,7 +167,8 @@ Report vulnerabilities as described in [SECURITY.md](SECURITY.md).
 
 ## Behavior
 
-- Agent tabs open without focus in the window's "Claude" tab group, which all agent sessions share;
+- Agent tabs open without focus in the window's "Claude" tab group, which all agent sessions share and
+  which starts collapsed, so that many sessions' tabs take one chip in the tab strip;
   the extension remembers which session owns each tab, also across extension reloads. When a session
   ends, its unmarked tabs close, including tabs its pages opened in response to the agent's input: the
   page reported the opening (`Page.windowOpen`) right after the agent's input, and the browser
