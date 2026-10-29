@@ -182,8 +182,8 @@ The full API is in [browser/mcp/cua/docs.mjs](browser/mcp/cua/docs.mjs).
   The proof works in both directions, with HMAC keyed with the token over fresh nonces, and the token
   itself is never sent: a server sends no request until the hub has proved the token too, so a process
   of another user that takes the port after the hub exits gets neither the token nor any request.
-  Until a connection has authenticated, the hub takes only small messages from it and only a few such
-  connections at a time. Hub and extension authenticate each other: on first connection the extension pairs by sending a
+  Until a connection has authenticated, the hub takes only small messages from it, closes it when it
+  leaves the hub's replies unread, and keeps only a few such connections at a time. Hub and extension authenticate each other: on first connection the extension pairs by sending a
   random secret, which the hub stores in `~/.local/share/bruse/state/extension-secret` (0600);
   every later connection proves that secret in both directions with HMAC over fresh nonces. The
   extension executes requests only on an authenticated connection, so a process posing as the hub on
