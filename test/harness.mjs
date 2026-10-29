@@ -342,6 +342,30 @@ export async function startEnvironment(options = {}) {
       sessions.push(session);
       return session;
     },
+    // Runs an expression in the extension's popup page, opened as a tab, the way the user's clicks there
+    // change settings. The expression may await and import the extension's modules.
+    async inPopup(expression) {
+      const { cdp, extensionId } = browser;
+      const { targetId } = await cdp.send("Target.createTarget", { url: `chrome-extension://${extensionId}/popup.html` });
+      try {
+        const { sessionId } = await cdp.send("Target.attachToTarget", { targetId, flatten: true });
+        const evaluate = (code) => cdp.send("Runtime.evaluate", { expression: code, returnByValue: true, awaitPromise: true }, sessionId);
+        await until(async () => (await evaluate("document.readyState")).result.value === "complete", { message: "popup to load" });
+        const { result, exceptionDetails } = await evaluate(`(async () => (${expression}))()`);
+        if (exceptionDetails) throw new Error(exceptionDetails.exception?.description ?? exceptionDetails.text);
+        return result.value;
+      } finally {
+        await cdp.send("Target.closeTarget", { targetId });
+      }
+    },
+    // Shares a tab with agents, as "Share this tab" in the popup does.
+    share(tabId, shared = true) {
+      return this.inPopup(`import("./access.js").then((access) => access.setShared(${Number(tabId)}, ${shared}))`);
+    },
+    // Switches between "agent-tabs" (the default) and "all-tabs".
+    setAccessMode(mode) {
+      return this.inPopup(`import("./access.js").then((access) => access.setAccessMode(${JSON.stringify(mode)}))`);
+    },
     async close() {
       await Promise.all(sessions.map((session) => session.close().catch(() => session.kill())));
       await browser.close();

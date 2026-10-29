@@ -48,10 +48,10 @@ test("a menu that keeps coming back fails with what removal did", async () => {
 });
 
 test("a frame command after the debugger attached anew goes to the frame's new session", async () => {
-  await session.js(`var tab = await cua.createBrowserTab('1', ${JSON.stringify(`${site.origin}/`)});`);
-  const tabId = Number(await json("tab.id"));
   const client = await hubClient(env.port, env.stateDir);
   try {
+    // The client works in a tab of its own session.
+    const { id: tabId } = await client.call("tabs.create", { url: `${site.origin}/` });
     const before = await client.call("page.state", { tabId });
     const frame = before.frames.find((f) => f.url.startsWith(frameSite.origin));
     assert.ok(frame, JSON.stringify(before.frames));
@@ -62,7 +62,8 @@ test("a frame command after the debugger attached anew goes to the frame's new s
     assert.equal(result.value, "Frame");
     const after = await client.call("page.state", { tabId });
     assert.notEqual(after.frames.find((f) => f.frameId === frame.frameId)?.sessionId, frame.sessionId, "the debugger attached anew");
-    assert.equal(await json(menuCount), 0);
+    const menus = await client.call("cdp", { tabId, method: "Runtime.evaluate", params: { expression: "document.querySelector('#shadow-host').shadowRoot.querySelectorAll('com-1password-menu').length", returnByValue: true } });
+    assert.equal(menus.result.value, 0);
   } finally {
     client.close();
   }

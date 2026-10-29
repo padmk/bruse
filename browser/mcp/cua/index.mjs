@@ -119,7 +119,7 @@ export function createCua() {
   }
 
   async function browserInfo() {
-    const { name, version, id: extensionId } = await call("browser.info");
+    const { name, version, id: extensionId, access } = await call("browser.info");
     // After an update, a browser that still runs the previous extension, or an agent session started
     // before it, pairs two versions; the agent can tell the user how to bring them together.
     if (version !== VERSION && !versionWarned) {
@@ -130,7 +130,14 @@ export function createCua() {
           : "Ask the user to run `bruse setup` (or the installer again) and start a new agent session; until then some calls may fail.";
       emitText(`Note: the ${PRODUCT_NAME} extension in the browser is ${version ? `version ${version}` : "an older version"}, but this MCP server is ${VERSION}. ${remedy}`);
     }
-    return { id: BROWSER_ID, name, family: name.toLowerCase(), type: "extension" };
+    return { id: BROWSER_ID, name, family: name.toLowerCase(), type: "extension", hiddenTabs: access?.hiddenTabs ?? 0 };
+  }
+
+  // Tabs that the user has not shared stay out of the lists; the agent learns how many there are and
+  // how to ask for one.
+  function hiddenTabsNote(count) {
+    if (!count) return null;
+    return `${count} other tab${count === 1 ? " is" : "s are"} open in the browser but not shared with agents. To work in one, ask the user to switch to it and click "Share this tab" in the ${PRODUCT_NAME} toolbar popup.`;
   }
 
   let versionWarned = false;
@@ -156,7 +163,10 @@ export function createCua() {
     let info;
     if (typeof reference === "object" && reference?.url) {
       const matches = (await call("tabs.list")).filter((tab) => tab.url === reference.url);
-      if (matches.length !== 1) throw new Error(`Expected exactly one tab with URL ${reference.url}, found ${matches.length}`);
+      if (matches.length !== 1) {
+        const note = matches.length ? null : hiddenTabsNote((await browserInfo()).hiddenTabs);
+        throw new Error(`Expected exactly one tab with URL ${reference.url}, found ${matches.length}.${note ? ` ${note}` : ""}`);
+      }
       [info] = matches;
     } else {
       const id = Number(typeof reference === "object" ? (reference.id ?? reference.mention) : reference);
@@ -224,6 +234,8 @@ export function createCua() {
       if (emit) {
         showDocumentation();
         emitText(JSON.stringify(state));
+        const note = hiddenTabsNote(browser.hiddenTabs);
+        if (note) emitText(note);
       }
       return state;
     },
@@ -238,7 +250,11 @@ export function createCua() {
     async listTabs({ browser, emit = true } = {}) {
       checkBrowser(browser);
       const result = await listTabs();
-      if (emit) emitText(JSON.stringify(result));
+      if (emit) {
+        emitText(JSON.stringify(result));
+        const note = hiddenTabsNote((await browserInfo()).hiddenTabs);
+        if (note) emitText(note);
+      }
       return result;
     },
     async getBrowser({ id } = {}) {

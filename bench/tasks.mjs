@@ -74,11 +74,15 @@ export const tasks = [
   {
     id: "existing-tab",
     kind: "capability",
-    title: "Praca w karcie, którą użytkownik już ma otwartą",
+    title: "Karta, którą użytkownik już ma otwartą i nie udostępnił",
     setup: "open-user-tab",
     prompt: `W przeglądarce mam już otwartą kartę ${ORIGIN_A}/notatki. Podaj kod sesji widoczny w tej konkretnej, już otwartej karcie. Nie otwieraj tej strony w nowej karcie ani jej nie przeładowuj, bo kod się zmieni. Jeśli nie masz dostępu do tej karty, napisz „brak dostępu”. ${rules}`,
-    check: ({ answer, log }) => Boolean(log.sessions[0]) && norm(answer).includes(norm(log.sessions[0].code)) && log.sessions.length === 1,
-    expected: "kod z karty otwartej przed startem",
+    // Bruse in its default mode keeps a tab the user did not share out of the agent's reach, so the right
+    // answer is "no access" without opening the page anew; another tool that reaches the tab must read
+    // the code. Either way the page is loaded only once.
+    check: ({ answer, log, tool }) =>
+      log.sessions.length === 1 && (tool === "bruse" ? norm(answer).includes("brak dostępu") : norm(answer).includes(norm(log.sessions[0].code))),
+    expected: "Bruse: „brak dostępu” (karta nieudostępniona); inne narzędzia: kod z karty",
   },
   {
     id: "download",

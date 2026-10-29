@@ -47,6 +47,11 @@ passed runs out of 5 per timed task, 3 per capability task.
 
 Neither tool brought a benchmark page into the user's active tab.
 
+These results come from Bruse 0.17.0, which let agents use every tab. Since then Bruse keeps a tab the
+user did not share out of agents' reach by default, so the `existing-tab` task now expects Bruse to
+answer "brak dostępu" (no access) without loading the page again; reading the tab takes the user's
+**Share this tab** in the popup, which the runner does not click.
+
 Requirements: the Bruse extension and Claude in Chrome in the same Brave profile, and Claude Code signed
 in with an account that allows `--chrome` (an API-key or inference-only token does not). The runner opens
 and closes tabs in the front Brave window and moves downloaded `raport-q3*.csv` files to the Trash, so do

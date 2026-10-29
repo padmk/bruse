@@ -11,10 +11,13 @@ from it.
 
 ## What the extension accesses, and where it goes
 
-When an agent you run asks for it, the extension reads and operates your tabs: the pages' content and
+When an agent you run asks for it, the extension reads and operates tabs: the pages' content and
 accessibility tree, screenshots, console messages and network requests of tabs the agent works in,
-your list of tabs, and, only when the agent asks for them, your browsing history, bookmarks and the
-files a tab downloads.
+and, only when the agent asks for them, the files a tab downloads and your browsing history and
+bookmarks (these two only after you turn them on in the extension's popup). By default those are only
+the tabs the agent opened and the tabs you share with it in the popup; of your other tabs, an agent
+learns only how many there are. If you let agents use all tabs (under Access in the popup), they also
+see the list of your tabs and can work in any of them.
 
 That information goes to one place: the Bruse MCP server on the same computer, over a connection to
 `127.0.0.1` that only that server can answer (the two authenticate each other). The server passes it to

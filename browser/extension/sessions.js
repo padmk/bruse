@@ -3,22 +3,15 @@
 // chrome.storage.local so it survives service worker restarts and extension reloads, while MCP servers
 // keep their sessions; tab and group IDs change when the browser starts, so it starts empty then.
 
-import { onCdpEvent, sinceAgentInput } from "./cdp.js";
+import { loadAgentState as load, saveAgentState as save } from "./agent-state.js";
+import { anyoneMayAccess } from "./access.js";
+import { detach, onCdpEvent, sinceAgentInput } from "./cdp.js";
 import { AGENT_INPUT_WINDOW_MS } from "./shared.js";
 
 const GROUP_TITLE = "Claude";
 const GROUP_COLOR = "orange";
 // Marked tabs survive session cleanup: deliverables are results for the user, handoffs wait for later work.
 const KEPT_MARKS = new Set(["deliverable", "handoff"]);
-
-async function load() {
-  const { agentState } = await chrome.storage.local.get("agentState");
-  return { tabs: agentState?.tabs ?? {}, windowGroups: agentState?.windowGroups ?? {} };
-}
-
-async function save(state) {
-  await chrome.storage.local.set({ agentState: state });
-}
 
 // Read-modify-write operations on the state run one at a time so concurrent requests do not
 // overwrite each other's changes.
@@ -53,12 +46,14 @@ const agentAncestorsOf = new Map(); // tab id -> tabs whose agent actions led to
 // looking at (the active tab of the focused window, where a click may be the user's). Other tabs
 // opened from agent pages stay the user's.
 const WINDOW_OPEN_MATCH_MS = 2_000;
-const pageOpens = new Map(); // tab id -> [{ url, at }] openings its page reported
+const pageOpens = new Map(); // tab id -> [{ url, at, sessionId }] openings its page reported
 
+// The session that caused an opening is fixed when the page reports it, from the input just before; an
+// input that arrives while the browser's report is processed cannot change it.
 onCdpEvent((tabId, method, params) => {
   if (method !== "Page.windowOpen") return;
   const list = (pageOpens.get(tabId) ?? []).filter((open) => Date.now() - open.at < WINDOW_OPEN_MATCH_MS);
-  list.push({ url: normalizedUrl(params.url), at: Date.now() });
+  list.push({ url: normalizedUrl(params.url), at: Date.now(), sessionId: openingSession(tabId) });
   pageOpens.set(tabId, list);
 });
 
@@ -71,14 +66,33 @@ function normalizedUrl(url) {
   }
 }
 
+// The page's report of an opening of `url`, { url, at, sessionId }, or null.
 function takePageOpen(tabId, url) {
   const list = pageOpens.get(tabId) ?? [];
   const index = list.findIndex((open) => open.url === normalizedUrl(url) && Date.now() - open.at < WINDOW_OPEN_MATCH_MS);
-  return index >= 0 && list.splice(index, 1).length > 0;
+  return index >= 0 ? list.splice(index, 1)[0] : null;
 }
 
 export function onTabOpened(listener) {
   openedListeners.add(listener);
+}
+
+// When each session last pressed a button or key in each tab, so that a tab opened from an agent's input
+// goes to the session that caused it. One entry per session, so no number of inputs from one session
+// hides another's.
+const inputSessions = new Map(); // tab id -> Map session id -> time of its latest press
+
+export function noteAgentInput(tabId, sessionId) {
+  if (!sessionId) return;
+  if (!inputSessions.has(tabId)) inputSessions.set(tabId, new Map());
+  inputSessions.get(tabId).set(sessionId, Date.now());
+}
+
+// The one session that pressed input in the tab within the input window, or null when none or several
+// did: an opening that two sessions may have caused belongs to neither.
+export function openingSession(tabId) {
+  const recent = [...(inputSessions.get(tabId) ?? new Map())].filter(([, at]) => Date.now() - at < AGENT_INPUT_WINDOW_MS);
+  return recent.length === 1 ? recent[0][0] : null;
 }
 
 // The tabs whose agent-caused openings led to this tab, nearest first; empty for a tab the user opened.
@@ -89,9 +103,19 @@ export function agentOpenerChain(tabId) {
 // A tab that turned into a download closes at once; its download is matched to it a moment later (see
 // downloads.js), so its openers stay known for a while. Tab IDs are not reused.
 const REMOVED_TAB_MEMORY_MS = 10_000;
+// The session each tab opened from an agent's input was given, kept for a while after the tab closes:
+// a popup that turns into a download closes before its download is matched (see downloads.js).
+const openedFor = new Map(); // tab id -> session id
+
+export function rememberedOwner(tabId) {
+  return openedFor.get(tabId) ?? null;
+}
+
 chrome.tabs.onRemoved.addListener((tabId) => {
   setTimeout(() => agentAncestorsOf.delete(tabId), REMOVED_TAB_MEMORY_MS);
+  setTimeout(() => openedFor.delete(tabId), REMOVED_TAB_MEMORY_MS);
   pageOpens.delete(tabId);
+  inputSessions.delete(tabId);
 });
 
 chrome.webNavigation.onCreatedNavigationTarget.addListener(async ({ sourceTabId, tabId, url }) => {
@@ -104,18 +128,23 @@ chrome.webNavigation.onCreatedNavigationTarget.addListener(async ({ sourceTabId,
     await new Promise((resolve) => setTimeout(resolve, 300));
     reported = takePageOpen(sourceTabId, url);
   }
-  const byAgent = recentInput && reported;
+  const byAgent = recentInput && Boolean(reported);
   if (byAgent) agentAncestorsOf.set(tabId, [sourceTabId, ...agentOpenerChain(sourceTabId)].slice(0, 8));
+  // The new tab gets its owner before listeners hear of it, so the report goes to that session.
+  const owned = byAgent
+    ? await serialized(async () => {
+        const state = await load();
+        // The session recorded with the page's report; an opening it could not attribute has no owner.
+        const sessionId = reported.sessionId;
+        if (!sessionId || state.tabs[tabId]) return null;
+        state.tabs[tabId] = { sessionId, mark: null };
+        openedFor.set(tabId, sessionId);
+        await save(state);
+        return { sessionId, state };
+      })
+    : null;
   for (const listener of openedListeners) listener(sourceTabId, tabId, url, byAgent);
-  if (!byAgent) return;
-  serialized(async () => {
-    const state = await load();
-    const opener = state.tabs[sourceTabId];
-    if (!opener?.sessionId || state.tabs[tabId]) return;
-    state.tabs[tabId] = { sessionId: opener.sessionId, mark: null };
-    await save(state);
-    await keepInBackground(tabId, sourceTabId, opener.sessionId, state);
-  });
+  if (owned) serialized(() => keepInBackground(tabId, sourceTabId, owned.sessionId, owned.state));
 });
 
 const KEEP_BACKGROUND_CHECKS = 7;
@@ -233,6 +262,7 @@ export async function agentTabs() {
   return (await load()).tabs;
 }
 
+
 // Closes the session's unmarked tabs (those it opened and those its pages opened) and forgets the
 // session. Its marked tabs leave the agent group: they are the user's now. When no live session has a
 // tab in a window's group anymore, the remaining tabs (ones the user moved there or opened from an agent
@@ -259,6 +289,9 @@ async function endSessionNow(sessionId) {
   // One by one, so a tab that is already gone does not keep the others open.
   await Promise.all(toClose.map((tabId) => chrome.tabs.remove(tabId).catch(() => {})));
   await Promise.all(kept.map((tabId) => chrome.tabs.ungroup(tabId).catch(() => {})));
+  // A kept tab has no owner now: unless the user shares it, no session may use it, so the debugger
+  // leaves it, also while a dialog holds it.
+  for (const tabId of kept) if (!(await anyoneMayAccess(tabId))) await detach(tabId);
   const live = new Set(Object.entries(state.tabs).filter(([, entry]) => entry.sessionId).map(([tabId]) => Number(tabId)));
   for (const windowId of Object.keys(state.windowGroups)) {
     const groupId = await agentGroup(Number(windowId), state);

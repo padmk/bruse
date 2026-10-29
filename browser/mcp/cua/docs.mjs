@@ -93,6 +93,9 @@ interface PlaywrightAPI {             // locators: getByRole/getByText/getByLabe
 
 - To open a page, go straight to \`cua.createBrowserTab("1", url)\`; use \`await cua.getState()\` to find tabs the user already
   has open and \`cua.getTab(tabId)\` to bind one. Browser "1" is the connected browser. Selecting or creating a tab displays its accessibility state.
+- By default an agent sees and uses only its own tabs (those it opened, and tabs their pages opened from its
+  input) and the tabs the user shares; \`getState()\` says how many other tabs are hidden. To work in one of
+  the user's tabs, ask the user to switch to it and click "Share this tab" in the toolbar popup.
 - Element numbers come from the latest \`getAXState()\` of that tab and stay stable for the same element
   while the page does not navigate. After actions, call \`getAXState()\`: it shows only what changed.
   Use \`{ disableDiffing: true }\` to see the full tree again.
@@ -119,4 +122,6 @@ interface PlaywrightAPI {             // locators: getByRole/getByText/getByLabe
 - Do not bypass browser security warnings or CAPTCHAs on the user's behalf.
 - When a call fails because the user paused agents in the browser, stop and tell the user; do not retry
   until they say they resumed.
+- History and bookmarks work only after the user turns them on in the toolbar popup; when a call says so,
+  tell the user.
 `;

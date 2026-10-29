@@ -2,11 +2,13 @@
 // lifecycle, agent tab groups, raw CDP commands, browser management, history and downloads. Page
 // logic lives in the MCP server.
 
-import { cdp, consoleLogs, detach, networkRequests, onCdpEvent, tabState } from "./cdp.js";
+import { ALL_TABS, accessMode, anyoneMayAccess, audienceOf, bothAudiences, endShareOfClosedTab, mayAccess, requireAccess, visibleTabs } from "./access.js";
+import { EXTENSION_WORK, attachedTabIds, cdp, consoleLogs, detach, networkRequests, onCdpEvent, setDebugGate, tabState } from "./cdp.js";
 import { waitForDownload } from "./downloads.js";
 import { PAUSED_ERROR, isPaused } from "./pause.js";
-import { agentTabs, createAgentTab, endSession, markTab, onTabOpened, setLiveSessions } from "./sessions.js";
-import { MANAGEMENT_METHODS } from "./shared.js";
+import { agentTabs, createAgentTab, endSession, markTab, noteAgentInput, onTabOpened, openingSession, setLiveSessions } from "./sessions.js";
+import { checkRequest } from "./guard.js";
+import { MANAGEMENT_METHODS, isPressInput } from "./shared.js";
 
 const OFFSCREEN_ALARM = "offscreen-check";
 const LOAD_TIMEOUT_MS = 20_000;
@@ -25,6 +27,13 @@ function tabInfo(tab) {
     pendingUrl: tab.pendingUrl,
     status: tab.status,
   };
+}
+
+// History and bookmarks are optional permissions that the user turns on in the popup.
+async function requirePermission(permission, what) {
+  if (await chrome.permissions.contains({ permissions: [permission] })) return;
+  const name = chrome.runtime.getManifest().name;
+  throw new Error(`The user has not given ${name} access to ${what}. Tell the user; they can turn it on in the ${name} popup in the browser toolbar.`);
 }
 
 // Resolves with whether the tab finished loading; slow pages are returned as they are after the timeout.
@@ -49,15 +58,21 @@ function browserName() {
   return brands.find((brand) => !/Chromium|Not.?A.?Brand/i.test(brand)) ?? "Chromium";
 }
 
+// Each handler gets the request's parameters and `session`, the agent session the hub says the request
+// comes from. Tab methods check access first (see access.js).
 const handlers = {
-  "browser.info": async () => ({ name: browserName(), userAgent: navigator.userAgent, version: chrome.runtime.getManifest().version, id: chrome.runtime.id, paused: await isPaused() }),
+  "browser.info": async (_, session) => {
+    const mode = await accessMode();
+    const { hidden } = await visibleTabs(session, await chrome.tabs.query({}));
+    return { name: browserName(), userAgent: navigator.userAgent, version: chrome.runtime.getManifest().version, id: chrome.runtime.id, paused: await isPaused(), access: { mode, hiddenTabs: hidden } };
+  },
 
-  "tabs.list": async () => (await chrome.tabs.query({})).map(tabInfo),
+  "tabs.list": async (_, session) => (await visibleTabs(session, await chrome.tabs.query({}))).shown.map(tabInfo),
 
   "tabs.get": async ({ tabId }) => tabInfo(await chrome.tabs.get(tabId)),
 
-  "tabs.create": async ({ url, sessionId }) => {
-    const tab = await createAgentTab(sessionId, async () => {
+  "tabs.create": async ({ url }, session) => {
+    const tab = await createAgentTab(session, async () => {
       const window = await chrome.windows.getLastFocused({ windowTypes: ["normal"] });
       return chrome.tabs.create({ url: url ?? "about:blank", windowId: window.id, active: false });
     });
@@ -66,8 +81,8 @@ const handlers = {
   },
 
   // CDP navigation reports blocked or failed loads instead of silently keeping the old page.
-  "tabs.navigate": async ({ tabId, url }) => {
-    const { errorText } = await cdp(tabId, "Page.navigate", { url });
+  "tabs.navigate": async ({ tabId, url }, session) => {
+    const { errorText } = await cdp(tabId, "Page.navigate", { url }, undefined, undefined, { session });
     if (errorText) throw new Error(`Navigation to ${url} failed: ${errorText}`);
     await waitForLoad(tabId);
     return tabInfo(await chrome.tabs.get(tabId));
@@ -90,25 +105,32 @@ const handlers = {
   },
 
   "tabs.mark": ({ tabId, mark }) => markTab(tabId, mark),
-  "tabs.agent": () => agentTabs(),
-  "session.end": ({ sessionId }) => endSession(sessionId),
+  // The session's own tabs and their marks.
+  "tabs.agent": async (_, session) => Object.fromEntries(Object.entries(await agentTabs()).filter(([, entry]) => entry.sessionId === session)),
+  "session.end": (_, session) => endSession(session),
 
-  cdp: ({ tabId, method, params, sessionId, timeoutMs }) => cdp(tabId, method, params, sessionId, timeoutMs),
-  "page.state": ({ tabId }) => tabState(tabId),
+  cdp: ({ tabId, method, params, sessionId, timeoutMs }, session) => {
+    if (isPressInput(method, params)) noteAgentInput(tabId, session);
+    return cdp(tabId, method, params, sessionId, timeoutMs, { session });
+  },
+  "page.state": ({ tabId }, session) => tabState(tabId, { session }),
   "page.console": ({ tabId }) => consoleLogs(tabId),
   "page.network": ({ tabId }) => networkRequests(tabId),
 
-  "history.search": ({ text = "", startTime, endTime, maxResults = 100 }) =>
-    chrome.history.search({ text, startTime, endTime, maxResults }),
+  "history.search": async ({ text = "", startTime, endTime, maxResults = 100 }) => {
+    await requirePermission("history", "the browsing history");
+    return chrome.history.search({ text, startTime, endTime, maxResults });
+  },
 
-  "downloads.wait": ({ tabId, timeoutMs = 120_000 }) => waitForDownload(tabId, timeoutMs),
+  "downloads.wait": ({ tabId, timeoutMs = 120_000 }, session) => waitForDownload(tabId, timeoutMs, { session }),
 
   // Browser organization through the WebExtensions APIs; only listed methods can be called.
-  "browser.manage": ({ namespace, method, args = [] }) => {
+  "browser.manage": async ({ namespace, method, args = [] }, session) => {
     if (!MANAGEMENT_METHODS[namespace]?.includes(method)) throw new Error(`${namespace}.${method} is not available`);
-    // Organizing tabs must not navigate them; pages are opened and driven through tab objects.
-    if (namespace === "tabs" && method === "update" && args[1] && "url" in args[1]) throw new Error("management.tabs.update cannot change a tab's URL; bind the tab with cua.getTab and use tab.goto");
-    return chrome[namespace][method](...args);
+    if (namespace === "bookmarks") await requirePermission("bookmarks", "the bookmarks");
+    checkManagementArguments(namespace, method, args);
+    await checkManagementAccess(session, namespace, method, args);
+    return withoutHiddenTabs(session, namespace, await chrome[namespace][method](...args));
   },
 
   // Picks up edited extension files without visiting the extensions page.
@@ -117,6 +139,102 @@ const handlers = {
     return null;
   },
 };
+
+// Methods that act on the tab in params.tabId.
+const TAB_METHODS = new Set(["tabs.get", "tabs.navigate", "tabs.history", "tabs.waitForLoad", "tabs.close", "tabs.mark", "cdp", "page.state", "page.console", "page.network", "downloads.wait"]);
+
+// Management tab methods and how their first argument names tabs. Chrome lets several of them leave the
+// tab out and act on the selected tab instead; agents must name it, so every target is checked.
+const TAB_ARGUMENTS = {
+  get: "id",
+  update: "id",
+  reload: "id",
+  duplicate: "id",
+  discard: "id",
+  move: "ids",
+  ungroup: "ids",
+  remove: "ids",
+  group: "options",
+};
+
+function isTabId(value) {
+  return Number.isInteger(value) && value >= 0;
+}
+
+// The tabs a management call acts on, from arguments that name them explicitly.
+function tabIdsOf(method, args) {
+  const [first] = args;
+  const ids = TAB_ARGUMENTS[method] === "id" ? [first] : TAB_ARGUMENTS[method] === "ids" ? [first].flat() : [first?.tabIds].flat();
+  if (!ids.length || !ids.every(isTabId)) throw new Error(`management.tabs.${method} needs the ID${TAB_ARGUMENTS[method] === "id" ? "" : "s"} of the tab${TAB_ARGUMENTS[method] === "id" ? "" : "s"} it acts on`);
+  return ids;
+}
+
+// Checks that hold in every access mode: tab methods name their tabs, and organizing tabs never
+// navigates them (pages are opened and driven through tab objects).
+function checkManagementArguments(namespace, method, args) {
+  if (namespace === "tabs" && TAB_ARGUMENTS[method]) tabIdsOf(method, args);
+  if (namespace === "tabs" && method === "update" && (args[1] === undefined || (typeof args[1] === "object" && args[1] !== null && "url" in args[1]))) {
+    throw new Error("management.tabs.update takes a tab ID and properties without url; bind the tab with cua.getTab and use tab.goto to navigate");
+  }
+}
+
+// Management calls may act only on tabs, windows and groups whose tabs the session may reach.
+async function checkManagementAccess(session, namespace, method, args) {
+  if ((await accessMode()) === ALL_TABS) return;
+  const requireTabs = async (tabs) => {
+    for (const tabId of tabs) await requireAccess(session, tabId);
+  };
+  if (namespace === "tabs" && TAB_ARGUMENTS[method]) await requireTabs(tabIdsOf(method, args));
+  // A new window may take an existing tab, which moves it.
+  if (namespace === "windows" && method === "create" && args[0]?.tabId !== undefined) await requireTabs([args[0].tabId]);
+  if (namespace === "windows" && method === "remove") await requireTabs((await chrome.tabs.query({ windowId: args[0] })).map((tab) => tab.id));
+  if (namespace === "tabGroups" && (method === "update" || method === "move")) await requireTabs((await chrome.tabs.query({ groupId: args[0] })).map((tab) => tab.id));
+}
+
+// Tabs the session may not reach are left out of management results, and so are groups without any
+// tab it may reach.
+async function withoutHiddenTabs(session, namespace, result) {
+  if ((await accessMode()) === ALL_TABS) return result;
+  const filterTabs = async (tabs) => (await visibleTabs(session, tabs)).shown;
+  if (namespace === "tabs" && Array.isArray(result)) return filterTabs(result);
+  // A single tab (a duplicate is a new tab nobody owns) shows only its ID unless the session may use it.
+  if (namespace === "tabs" && result && typeof result === "object" && isTabId(result.id)) {
+    return (await filterTabs([result])).length ? result : { id: result.id, windowId: result.windowId };
+  }
+  if (namespace === "windows") {
+    const filterWindow = async (window) => (Array.isArray(window?.tabs) ? { ...window, tabs: await filterTabs(window.tabs) } : window);
+    return Array.isArray(result) ? Promise.all(result.map(filterWindow)) : filterWindow(result);
+  }
+  if (namespace === "tabGroups") {
+    const visible = async (group) => (await filterTabs(await chrome.tabs.query({ groupId: group.id }))).length > 0;
+    if (Array.isArray(result)) {
+      const shown = [];
+      for (const group of result) if (await visible(group)) shown.push(group);
+      return shown;
+    }
+    if (result && !(await visible(result))) throw new Error("This tab group holds no tab of this session or shared by the user");
+  }
+  return result;
+}
+
+// The debugger acts for an agent's request only while that request's session may use the tab, and for the
+// extension's own work (downloads) only while some session may.
+setDebugGate((tabId, caller) => (caller === EXTENSION_WORK ? anyoneMayAccess(tabId) : mayAccess(caller.session, tabId)));
+
+// A tab no session may reach keeps no debugger attached: after the user stops sharing it, switches to
+// "agent tabs" or a session ends, it is detached at once.
+async function detachUnreachable() {
+  for (const tabId of attachedTabIds()) if (!(await anyoneMayAccess(tabId))) await detach(tabId);
+}
+chrome.storage.onChanged.addListener((changes, area) => {
+  if ((area === "session" && "sharedTabs" in changes) || (area === "local" && "accessMode" in changes)) detachUnreachable();
+});
+// A share ends with its tab.
+chrome.tabs.onRemoved.addListener((tabId) => endShareOfClosedTab(tabId));
+
+// A hub of a version before tab ownership sends requests without the session they come from.
+const OUTDATED_HUB = `The ${chrome.runtime.getManifest().name} MCP server that relays this request is older than the browser extension and does not say which agent session it comes from. Ask the user to run \`bruse setup\` and start new agent sessions.`;
+const SESSIONLESS_METHODS = new Set(["browser.info", "extension.reload"]);
 
 // Requests that still run while the user has paused agents: none of them acts on a page.
 const PAUSE_EXEMPT = new Set(["browser.info", "extension.reload", "session.end"]);
@@ -198,7 +316,7 @@ async function handle(gen, text) {
     }
     return null;
   }
-  const { id, method, params } = message;
+  const { id, method, params, session } = message;
   // A restarted service worker has lost the authentication of an open connection; reconnecting makes
   // the hub authenticate again.
   if (!hub.verified) requestReconnect(gen);
@@ -212,7 +330,10 @@ async function handle(gen, text) {
     const handler = handlers[method];
     if (!handler) throw new Error(`Unknown method ${method}`);
     if (!PAUSE_EXEMPT.has(method) && (await isPaused())) throw new Error(PAUSED_ERROR);
-    return JSON.stringify({ id, result: (await handler(params ?? {})) ?? null });
+    if (!SESSIONLESS_METHODS.has(method) && !("session" in message)) throw new Error(OUTDATED_HUB);
+    await checkRequest(method, params ?? {});
+    if (TAB_METHODS.has(method)) await requireAccess(session, params?.tabId);
+    return JSON.stringify({ id, result: (await handler(params ?? {}, session)) ?? null });
   } catch (error) {
     return JSON.stringify({ id, error: error?.message ?? String(error) });
   }
@@ -229,12 +350,45 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   return true;
 });
 
+// Events go only to the sessions that may use their tab now (`audience`, null for all); the hub routes
+// them. An event no session may see is not sent. Working out the audience takes storage reads, so events
+// pass through one queue and keep their order.
+let eventQueue = Promise.resolve();
+function sendEvent(event, audience) {
+  eventQueue = eventQueue
+    .then(async () => {
+      const recipients = await audience();
+      if (recipients === null || recipients.length) send({ ...event, type: "event", audience: recipients });
+    })
+    .catch(() => {});
+}
+
+// A page's request to open a window names the address of the tab it opens, which belongs to whoever
+// caused the opening: from a shared tab it goes only to the session whose input caused it (fixed now,
+// as sessions.js does for ownership), and to nobody when that is not one session.
+async function openingAudience(tabId, initiator) {
+  const audience = await audienceOf(tabId);
+  if (audience !== null || (await accessMode()) === ALL_TABS) return audience;
+  return initiator ? [initiator] : [];
+}
+
 onCdpEvent((tabId, method, params, sessionId) => {
-  if (FORWARDED_EVENTS.has(method)) send({ type: "event", tabId, method, params, sessionId });
+  if (!FORWARDED_EVENTS.has(method)) return;
+  if (method === "Page.windowOpen") {
+    // The initiator is read at once, before any input that arrives while the audience is worked out.
+    const audience = openingAudience(tabId, openingSession(tabId));
+    sendEvent({ tabId, method, params, sessionId }, () => audience);
+  } else {
+    sendEvent({ tabId, method, params, sessionId }, () => audienceOf(tabId));
+  }
 });
 
 // Tells sessions which tab a page opened, so that notifications name the exact tab.
-onTabOpened((openerTabId, tabId, url, byAgent) => send({ type: "event", tabId: openerTabId, method: "tabs.opened", params: { tabId, url, byAgent } }));
+// An opening is reported to the sessions that may use both the opening tab and the new one; openings in
+// the user's own tabs are not reported.
+onTabOpened((openerTabId, tabId, url, byAgent) => {
+  sendEvent({ tabId: openerTabId, method: "tabs.opened", params: { tabId, url, byAgent } }, async () => bothAudiences(await audienceOf(openerTabId), await audienceOf(tabId)));
+});
 
 async function ensureOffscreenDocument() {
   const existing = await chrome.runtime.getContexts({ contextTypes: ["OFFSCREEN_DOCUMENT"] });

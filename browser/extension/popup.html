@@ -12,6 +12,20 @@
     <p id="status" role="status"><span class="dot" aria-hidden="true"></span><span id="status-text"></span></p>
     <button id="toggle" type="button"></button>
     <p id="hint"></p>
+    <section id="sharing">
+      <button id="share" type="button" class="secondary"></button>
+      <ul id="shared"></ul>
+    </section>
+    <details id="access">
+      <summary>Access</summary>
+      <fieldset>
+        <legend>Agents can use</legend>
+        <label class="check"><input type="radio" name="mode" value="agent-tabs" /> Their own tabs and tabs you share</label>
+        <label class="check"><input type="radio" name="mode" value="all-tabs" /> All tabs</label>
+      </fieldset>
+      <label class="check"><input type="checkbox" id="perm-history" /> Browsing history</label>
+      <label class="check"><input type="checkbox" id="perm-bookmarks" /> Bookmarks</label>
+    </details>
     <script type="module" src="popup.js"></script>
   </body>
 </html>

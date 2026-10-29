@@ -10,7 +10,8 @@ MCP server (hub) ◀──WebSocket 127.0.0.1:47615──▶ extension ──chr
 
 - `browser/extension/`: MV3 extension, a thin executor. `offscreen.js` holds the WebSocket to the hub
   (an offscreen document is never suspended, so it reconnects within 0.5 s of a session starting) and
-  passes requests to `service-worker.js`, which handles tab lifecycle, browser management, history and
+  passes requests to `service-worker.js`, which checks each request with `guard.js` (web pages only,
+  no raw DevTools commands beyond the tab) and handles tab lifecycle, browser management, history and
   downloads. `cdp.js` relays DevTools Protocol commands through `chrome.debugger`, including the
   sessions of cross-origin frames, and tracks dialogs and console output. `sessions.js` keeps the tabs
   of all agent sessions in one tab group per window, tracks which session owns each tab and closes a

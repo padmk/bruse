@@ -146,7 +146,10 @@ function becomeHub() {
     hubPending = pending;
     let nextId = 1;
 
-    function forward(method, params, settle) {
+    // `session` is the agent session the request comes from: the hub's own, or the one a client named in
+    // its hello. The extension decides tab access by it, so it travels outside the request's parameters,
+    // which the session's code controls.
+    function forward(method, params, settle, session) {
       const id = nextId++;
       const timer = setTimeout(() => {
         pending.delete(id);
@@ -156,7 +159,7 @@ function becomeHub() {
         clearTimeout(timer);
         settle(reply);
       });
-      extension.send(JSON.stringify({ id, method, params }));
+      extension.send(JSON.stringify({ id, method, params, session: session ?? null }));
     }
 
     function whenExtensionConnected() {
@@ -183,11 +186,11 @@ function becomeHub() {
       extension?.send(JSON.stringify({ type: "live-sessions", sessionIds: [...sessionIds] }));
     }
 
-    async function request(method, params, settle) {
+    async function request(method, params, settle, session) {
       if (draining) return settle({ error: HUB_CLOSING });
       try {
         await whenExtensionConnected();
-        forward(method, params, settle);
+        forward(method, params, settle, session);
       } catch (error) {
         settle({ error: error.message });
       }
@@ -270,9 +273,11 @@ function becomeHub() {
           }
           return;
         }
+        // An event names the sessions that may see it (`audience`), or none to reach every session.
         if (message.type === "event") {
-          emitEvent(message);
-          for (const client of clients.keys()) client.send(text);
+          const reaches = (session) => !Array.isArray(message.audience) || message.audience.includes(session);
+          if (reaches(sessionId)) emitEvent(message);
+          for (const [client, clientSession] of clients) if (reaches(clientSession)) client.send(text);
           return;
         }
         pending.get(message.id)?.(message);
@@ -325,11 +330,11 @@ function becomeHub() {
           reportSessions();
           return;
         }
-        request(message.method, message.params, (reply) => peer.send(JSON.stringify({ ...reply, id: message.id })));
+        request(message.method, message.params, (reply) => peer.send(JSON.stringify({ ...reply, id: message.id })), clientSession);
       });
       peer.on("close", () => {
         if (!clients.delete(peer)) return;
-        if (clientSession) request("session.end", { sessionId: clientSession }, () => {});
+        if (clientSession) request("session.end", { sessionId: clientSession }, () => {}, clientSession);
         reportSessions();
       });
     }
@@ -362,7 +367,7 @@ function becomeHub() {
       resolve({
         send: (method, params) =>
           new Promise((resolveCall, rejectCall) =>
-            request(method, params, (reply) => (reply.error ? rejectCall(new Error(reply.error)) : resolveCall(reply.result))),
+            request(method, params, (reply) => (reply.error ? rejectCall(new Error(reply.error)) : resolveCall(reply.result)), sessionId),
           ),
       });
     });
