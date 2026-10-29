@@ -5,7 +5,7 @@
 import { cdp, consoleLogs, detach, networkRequests, onCdpEvent, tabState } from "./cdp.js";
 import { waitForDownload } from "./downloads.js";
 import { PAUSED_ERROR, isPaused } from "./pause.js";
-import { agentTabs, endSession, groupAgentTab, markTab, onTabOpened } from "./sessions.js";
+import { agentTabs, createAgentTab, endSession, markTab, onTabOpened, setLiveSessions } from "./sessions.js";
 import { MANAGEMENT_METHODS } from "./shared.js";
 
 const OFFSCREEN_ALARM = "offscreen-check";
@@ -57,9 +57,10 @@ const handlers = {
   "tabs.get": async ({ tabId }) => tabInfo(await chrome.tabs.get(tabId)),
 
   "tabs.create": async ({ url, sessionId }) => {
-    const window = await chrome.windows.getLastFocused({ windowTypes: ["normal"] });
-    const tab = await chrome.tabs.create({ url: url ?? "about:blank", windowId: window.id, active: false });
-    await groupAgentTab(tab.id, sessionId);
+    const tab = await createAgentTab(sessionId, async () => {
+      const window = await chrome.windows.getLastFocused({ windowTypes: ["normal"] });
+      return chrome.tabs.create({ url: url ?? "about:blank", windowId: window.id, active: false });
+    });
     if (url) await waitForLoad(tab.id);
     return tabInfo(await chrome.tabs.get(tab.id));
   },
@@ -127,6 +128,12 @@ const PAUSE_EXEMPT = new Set(["browser.info", "extension.reload", "session.end"]
 const unverifiedHub = (gen) => ({ gen, verified: false, expectedHubMac: null, pairing: null });
 let hub = unverifiedHub(0);
 
+// A new connection, or none: its hub has yet to authenticate and to report the live sessions.
+function resetHub(gen) {
+  hub = unverifiedHub(gen);
+  setLiveSessions(null);
+}
+
 function hex(bytes) {
   return [...new Uint8Array(bytes)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
@@ -180,7 +187,7 @@ async function handle(gen, text) {
     return null;
   }
   if (!message || typeof message !== "object") return null;
-  if (gen !== hub.gen) hub = unverifiedHub(gen);
+  if (gen !== hub.gen) resetHub(gen);
   if (message.type === "challenge") return JSON.stringify(await answerChallenge(String(message.nonce)));
   if (message.type === "auth-ok") {
     hub.verified = Boolean(hub.expectedHubMac) && message.mac === hub.expectedHubMac;
@@ -195,6 +202,10 @@ async function handle(gen, text) {
   // A restarted service worker has lost the authentication of an open connection; reconnecting makes
   // the hub authenticate again.
   if (!hub.verified) requestReconnect(gen);
+  if (message.type === "live-sessions") {
+    if (hub.verified && Array.isArray(message.sessionIds)) setLiveSessions(message.sessionIds.filter((sessionId) => typeof sessionId === "string"));
+    return null;
+  }
   if (id === undefined) return null; // keepalive
   if (!hub.verified) return JSON.stringify({ id, error: "The browser connection is being authenticated again; retry the call" });
   try {
@@ -210,7 +221,7 @@ async function handle(gen, text) {
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message.target !== "worker") return false;
   if (message.type === "hub-open" || message.type === "hub-closed") {
-    if (message.gen >= hub.gen) hub = unverifiedHub(message.gen);
+    if (message.gen >= hub.gen) resetHub(message.gen);
     return false;
   }
   if (message.type !== "hub-message") return false;

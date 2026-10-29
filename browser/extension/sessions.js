@@ -1,7 +1,7 @@
 // Agent sessions: tabs an agent session opened, the one agent tab group per window that holds the tabs
-// of all live sessions, and cleanup when a session ends. State lives in chrome.storage.local so it
-// survives service worker restarts and extension reloads, while MCP servers keep their sessions; tab and
-// group IDs change when the browser starts, so it starts empty then.
+// of all live sessions, and cleanup when a session ends or its server is gone. State lives in
+// chrome.storage.local so it survives service worker restarts and extension reloads, while MCP servers
+// keep their sessions; tab and group IDs change when the browser starts, so it starts empty then.
 
 import { onCdpEvent, sinceAgentInput } from "./cdp.js";
 import { AGENT_INPUT_WINDOW_MS } from "./shared.js";
@@ -162,23 +162,59 @@ async function agentGroup(windowId, state) {
   return group?.windowId === windowId ? groupId : undefined;
 }
 
-export function groupAgentTab(tabId, sessionId) {
-  return serialized(() => groupAgentTabNow(tabId, sessionId));
+// Sessions that ended, oldest first, and the tabs being created for each session: a session may end
+// while one of its tabs is still being created, and that tab then closes instead of outliving it. An
+// ended session is forgotten once more than MAX_ENDED_SESSIONS ended after it and none of its tabs is
+// being created.
+const MAX_ENDED_SESSIONS = 200;
+const endedSessions = new Set();
+const creating = new Map(); // session id -> number of tabs being created
+
+function rememberEnded(sessionId) {
+  endedSessions.delete(sessionId);
+  endedSessions.add(sessionId);
+  for (const id of endedSessions) {
+    if (endedSessions.size <= MAX_ENDED_SESSIONS) break;
+    if (!creating.has(id)) endedSessions.delete(id);
+  }
+}
+
+// Opens a tab for the session with `create()` (which resolves with the new tab) and records it as the
+// session's, in the agent group. A tab whose session ended meanwhile is closed, and the call fails.
+export async function createAgentTab(sessionId, create) {
+  creating.set(sessionId, (creating.get(sessionId) ?? 0) + 1);
+  try {
+    const tab = await create();
+    await serialized(() => groupAgentTabNow(tab.id, sessionId));
+    return tab;
+  } finally {
+    const count = creating.get(sessionId) - 1;
+    if (count) creating.set(sessionId, count);
+    else creating.delete(sessionId);
+  }
 }
 
 async function groupAgentTabNow(tabId, sessionId) {
   const state = await load();
-  const { windowId } = await chrome.tabs.get(tabId);
-  const groupId = await agentGroup(windowId, state);
-  if (groupId !== undefined) {
-    await chrome.tabs.group({ tabIds: [tabId], groupId });
-  } else {
-    const created = await chrome.tabs.group({ tabIds: [tabId], createProperties: { windowId } });
-    await chrome.tabGroups.update(created, { title: GROUP_TITLE, color: GROUP_COLOR, collapsed: false });
-    state.windowGroups[windowId] = created;
+  if (endedSessions.has(sessionId)) {
+    if (!KEPT_MARKS.has(state.tabs[tabId]?.mark)) await chrome.tabs.remove(tabId).catch(() => {});
+    throw new Error("The agent session ended while its tab was being created; the tab was closed");
   }
+  // Ownership is recorded even if grouping fails, so that the session's end still closes the tab.
   state.tabs[tabId] = { sessionId, mark: null };
-  await save(state);
+  try {
+    const { windowId } = await chrome.tabs.get(tabId);
+    const groupId = await agentGroup(windowId, state);
+    if (groupId !== undefined) {
+      await chrome.tabs.group({ tabIds: [tabId], groupId });
+    } else {
+      const created = await chrome.tabs.group({ tabIds: [tabId], createProperties: { windowId } });
+      await chrome.tabGroups.update(created, { title: GROUP_TITLE, color: GROUP_COLOR, collapsed: false });
+      state.windowGroups[windowId] = created;
+    }
+  } finally {
+    await save(state);
+  }
 }
 
 export function markTab(tabId, mark) {
@@ -202,10 +238,14 @@ export async function agentTabs() {
 // tab in a window's group anymore, the remaining tabs (ones the user moved there or opened from an agent
 // page) leave it too, so the group goes away.
 export function endSession(sessionId) {
-  return serialized(() => endSessionNow(sessionId));
+  return serialized(() => {
+    reaped.delete(sessionId);
+    return endSessionNow(sessionId);
+  });
 }
 
 async function endSessionNow(sessionId) {
+  rememberEnded(sessionId);
   const state = await load();
   const toClose = [];
   const kept = [];
@@ -229,4 +269,49 @@ async function endSessionNow(sessionId) {
     if (strays.length) await chrome.tabs.ungroup(strays).catch(() => {});
   }
   return { closed: toClose.length };
+}
+
+// Sessions the connected hub reports as live (its own and its clients'), or null while no authenticated
+// hub reports. A session that owns tabs and stays absent from the reports for ABSENT_SESSION_GRACE_MS
+// ended without saying so, for example because its server was killed while it was the hub: it ends as
+// in endSession, so its marked tabs stay. The grace period leaves the other servers time to elect a new
+// hub and reconnect. Without a hub, or when the hub changes, nothing is closed and the period starts over.
+const ABSENT_SESSION_GRACE_MS = 45_000;
+let live = null; // { ids: Set of session ids, absentSince: Map session id -> time first found absent }
+let absenceTimer = null;
+// Sessions ended for their absence, which may come back; a session that ended itself does not.
+const reaped = new Set();
+
+export function setLiveSessions(sessionIds) {
+  clearTimeout(absenceTimer);
+  if (!sessionIds) {
+    live = null;
+    return;
+  }
+  live = { ids: new Set(sessionIds), absentSince: live?.absentSince ?? new Map() };
+  // A session that reconnected after it was ended for its absence may open tabs again.
+  for (const id of live.ids) {
+    if (reaped.delete(id)) endedSessions.delete(id);
+  }
+  serialized(endAbsentSessions);
+}
+
+async function endAbsentSessions() {
+  const current = live;
+  if (!current) return;
+  const owners = new Set(Object.values((await load()).tabs).map((entry) => entry.sessionId).filter(Boolean));
+  const now = Date.now();
+  for (const id of current.absentSince.keys()) if (!owners.has(id) || current.ids.has(id)) current.absentSince.delete(id);
+  for (const id of owners) {
+    if (current.ids.has(id)) continue;
+    if (!current.absentSince.has(id)) current.absentSince.set(id, now);
+    if (now - current.absentSince.get(id) < ABSENT_SESSION_GRACE_MS) continue;
+    current.absentSince.delete(id);
+    reaped.add(id);
+    await endSessionNow(id);
+  }
+  if (live !== current || !current.absentSince.size) return;
+  const due = Math.min(...current.absentSince.values()) + ABSENT_SESSION_GRACE_MS - Date.now();
+  clearTimeout(absenceTimer);
+  absenceTimer = setTimeout(() => serialized(endAbsentSessions), Math.max(due, 0) + 50);
 }

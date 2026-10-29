@@ -8,7 +8,7 @@ import { cpSync, existsSync, mkdirSync, renameSync } from "node:fs";
 import { homedir, platform } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { STORE_EXTENSION_ID } from "../browser/mcp/config.mjs";
+import { HUB_VERSION_MISMATCH, STORE_EXTENSION_ID } from "../browser/mcp/config.mjs";
 import { agentClients, extensionDir, fail, installRoot, installed, manifest, note, onPath, product, requireNode, serverPath, source, step, moveToTrash } from "./lib.mjs";
 
 const PAIR_WAIT_MS = 10 * 60_000;
@@ -104,6 +104,7 @@ async function waitForExtension(callBrowser) {
       note(`Connected to ${info.name}.`);
       return info;
     } catch (error) {
+      if (error.code === HUB_VERSION_MISMATCH) fail(error.message);
       const waited = Date.now() - started;
       if (waited > PAIR_WAIT_MS) fail(`The extension did not connect within ${PAIR_WAIT_MS / 60_000} minutes. ${error.message}`);
       if (waited > PAIR_HINT_MS && !hinted) {
@@ -149,7 +150,8 @@ export async function setup() {
   installFiles();
   const registered = registerServer();
   const { callBrowser } = await import(join(installed, "mcp", "browser-link.mjs"));
-  const connected = await callBrowser("browser.info").catch(() => null);
+  // A hub of an older version, run by an agent session started before the update, cannot be reached.
+  const connected = await callBrowser("browser.info").catch((error) => (error.code === HUB_VERSION_MISMATCH ? fail(error.message) : null));
   if (fromStore(connected)) checkStoreExtension(connected);
   else if (connected) await reloadExtension(callBrowser, connected);
   else {

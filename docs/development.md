@@ -14,7 +14,8 @@ MCP server (hub) ◀──WebSocket 127.0.0.1:47615──▶ extension ──chr
   downloads. `cdp.js` relays DevTools Protocol commands through `chrome.debugger`, including the
   sessions of cross-origin frames, and tracks dialogs and console output. `sessions.js` keeps the tabs
   of all agent sessions in one tab group per window, tracks which session owns each tab and closes a
-  session's unmarked tabs when it ends. `downloads.js` pairs downloads with the tabs that started
+  session's unmarked tabs when it ends, or when the hub has not listed it among the live sessions for
+  a while. `downloads.js` pairs downloads with the tabs that started
   them. `shared.js` is the one owner of what the extension and the MCP server must agree on (hub
   port, management method allow-list, which input counts as the agent's press and for how long,
   password manager element names, the unresponsive-page error); it uses no browser or Node APIs, so
@@ -37,7 +38,8 @@ MCP server (hub) ◀──WebSocket 127.0.0.1:47615──▶ extension ──chr
   - `browser-link.mjs`, `websocket.mjs`, `config.mjs`: hub election, authentication and transport. The
     first server to bind the port becomes the hub; the others connect to it. A hub that exits first lets
     in-flight requests finish, read-only requests interrupted by a handover are resent, and a new hub
-    is elected on the next call.
+    is elected right away by the servers whose sessions used the browser (by the others on their next
+    call). The hub tells the extension which sessions are live.
   - `cua/`: the browser API. `index.mjs` (`cua` object, browser and management capability), `tab.mjs`
     (tab methods), `ax-tree.mjs` (accessibility snapshots across frames with stable element numbers and
     diffs), `aria-snapshot.mjs` (Playwright-style ARIA snapshot for `domSnapshot()`), `locator.mjs` and `page-scripts.mjs` (locators and in-page helpers), `elements.mjs` (pointer
