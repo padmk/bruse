@@ -8,7 +8,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-const { name, version } = JSON.parse(readFileSync(join(root, "browser", "extension", "manifest.json"), "utf8"));
+const { name, version, homepage_url: homepage } = JSON.parse(readFileSync(join(root, "browser", "extension", "manifest.json"), "utf8"));
 const bundleName = `${name}-${version}`;
 const stage = join(tmpdir(), `package-${process.pid}`, bundleName);
 const skip = (path) => !path.endsWith(".DS_Store") && !path.endsWith("icon-source.png");
@@ -23,7 +23,6 @@ cpSync(join(root, "installer", "Install.command"), join(stage, `Install ${name}.
 chmodSync(join(stage, `Install ${name}.command`), 0o755);
 for (const file of ["LICENSE", "SECURITY.md", "CHANGELOG.md"]) cpSync(join(root, file), join(stage, file));
 // README links to files the package leaves out point to this version in the repository instead.
-const { homepage } = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
 const readme = readFileSync(join(root, "README.md"), "utf8").replace(/\]\(([^)#:]+)\)/g, (link, path) =>
   existsSync(join(stage, path)) ? link : `](${homepage}/blob/v${version}/${path})`,
 );
