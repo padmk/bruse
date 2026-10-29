@@ -48,6 +48,9 @@ export function onPath(command) {
   return spawnSync("/bin/sh", ["-c", `command -v ${command}`], { encoding: "utf8" }).stdout.trim() || null;
 }
 
+// Short name of a client for `bruse setup --clients`, such as claude-code or vs-code.
+export const clientId = (client) => client.name.toLowerCase().replace(/[^a-z0-9]+/g, "-");
+
 // A CLI's answer for a server it does not know; any other failure leaves the registration unknown.
 const NOT_REGISTERED = /No MCP server named/i;
 
