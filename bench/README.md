@@ -14,8 +14,23 @@ which Claude Code normally has, to open the downloaded file.
 - `run.mjs`: runs every task with each tool, alternating which tool goes first. It records wall time,
   turns, cost, the answer, whether it passed, and which URLs became the active tab of the front browser
   window during the run. It stops when the account reaches its usage limit.
-- `report.mjs`: per task and tool, the pass count, median time, turns and cost of passed runs, and how
-  often a benchmark page took over the user's active tab.
+- `transcript.mjs`: reads a run's conversation. A Claude Code run passes only when the grader accepts
+  the answer and the conversation shows that the browser produced it: at least one call of the browser
+  tool, a connected extension, and no Bruse code that reached files, the network or processes from
+  Node.js (`fetch`, imports, `child_process`), which could get a page without the browser. Such a run is
+  recorded with `failure` set to `left-browser`, `extension-missing` or `no-browser-call`. The page
+  function passed to `evaluate()` runs in the page and is left out of that check; the transcript stays
+  the evidence to read. The time spent inside tool calls is recorded too.
+- `grading.mjs`: the number rule both suites grade with: every number in the answer, apart from the ones
+  the question names, must be the expected value.
+- `report.mjs`: per task and tool, the pass count, median time, turns and cost of passed runs, the time
+  inside tool calls, the runs whose right answer did not come from the browser, and how often a
+  benchmark page took over the user's active tab.
+
+Before the runs, the runner asks the browser for its extension's code fingerprint, reloads the
+extension once if it is not this checkout's code, and stops if it still is not; `meta.json` records the
+commit, the agent's and Node's versions, the browser and the fingerprint. A dirty working tree runs only
+with `--allow-dirty`.
 
 ```sh
 node bench/run.mjs --reps 5 --capability-reps 3     # all tasks, both tools
@@ -24,15 +39,31 @@ node bench/run.mjs --suite real --reps 8            # tasks on public websites (
 node bench/report.mjs bench/results/<timestamp>     # summary; pass several directories to combine runs
 ```
 
+The local pages include a three-step form, an order form whose rules only the server knows (it
+rejects the postal code's format and then the quantity until the agent corrects them from its
+messages) and a bar chart drawn on a canvas, whose values are not in the page's text.
+
 `tasks-real.mjs` holds tasks on public websites: Wikipedia's site search, a GitHub directory listing and
 releases page, the Python documentation's search, a paginated shop (books.toscrape.com) and a
 single-page app (TodoMVC). None needs a password, because Claude in Chrome declines to type one on
 public sites. Every run's conversation goes to `transcripts/` next to `runs.jsonl`.
 
-## Published results
+## What the numbers cover
 
-`results/2026-10-24-published` (sources in `NOTES.md`): claude-opus-5-5, effort medium, median of the
-passed runs out of 5 per timed task, 3 per capability task.
+Results describe the tasks and setup measured, not typical work in general. Every run starts a new
+agent process (`claude -p` or `codex exec`), so it includes starting the MCP server and connecting it to
+the browser, which takes under a second; a long interactive session does not pay that per task, and
+the runner does not measure it separately. No task asks to solve a CAPTCHA or to type a password; a
+step that needs the user is reported as a failure of that run. Both tools run in the same Brave profile.
+
+## Earlier results on the benchmark's pages
+
+`results/2026-10-24-published` (sources in `NOTES.md`): Bruse 0.17.0, claude-opus-5-5, effort medium,
+median of the passed runs out of 5 per timed task, 3 per capability task. These are the benchmark's own
+pages, which favor short scripted tasks, and the set combines sessions: the Bruse runs are the ones
+measured after the fixes in `cc77dc1` (earlier Bruse runs are in other folders under `results/`), and
+Claude in Chrome's runs for four tasks are from the day before. They were graded with the earlier, more
+lenient number rule; regrading them with `grading.mjs` changes none.
 
 | Task | Bruse | Claude in Chrome | Bruse faster | Bruse cheaper |
 | --- | --- | --- | --- | --- |

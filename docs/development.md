@@ -19,14 +19,17 @@ MCP server (hub) ◀──WebSocket 127.0.0.1:47615──▶ extension ──chr
   a while. `downloads.js` pairs downloads with the tabs that started
   them. `shared.js` is the one owner of what the extension and the MCP server must agree on (hub
   port, management method allow-list, which input counts as the agent's press and for how long,
-  password manager element names, the unresponsive-page error); it uses no browser or Node APIs, so
+  password manager element names, the unresponsive-page error, the extension code fingerprint that
+  setup, doctor and the benchmark compare); it uses no browser or Node APIs beyond Web Crypto, so
   the MCP server imports it from the extension directory. `browser/package.json` marks the `.js`
   files as ES modules for Node; installed copies of `browser/` include it.
 - `bench/`: benchmark against Claude in Chrome on local task pages (`tasks.mjs`) and public websites
-  (`tasks-real.mjs`); see `bench/README.md`.
+  (`tasks-real.mjs`), with one grading rule (`grading.mjs`) and the conversation checks that decide
+  whether the browser produced an answer (`transcript.mjs`); see `bench/README.md`.
 - `installer/`: `install.mjs` (the installer), `Install.command` (its double-click entry point on macOS,
   which finds Node.js), `agent-instructions.md` (installation steps for an agent, shipped as the
-  package's `AGENTS.md` with a `CLAUDE.md` that imports it) and `package.mjs` (builds the zip package).
+  package's `AGENTS.md` with a `CLAUDE.md` that imports it), `clients.mjs` (the agent clients beyond
+  Claude Code and Codex) and `package.mjs` (builds the zip package, with every other installer module).
 - `browser/mcp/`: MCP stdio server, no dependencies.
   - `server.mjs`: the `js` and `js_reset` tools. It runs the REPL in a worker thread (`repl-worker.mjs`)
     and replaces the worker whenever a call times out or the worker crashes, so nothing the call left running (an endless
