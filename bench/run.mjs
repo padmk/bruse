@@ -2,6 +2,7 @@
 // and whether the run took over the user's active tab or brought the browser to the front.
 //
 //   node bench/run.mjs [--reps 5] [--tasks table,form] [--tools bruse,chrome] [--model claude-opus-5-5] [--effort medium]
+//   node bench/run.mjs --suite real [--reps 8]     # public websites (tasks-real.mjs) instead of the local pages
 //   node bench/run.mjs --agent codex [--tools bruse,openai] [--model gpt-6.1-terra] [--effort medium]
 //
 // With Claude Code the tools are Bruse and Claude in Chrome. With Codex they are Bruse and OpenAI's own
@@ -9,17 +10,21 @@
 // brave-cua-mcp bridge (--openai-bridge, default ~/dev/brave-cua-mcp/src/server.mjs). Both are offered to
 // Codex as the same MCP server name, so the model sees the same tool either way.
 //
-// Results go to bench/results/<timestamp>/runs.jsonl; bench/report.mjs summarizes them.
+// Results go to bench/results/<timestamp>/runs.jsonl, with every Claude Code conversation in
+// transcripts/; bench/report.mjs summarizes them. Every run is recorded, failed ones included.
 import { spawn, execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { ORIGIN_A } from "./server.mjs";
-import { tasks } from "./tasks.mjs";
+import { tasks as localTasks } from "./tasks.mjs";
+import { tasks as realTasks } from "./tasks-real.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const args = Object.fromEntries(process.argv.slice(2).reduce((acc, a, i, all) => (a.startsWith("--") ? [...acc, [a.slice(2), all[i + 1]]] : acc), []));
+const suite = args.suite ?? "local";
+const tasks = suite === "real" ? realTasks : localTasks;
 const reps = Number(args.reps ?? 5);
 const capabilityReps = Number(args["capability-reps"] ?? 2);
 const taskIds = args.tasks ? args.tasks.split(",") : tasks.map((t) => t.id);
@@ -29,18 +34,24 @@ const model = args.model ?? (agent === "codex" ? "gpt-6.1-terra" : "claude-opus-
 const effort = args.effort ?? "medium";
 const browserApp = "Brave Browser";
 
-// The code under test: a run of a dirty tree is marked as such.
+// The code under test, as a commit. Uncommitted changes would make the results unattributable, so a
+// dirty tree runs only with --allow-dirty and is marked as such.
 const revision = (() => {
   try {
-    const sha = execFileSync("git", ["rev-parse", "--short", "HEAD"], { cwd: here, encoding: "utf8" }).trim();
-    return execFileSync("git", ["status", "--porcelain"], { cwd: here, encoding: "utf8" }).trim() ? `${sha}-dirty` : sha;
+    const sha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: here, encoding: "utf8" }).trim();
+    if (!execFileSync("git", ["status", "--porcelain", "--untracked-files=no"], { cwd: here, encoding: "utf8" }).trim()) return sha;
+    if (!("allow-dirty" in args)) {
+      console.error("The working tree has uncommitted changes; commit them (or pass --allow-dirty) so the results name the code they measured.");
+      process.exit(2);
+    }
+    return `${sha}-dirty`;
   } catch {
     return "unknown";
   }
 })();
 
 const outDir = path.join(here, "results", new Date().toISOString().replace(/[:.]/g, "-"));
-fs.mkdirSync(outDir, { recursive: true });
+fs.mkdirSync(path.join(outDir, "transcripts"), { recursive: true });
 const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "bruse-bench-"));
 const node = process.execPath;
 fs.writeFileSync(path.join(workDir, "bruse.json"), JSON.stringify({ mcpServers: { bruse: { type: "stdio", command: node, args: [path.join(here, "..", "browser", "mcp", "server.mjs")] } } }));
@@ -60,9 +71,32 @@ const activeTabUrl = () => osa(`tell application "${browserApp}" to get URL of a
 const frontApp = () => {
   try { return execFileSync("lsappinfo", ["info", "-only", "name", execFileSync("lsappinfo", ["front"], { encoding: "utf8" }).trim()], { encoding: "utf8" }).match(/"([^"]+)"/)?.[1] ?? ""; } catch { return ""; }
 };
+// Tabs of the local pages exist only for the benchmark and are closed before and after each run.
 const closeBenchTabs = () => osa(`tell application "${browserApp}"
   repeat with w in windows
     close (every tab of w whose URL contains "47901" or URL contains "47902")
+  end repeat
+end tell`);
+// Tabs on public sites are closed after a run only when the run opened them; the user's own tabs on
+// those sites stay.
+const listTabs = () =>
+  osa(`tell application "${browserApp}"
+  set out to ""
+  repeat with w in windows
+    repeat with t in tabs of w
+      set out to out & (id of t) & " " & (URL of t) & linefeed
+    end repeat
+  end repeat
+  return out
+end tell`)
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => ({ id: line.slice(0, line.indexOf(" ")), url: line.slice(line.indexOf(" ") + 1) }));
+const closeTabs = (ids) =>
+  ids.length &&
+  osa(`tell application "${browserApp}"
+  repeat with w in windows
+    close (every tab of w whose ${ids.map((id) => `id is ${Number(id)}`).join(" or ")})
   end repeat
 end tell`);
 const openUserTab = (url) => osa(`tell application "${browserApp}" to tell front window to make new tab at end of tabs with properties {URL:"${url}"}`);
@@ -82,12 +116,12 @@ const trashDownloads = () => {
   }
 };
 
-const api = async (p, init) => (await fetch(`${ORIGIN_A}${p}`, init)).json();
+const api = async (p, init) => (suite === "local" ? (await fetch(`${ORIGIN_A}${p}`, init)).json() : {});
 
-function runClaude(tool, task) {
+function runClaude(tool, task, transcriptPath) {
   return new Promise((resolve) => {
     const deny = task.allowFileTools ? denied.replace("Read,Glob,", "") : denied;
-    const argv = ["-p", task.prompt, "--model", model, "--effort", effort, "--output-format", "json", "--strict-mcp-config", "--dangerously-skip-permissions", "--disallowedTools", deny, ...toolFlags[tool]];
+    const argv = ["-p", task.prompt, "--model", model, "--effort", effort, "--output-format", "stream-json", "--verbose", "--strict-mcp-config", "--dangerously-skip-permissions", "--disallowedTools", deny, ...toolFlags[tool]];
     const started = Date.now();
     const child = spawn("claude", argv, { cwd: workDir, stdio: ["ignore", "pipe", "pipe"] });
     let out = "", err = "";
@@ -96,8 +130,15 @@ function runClaude(tool, task) {
     const timer = setTimeout(() => child.kill("SIGTERM"), 15 * 60_000);
     child.on("close", (code) => {
       clearTimeout(timer);
-      let result = {};
-      try { result = JSON.parse(out); } catch { result = { result: out.slice(-500) }; }
+      fs.writeFileSync(transcriptPath, out);
+      // The last event of a stream is the result with time, turns and cost.
+      let result = { result: err.slice(-500) };
+      for (const line of out.trim().split("\n").reverse()) {
+        try {
+          const event = JSON.parse(line);
+          if (event.type === "result") { result = event; break; }
+        } catch {}
+      }
       resolve({ code, wallMs: Date.now() - started, result, stderr: err.slice(-500) });
     });
   });
@@ -157,7 +198,9 @@ function runCodex(tool, task) {
 }
 
 async function runOne(task, tool, rep) {
+  const hosts = task.hosts ?? [];
   closeBenchTabs();
+  const tabsBefore = new Set(listTabs().map((t) => t.id));
   await api("/api/reset");
   const baseline = activeTabUrl();
   if (task.setup === "open-user-tab") {
@@ -172,21 +215,24 @@ async function runOne(task, tool, rep) {
   const probe = setInterval(() => {
     const url = activeTabUrl();
     // Only benchmark pages are recorded; the user's own tab switches stay out of the results.
-    if (url && url !== startTab && /:4790[12]\//.test(url)) seenTabs.add(url.replace(/[?#].*$/, ""));
+    if (url && url !== startTab && [":47901/", ":47902/", ...hosts].some((h) => url.includes(h))) seenTabs.add(url.replace(/[?#].*$/, ""));
     if (startFront !== browserApp && frontApp() === browserApp) browserCameForward = true;
   }, 700);
-  const run = agent === "codex" ? await runCodex(tool, task) : await runClaude(tool, task);
+  const transcript = path.join(outDir, "transcripts", `${task.id}-${tool}-${rep}.jsonl`);
+  const run = agent === "codex" ? await runCodex(tool, task) : await runClaude(tool, task, transcript);
+  clearInterval(probe);
+  // A run cut short by the account's usage limit is kept, marked, and ends the benchmark.
   if (/hit your (session|usage) limit|usage limit reached|usage limit/i.test(`${run.result.result ?? ""} ${run.stderr ?? ""}`)) {
-    console.log(`usage limit reached during ${task.id}/${tool} #${rep}; stopping without recording this run`);
+    fs.appendFileSync(path.join(outDir, "runs.jsonl"), JSON.stringify({ task: task.id, suite, kind: task.kind, tool, rep, ok: false, interrupted: "usage-limit", model, effort, revision, wallMs: run.wallMs }) + "\n");
+    console.log(`usage limit reached during ${task.id}/${tool} #${rep}; recorded as interrupted, stopping`);
     throw new Error("usage-limit");
   }
-  clearInterval(probe);
   const log = await api("/api/log");
   const answer = run.result.result ?? "";
   const ok = (() => { try { return task.check({ answer, log }); } catch { return false; } })();
   const usage = run.result.usage ?? {};
   const record = {
-    task: task.id, kind: task.kind, tool, rep, ok, model, effort, revision, answer: String(answer).slice(0, 400),
+    task: task.id, suite, kind: task.kind, tool, rep, ok, model, effort, revision, answer: String(answer).slice(0, 400),
     wallMs: run.wallMs, durationMs: run.result.duration_ms, apiMs: run.result.duration_api_ms, turns: run.result.num_turns,
     agent, costUsd: run.result.total_cost_usd,
     // Claude reports cached input apart from input_tokens; Codex counts it inside input_tokens.
@@ -198,9 +244,10 @@ async function runOne(task, tool, rep) {
   trashDownloads();
   console.log(`${task.id.padEnd(13)} ${tool.padEnd(7)} #${rep} ${ok ? "ok  " : "FAIL"} ${(run.wallMs / 1000).toFixed(1)}s turns=${record.turns} in=${record.inputTokens} out=${record.outputTokens} $${(record.costUsd ?? 0).toFixed(3)} tab=${record.activeTabChanged ? "taken" : "kept"}`);
   closeBenchTabs();
+  closeTabs(listTabs().filter((t) => !tabsBefore.has(t.id) && hosts.some((h) => t.url.includes(h))).map((t) => t.id));
 }
 
-const server = spawn(node, [path.join(here, "server.mjs")], { stdio: "ignore" });
+const server = suite === "local" ? spawn(node, [path.join(here, "server.mjs")], { stdio: "ignore" }) : null;
 await new Promise((r) => setTimeout(r, 800));
 try {
   for (const id of taskIds) {
@@ -213,6 +260,6 @@ try {
     }
   }
 } finally {
-  server.kill();
+  server?.kill();
 }
 console.log(`results: ${outDir}`);
