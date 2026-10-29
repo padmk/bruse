@@ -1,4 +1,4 @@
-// Summarizes a benchmark run: per task and tool, the success rate, median time, turns and cost, and how
+// Summarizes a benchmark run: per task and tool, the success rate, median time, turns, tokens and cost, and how
 // often the run took over the user's active tab.
 //
 //   node bench/report.mjs bench/results/<timestamp> [more result dirs…] [--json]
@@ -34,6 +34,7 @@ const summary = tasks.filter((t) => runs.some((r) => r.task === t.id)).map((t) =
       medianTurns: median(ok.map((r) => r.turns)),
       medianCostUsd: median(ok.map((r) => r.costUsd)),
       medianInputTokens: median(ok.map((r) => r.inputTokens)),
+      medianOutputTokens: median(ok.map((r) => r.outputTokens)),
       tabTaken: rs.filter(tookTab).length,
       browserCameForward: rs.filter((r) => r.browserCameForward).length,
     }];
@@ -49,8 +50,11 @@ if (process.argv.includes("--json")) {
     console.log(`\n${s.title} [${s.kind}]`);
     for (const tool of tools) {
       const v = s[tool];
-      console.log(`  ${tool.padEnd(7)} ${v.passed}/${v.runs} ok  median ${v.medianSeconds?.toFixed(1) ?? "–"} s  turns ${v.medianTurns ?? "–"}  $${v.medianCostUsd?.toFixed(3) ?? "–"}  tab taken ${v.tabTaken}/${v.runs}`);
+      console.log(`  ${tool.padEnd(7)} ${v.passed}/${v.runs} ok  median ${v.medianSeconds?.toFixed(1) ?? "–"} s  turns ${v.medianTurns ?? "–"}  in ${v.medianInputTokens ?? "–"}  out ${v.medianOutputTokens ?? "–"}  $${v.medianCostUsd?.toFixed(3) ?? "–"}  tab taken ${v.tabTaken}/${v.runs}`);
     }
-    if (s.bruse && s.chrome) console.log(`  bruse faster by ${pct(s.bruse.medianSeconds, s.chrome.medianSeconds)}, cheaper by ${pct(s.bruse.medianCostUsd, s.chrome.medianCostUsd)}`);
+    for (const other of tools.filter((tool) => tool !== "bruse")) {
+      if (!s.bruse || !s[other]) continue;
+      console.log(`  bruse vs ${other}: faster by ${pct(s.bruse.medianSeconds, s[other].medianSeconds)}, cheaper by ${pct(s.bruse.medianCostUsd, s[other].medianCostUsd)}, input tokens lower by ${pct(s.bruse.medianInputTokens, s[other].medianInputTokens)}`);
+    }
   }
 }
