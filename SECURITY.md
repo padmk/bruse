@@ -22,6 +22,8 @@ Bruse gives the agents you run full control of your browser: the code an agent s
 - an agent session seeing the title or address of, reading, driving, closing or moving a tab that it did not open and the user did not share (in the default "agent tabs" mode), including through the management capability, frame sessions or events, or by naming another session;
 - in that mode, an agent session seeing a window or tab group that holds none of its tabs and no shared tab, changing, focusing or closing a window that holds such a tab, moving tabs into such a window or into a group it cannot fully reach, or making a tab active in such a window;
 - a debugger staying attached to a tab after the user stopped sharing it;
+- an agent opening the browser's internal pages or the extension's own pages (agents get web, data, file and blob pages, `about:blank` and `about:srcdoc`), or running JavaScript through raw DevTools commands anywhere but in the page's own contexts, such as in the isolated world of this or another extension's content script;
+- web pages or content scripts reading or changing the extension's storage (its access setting, shares and pairing secret), which only the extension's pages and service worker may use, or getting the extension to execute hub requests through its runtime messages;
 - tabs the user did not give the agent (not opened by its session and not shared or bound with `getTab`) being closed or changed by session cleanup;
 - the release artifacts, the installer and the Homebrew formula.
 

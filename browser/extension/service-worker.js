@@ -8,7 +8,13 @@ import { waitForDownload } from "./downloads.js";
 import { PAUSED_ERROR, isPaused } from "./pause.js";
 import { agentTabs, createAgentTab, createAgentTabs, endSession, markTab, noteAgentInput, onTabOpened, openingSession, setLiveSessions } from "./sessions.js";
 import { checkRequest } from "./guard.js";
+import { fromExtensionPage } from "./sender.js";
 import { MANAGEMENT_METHODS, extensionBuild, isPressInput } from "./shared.js";
+
+// Content scripts that this extension runs in pages (see cdp.js) get no access to its storage, which
+// holds the access setting, the shares and the hub secret. Session storage starts out this way.
+chrome.storage.local.setAccessLevel({ accessLevel: "TRUSTED_CONTEXTS" });
+chrome.storage.session.setAccessLevel({ accessLevel: "TRUSTED_CONTEXTS" });
 
 const OFFSCREEN_ALARM = "offscreen-check";
 const LOAD_TIMEOUT_MS = 20_000;
@@ -415,8 +421,9 @@ async function handle(gen, text) {
     if (!handler) throw new Error(`Unknown method ${method}`);
     if (!PAUSE_EXEMPT.has(method) && (await isPaused())) throw new Error(PAUSED_ERROR);
     if (!SESSIONLESS_METHODS.has(method) && !("session" in message)) throw new Error(OUTDATED_HUB);
-    await checkRequest(method, params ?? {});
+    // Access comes first, so a request for a hidden tab learns nothing about the tab's page.
     if (TAB_METHODS.has(method)) await requireAccess(session, params?.tabId);
+    await checkRequest(method, params ?? {});
     if (LOADED_PAGE_METHODS.has(method) && (await chrome.tabs.get(params.tabId).catch(() => null))?.discarded) throw new Error(DISCARDED);
     return JSON.stringify({ id, result: (await handler(params ?? {}, session)) ?? null });
   } catch (error) {
@@ -424,8 +431,8 @@ async function handle(gen, text) {
   }
 }
 
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-  if (message.target !== "worker") return false;
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message?.target !== "worker" || !fromExtensionPage(sender)) return false;
   if (message.type === "hub-open" || message.type === "hub-closed") {
     if (message.gen >= hub.gen) resetHub(message.gen);
     return false;

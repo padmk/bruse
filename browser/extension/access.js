@@ -4,8 +4,9 @@
 // or move it. A window is the session's only when the session may reach every tab in it; the session sees
 // only windows with a tab it may reach, and changes, focuses, activates tabs in or moves tabs into only
 // its own windows. In "all tabs" mode, which the user chooses in the popup, sessions reach every tab, as
-// before. The mode and the shares live in extension storage, which only the extension's pages change;
-// agents cannot open those pages (see guard.js).
+// before. The mode and the shares live in extension storage, which only the extension's pages and
+// service worker can use, not its content scripts (see service-worker.js); agents cannot open those
+// pages (see guard.js) or run JavaScript in its content scripts (see cdp.js).
 //
 // The session of a request comes from the hub's envelope, not from the request's parameters, so a
 // session cannot act as another.

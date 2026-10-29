@@ -3,6 +3,7 @@
 // passed to the service worker, which authenticates the hub and executes its requests. Each socket has
 // a generation number so that a reply never reaches a newer hub than the one that asked.
 
+import { fromExtensionPage } from "./sender.js";
 import { HUB_PORT } from "./shared.js";
 
 const HUB_URL = `ws://127.0.0.1:${HUB_PORT}/extension`;
@@ -33,8 +34,8 @@ function connect() {
   });
 }
 
-chrome.runtime.onMessage.addListener((message) => {
-  if (message.target !== "offscreen") return;
+chrome.runtime.onMessage.addListener((message, sender) => {
+  if (message?.target !== "offscreen" || !fromExtensionPage(sender)) return;
   if (message.type === "send" && message.gen === generation && socket?.readyState === WebSocket.OPEN) socket.send(message.data);
   // The service worker lost this connection's authentication (it restarted); a new connection redoes it.
   if (message.type === "reconnect" && message.gen === generation) socket?.close();

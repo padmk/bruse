@@ -9,6 +9,7 @@
 const name = chrome.runtime.getManifest().name;
 
 const AGENT_SCHEMES = new Set(["http:", "https:", "about:", "data:", "file:", "blob:"]);
+const ABOUT_PAGES = new Set(["blank", "srcdoc"]);
 
 const ALLOWED_CDP_DOMAINS = new Set(["Accessibility", "Animation", "CSS", "DOM", "DOMSnapshot", "Emulation", "Input", "Log", "Network", "Overlay", "Page", "Performance", "Runtime"]);
 const REFUSED_CDP = new Set([
@@ -39,6 +40,8 @@ function checkUrl(url) {
     throw new Error(`${name} lets agents open only absolute web addresses, not ${JSON.stringify(url)}`);
   }
   if (!AGENT_SCHEMES.has(scheme)) throw new Error(`${name} does not let agents open or use ${scheme} pages`);
+  // The browser turns other about: addresses, such as about:settings, into its internal pages.
+  if (scheme === "about:" && !ABOUT_PAGES.has(new URL(String(url)).pathname)) throw new Error(`${name} lets agents open only about:blank and about:srcdoc, not ${JSON.stringify(url)}`);
 }
 
 async function checkTab(tabId) {

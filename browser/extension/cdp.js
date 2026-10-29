@@ -82,8 +82,11 @@ chrome.debugger.onEvent.addListener(({ tabId, sessionId: source }, method, param
   } else if (method === "Page.javascriptDialogClosed") {
     session.dialog = null;
   } else if (method === "Runtime.executionContextCreated") {
-    // Only the page's own contexts count; other extensions' content scripts log into isolated ones.
-    if (params.context.auxData?.isDefault) session.pageContexts.add(contextKey(params.context.id));
+    // Only the page's own contexts count; extensions' content scripts run and log in isolated ones.
+    if (params.context.auxData?.isDefault) {
+      session.pageContexts.add(contextKey(params.context.id));
+      if (params.context.uniqueId) session.pageContexts.add(contextKey(params.context.uniqueId));
+    }
   } else if (method === "Runtime.executionContextsCleared") {
     for (const key of session.pageContexts) if (key.startsWith(`${source ?? "main"}:`)) session.pageContexts.delete(key);
   } else if (method === "Runtime.consoleAPICalled") {
@@ -435,11 +438,27 @@ export async function cdp(tabId, method, params, sessionId, timeoutMs, caller) {
   return withDebuggerAccess(tabId, async (session) => sendChecked(tabId, session, method, params, await currentFrameSession(tabId, session, sessionId), timeoutMs, caller), caller);
 }
 
+// Parameters by which commands pick the JavaScript context they run in.
+const CONTEXT_PARAMS = ["contextId", "uniqueContextId", "executionContextId"];
+
+// Raw commands run JavaScript only in the page's own (default) contexts of the target they go to, never
+// in an isolated world where this or another extension's content script runs with extension APIs.
+function requirePageContext(session, params, sessionId) {
+  if (!params || typeof params !== "object") return;
+  const named = CONTEXT_PARAMS.filter((key) => params[key] !== undefined);
+  if (params.executionContextName === undefined && named.every((key) => session.pageContexts.has(`${sessionId ?? "main"}:${params[key]}`))) return;
+  throw new Error(
+    "Agents may run JavaScript only in the page's own contexts, not in isolated worlds such as extensions' content scripts; " +
+      "leave out the context parameter to use the page's main context",
+  );
+}
+
 async function sendChecked(tabId, session, method, params, sessionId, timeoutMs, caller) {
   await requireDebugAccess(tabId, caller);
   // The session may have been detached while access was checked; withDebuggerAccess then attaches anew,
   // which asks the gate again.
   if (sessions.get(tabId) !== session) throw new Error("Debugger is not attached to the tab");
+  requirePageContext(session, params, sessionId);
   if (session.dialog && !DIALOG_SAFE_METHODS.has(method) && !method.startsWith("Input.")) {
     throw new Error(`A JavaScript ${session.dialog.type} dialog is open on this tab ("${session.dialog.message}"); handle it with getJsDialog() first`);
   }
