@@ -2,7 +2,7 @@
 
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { MIN_NODE_MAJOR, agentClients, installed, installedVersion, manifest, note, product, serverPath, source, step } from "./lib.mjs";
+import { MIN_NODE_MAJOR, agentClients, clientId, installed, installedVersion, manifest, note, product, serverPath, source, step } from "./lib.mjs";
 
 export async function doctor() {
   let problems = 0;
@@ -22,15 +22,21 @@ export async function doctor() {
   else if (copy !== manifest.version) bad(`The installed copy is ${copy}; run \`bruse setup\` to install ${manifest.version}.`);
   else ok(`Installed in ${installed}`);
 
+  // Setup registers only the clients the user picked, so an unregistered client is not a problem.
   const clients = agentClients();
   if (!clients.length) note("No supported agent client found; register the MCP server with your client by hand (see the README).");
+  let registered = 0;
   for (const client of clients) {
     const registration = client.registration();
     if (!registration) bad(`${client.name}: could not read its MCP configuration.`);
-    else if (registration.path === serverPath) ok(`${client.name}: registered`);
-    else if (registration.path) bad(`${client.name}: registered with ${registration.path}, not the installed copy; run \`bruse setup\`.`);
-    else bad(`${client.name}: not registered; run \`bruse setup\`.`);
+    else if (registration.path === serverPath) {
+      registered++;
+      ok(`${client.name}: registered`);
+    } else if (registration.path) bad(`${client.name}: registered with ${registration.path}, not the installed copy; run \`bruse setup --clients ${clientId(client)}\`.`);
+    else note(`- ${client.name}: not registered (\`bruse setup --clients ${clientId(client)}\` adds it)`);
   }
+  if (clients.length && !registered) bad("No agent client is registered; run `bruse setup`.");
+
 
   // The installed copy's own modules, so the check talks to the hub the way agents do.
   const browserDir = copy ? installed : source;

@@ -1,15 +1,16 @@
 // Installs the browser extension files and the MCP server to a stable per-user location, registers the
-// server with the agent CLIs found on this machine, opens the browser's extensions page for the one
-// manual step (Load unpacked), and waits until the extension connects and pairs. An extension that is
-// already connected is reloaded and must come back with this version.
+// server with the agent clients the user picks, opens the browser's extensions page for the one manual
+// step (Load unpacked), and waits until the extension connects and pairs. An extension that is already
+// connected is reloaded and must come back with this version.
 
 import { spawnSync } from "node:child_process";
+import { createInterface } from "node:readline/promises";
 import { cpSync, existsSync, mkdirSync, renameSync } from "node:fs";
 import { homedir, platform } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { HUB_VERSION_MISMATCH, STORE_EXTENSION_ID } from "../browser/mcp/config.mjs";
-import { agentClients, extensionDir, fail, installRoot, installed, manifest, note, onPath, product, requireNode, serverPath, source, step, moveToTrash } from "./lib.mjs";
+import { agentClients, clientId, extensionDir, fail, installRoot, installed, manifest, note, onPath, product, requireNode, serverPath, source, step, moveToTrash } from "./lib.mjs";
 
 const PAIR_WAIT_MS = 10 * 60_000;
 const PAIR_HINT_MS = 45_000;
@@ -45,13 +46,46 @@ function installFiles() {
   note(installed);
 }
 
-// Returns whether every agent CLI found took the registration.
-function registerServer() {
+// A stable path such as /opt/homebrew/bin/node keeps working after Node upgrades; process.execPath is versioned.
+const nodePath = () => process.env.INSTALL_NODE || onPath("node") || process.execPath;
+
+// The clients to register with: --clients names them; in a terminal the user picks from the list.
+// Without a terminal (an agent or a script runs setup), an update keeps the clients that already have the
+// server, and a first install stops with the list, because registering with every client unasked is the
+// user's decision.
+async function chooseClients(clients, requested) {
+  if (requested !== undefined) {
+    const ids = requested.split(",").map((id) => id.trim()).filter(Boolean);
+    if (!ids.length) fail(`--clients needs client names, such as ${clients.map(clientId).join(",") || "claude-code,codex"}.`);
+    const unknown = ids.filter((id) => !clients.some((client) => clientId(client) === id));
+    if (unknown.length) fail(`Unknown or not installed client: ${unknown.join(", ")}. Found: ${clients.map(clientId).join(", ") || "none"}.`);
+    return clients.filter((client) => ids.includes(clientId(client)));
+  }
+  if (!process.stdin.isTTY) {
+    if (!clients.length) return clients;
+    const registered = clients.filter((client) => client.registration()?.path);
+    if (registered.length) return registered;
+    fail(`Choose the agent clients to register with: bruse setup --clients ${clients.map(clientId).join(",")} (any subset of these).`);
+  }
+  if (clients.length < 2) return clients;
+  step("Agent clients found");
+  clients.forEach((client, i) => note(`${i + 1}. ${client.name}`));
+  const prompt = createInterface({ input: process.stdin, output: process.stdout });
+  const answer = (await prompt.question("  Register with which? Enter for all, numbers such as 1,3, or 0 for none: ")).trim();
+  prompt.close();
+  if (!answer) return clients;
+  const picked = answer.split(/[\s,]+/).map(Number);
+  if (picked.some((n) => !Number.isInteger(n) || n < 0 || n > clients.length)) fail(`Expected numbers from 1 to ${clients.length}.`);
+  return clients.filter((_, i) => picked.includes(i + 1));
+}
+
+// Returns whether every chosen client took the registration.
+async function registerServer(requested) {
+  const command = [nodePath(), serverPath];
+  const found = agentClients();
+  const clients = await chooseClients(found, requested);
   step("Registering the MCP server");
-  // A stable path such as /opt/homebrew/bin/node keeps working after Node upgrades; process.execPath is versioned.
-  const node = process.env.INSTALL_NODE || onPath("node") || process.execPath;
-  const command = [node, serverPath];
-  const clients = agentClients();
+  for (const client of found.filter((client) => !clients.includes(client))) note(`${client.name}: skipped (add it later with \`bruse setup --clients ${clientId(client)}\`)`);
   let failed = 0;
   for (const client of clients) {
     const result = client.add(command);
@@ -61,7 +95,7 @@ function registerServer() {
       note(`${client.name}: failed (${(result.stderr || result.stdout).trim()})`);
     }
   }
-  if (!clients.length) {
+  if (!found.length) {
     note("No supported agent client found. Add this stdio server to your MCP client:");
     note(`  ${command.map((part) => JSON.stringify(part)).join(" ")}`);
   }
@@ -145,10 +179,10 @@ function checkStoreExtension(info) {
 
 const fromStore = (info) => info?.id === STORE_EXTENSION_ID;
 
-export async function setup() {
+export async function setup({ clients } = {}) {
   requireNode();
   installFiles();
-  const registered = registerServer();
+  const registered = await registerServer(clients);
   const { callBrowser } = await import(join(installed, "mcp", "browser-link.mjs"));
   // A hub of an older version, run by an agent session started before the update, cannot be reached.
   const connected = await callBrowser("browser.info").catch((error) => (error.code === HUB_VERSION_MISMATCH ? fail(error.message) : null));
@@ -167,6 +201,7 @@ export async function setup() {
 
 // Run directly (node installer/install.mjs, Install Bruse.command); `bruse setup` imports it.
 if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {
-  await setup();
+  const flag = process.argv.indexOf("--clients");
+  await setup({ clients: flag > 0 ? (process.argv[flag + 1] ?? "") : undefined });
   process.exit(0);
 }

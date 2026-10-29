@@ -19,7 +19,7 @@ In [the benchmark against Claude in Chrome](bench/README.md), the same model fin
 
 - macOS (Linux works too, but is tested less), with Node.js 22 or newer
 - A Chromium browser: Brave, Chrome, Edge, Chromium or Vivaldi
-- An MCP client; setup registers the server with every supported one it finds (see [Install](#install))
+- An MCP client; setup registers the server with the supported ones you pick (see [Install](#install))
 
 ## Install
 
@@ -38,10 +38,14 @@ Setup:
 
 - copies the extension and the MCP server to `~/.local/share/bruse/browser`, replacing a previous
   version (`~/.local/share/bruse` holds everything Bruse keeps, the pairing state included);
-- registers the MCP server as `bruse` with each of these agent clients it finds: Claude Code, Codex, Cursor, VS Code (and Insiders), GitHub Copilot CLI, Gemini CLI, Claude Desktop, Devin Desktop and Windsurf. It uses
-  the client's own `mcp add` command where there is one; otherwise it edits the client's JSON
-  configuration, keeping everything else, after a backup to `~/.local/share/bruse/backups`, and leaves a
-  file with comments untouched and reports it;
+- lists the agent clients it finds (Claude Code, Codex, Cursor, VS Code and Insiders, GitHub Copilot CLI,
+  Gemini CLI, Claude Desktop, Devin Desktop, Windsurf) and registers the MCP server as `bruse` with the
+  ones you pick; Enter picks all of them. `bruse setup --clients claude-code,codex` picks without
+  asking. Run without a terminal (by an agent or a script) and without `--clients`, setup updates the
+  clients that already have the server and, on a first install, stops and lists the clients to choose
+  from. It uses the client's own `mcp add` command where there is one; otherwise it edits the client's
+  JSON configuration, keeping everything else, after a backup to `~/.local/share/bruse/backups`, and
+  leaves a file with comments untouched and reports it;
 - when the extension is not connected yet, shows its folder in Finder and opens the browser's
   extensions page (the first time, macOS asks to let the terminal control the browser);
 - waits until the extension connects, which also pairs it (see [Security and privacy](#security-and-privacy)),
@@ -61,7 +65,8 @@ Start a new agent session afterwards: MCP servers load when a session starts.
 
 | Command | What it does |
 | --- | --- |
-| `bruse setup` | Install or update, register the MCP server and wait for the extension |
+| `bruse setup` | Install or update, register the MCP server with the clients you pick and wait for the extension |
+| `bruse setup --clients claude-code,codex` | The same, with the named clients and without asking (names as `bruse doctor` shows them) |
 | `bruse doctor` | Check Node.js, the installed copy, the registrations, pairing and the browser connection |
 | `bruse uninstall` | Remove the registrations, the installed copy and the pairing state |
 | `bruse version` | Print the version |

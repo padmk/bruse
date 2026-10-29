@@ -4,22 +4,25 @@
 const USAGE = `Usage: bruse <command>
 
 Commands:
-  setup      install or update the extension files and the MCP server, register the server with
-             the agent clients found (Claude Code, Codex, Cursor, VS Code and others), and wait
-             for the browser extension to connect
+  setup      install or update the extension files and the MCP server, register the server
+             with the agent clients you pick (Claude Code, Codex, Cursor, VS Code and others),
+             and wait for the extension
+  setup --clients claude-code,codex
+             register with these clients only, without asking
   doctor     check the installation, the registrations and the browser connection
   uninstall  remove the registrations, the installed files and the pairing state
   version    print the version`;
 
 const [command, ...rest] = process.argv.slice(2);
-if (rest.length) {
+const clients = command === "setup" && rest[0] === "--clients" && rest.length === 2 ? rest[1] : undefined;
+if (rest.length && clients === undefined) {
   console.error(USAGE);
   process.exit(2);
 }
 switch (command) {
   case "setup": {
     const { setup } = await import("../installer/install.mjs");
-    await setup();
+    await setup({ clients });
     process.exit(0);
   }
   case "doctor": {

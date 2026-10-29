@@ -7,8 +7,8 @@ import { browserCopy, freePort, launchBrowser, until } from "./harness.mjs";
 
 let copy, browser, home, installed, cli, environment;
 const children = new Map();
-function run(command) {
-  const child = spawn(process.execPath, [cli, command], { env: environment, stdio: ["ignore", "pipe", "pipe"] });
+function run(command, ...args) {
+  const child = spawn(process.execPath, [cli, command, ...args], { env: environment, stdio: ["ignore", "pipe", "pipe"] });
   let output = "";
   child.stdout.on("data", (chunk) => (output += chunk));
   child.stderr.on("data", (chunk) => (output += chunk));
@@ -100,7 +100,9 @@ test("file clients preserve configuration and reject comments", { timeout: 180_0
   }
   const malformed = files[0][1];
   writeFileSync(malformed, "{ // comment\n}\n");
-  const setup = run("setup");
+  // Without a terminal, setup registers only with the clients it is given.
+  const clients = "cursor,claude-desktop,devin-desktop,windsurf,vs-code,vs-code-insiders,github-copilot-cli,gemini-cli";
+  const setup = run("setup", "--clients", clients);
   await until(() => setup.output().includes("Gemini CLI: added"), { timeoutMs: 60_000 });
   setup.child.kill("SIGTERM");
   const result = await setup.done;
@@ -119,7 +121,7 @@ test("file clients preserve configuration and reject comments", { timeout: 180_0
   assert.deepEqual(entry("GitHub Copilot CLI").tools, ["*"]);
   assert.ok(readdirSync(join(installed, "backups")).length >= files.length - 1);
   writeFileSync(malformed, JSON.stringify({ other: 42, mcpServers: { existing: { command: "other" } } }));
-  const retry = run("setup");
+  const retry = run("setup", "--clients", clients);
   await until(() => retry.output().includes("Gemini CLI: added"), { timeoutMs: 60_000 });
   retry.child.kill("SIGTERM");
   await retry.done;
