@@ -56,6 +56,48 @@ the browser, which takes under a second; a long interactive session does not pay
 the runner does not measure it separately. No task asks to solve a CAPTCHA or to type a password; a
 step that needs the user is reported as a failure of that run. Both tools run in the same Brave profile.
 
+## Results on public websites (2026-10-29)
+
+`results/2026-10-29T17-28-51-255Z`: commit `c6f4daa`, whose code is this history's before the element-number
+fix described below (the history was squashed afterwards), the extension's code fingerprint confirmed
+equal to the checkout's, claude-opus-5-5, effort medium, 8 runs per task and tool, alternating which tool went
+first, Brave 156 on one Mac. Median time and pass count, how much less time and money the median Bruse
+run took, and the 95 % bootstrap interval of the Bruse/Claude in Chrome time ratio over paired runs:
+
+| Task | Bruse | Claude in Chrome | Less time (ratio interval) | Less money |
+| --- | --- | --- | --- | --- |
+| Wikipedia: site search and infobox | 15.1 s, 8/8 | 37.7 s, 8/8 | 60 % (0.27 to 0.49) | 47 % |
+| GitHub: .js files in a folder | 10.4 s, 8/8 | 20.2 s, 8/8 | 48 % (0.31 to 0.85) | 56 % |
+| GitHub: a release's date | 10.3 s, 8/8 | 20.8 s, 8/8 | 51 % (0.34 to 0.79) | 61 % |
+| Python documentation search | 18.6 s, 8/8 | 58.7 s, 8/8 | 68 % (0.26 to 0.39) | 68 % |
+| Paginated shop, counting by rating | 8.9 s, 8/8 | 17.3 s, 8/8 | 48 % (0.30 to 0.63) | 38 % |
+| Single-page app (TodoMVC) | 13.0 s, 8/8 | 37.9 s, 8/8 | 66 % (0.27 to 0.50) | 74 % |
+
+All 96 runs together took 633 s and $6.03 with Bruse and 1,534 s and $13.63 with Claude in Chrome. Every
+transcript was read for the checks: each Bruse run used only its `js` tool (21 calls ran page code
+through `evaluate()`, none reached a page from Node.js) and each Claude in Chrome run used its browser
+tools. Starting the agent and connecting took a median 0.9 s (Bruse) and 0.7 s; the three runs slower
+than twice their median spent the extra time in the model's API, not in tool calls.
+
+Four Bruse Wikipedia runs lost a turn: the agent read the page twice, Wikipedia replaced its search field
+in between, and the agent typed into the field's number from the first read. An element number from an
+earlier read of the same page now leads to the element that replaced it; four runs on the fixed code
+(`results/2026-10-29T18-17-28-608Z`) took 7.4, 7.9, 9.3 and 20.0 s, all in 3 turns, the 20 s run waiting
+on the API.
+
+The local tasks added for the review, 3 runs each (`results/2026-10-29T18-08-41-139Z`): the order the
+server rejects took a median 17.3 s with Bruse and 32.5 s with Claude in Chrome (ratio interval 0.45 to
+0.58), the canvas chart 8.3 s and 17.0 s (0.37 to 0.70), all passing; Bruse read the chart from a
+screenshot. In the existing-tab task both tools answered that they have no access to the tab the user
+did not share; the first two Claude in Chrome runs were graded against the earlier expectation that it
+reads the tab and were run again with the corrected grader (`results/2026-10-29T18-14-25-331Z`, from a
+working tree with that one change).
+
+What this does not show: other computers, browsers or memory pressure (the review's 90 to 99 % RAM was
+not reproduced), other models, signed-in work, or the cause of the review's 24 to 162 s runs, whose
+conversations were not recorded. Transcripts stay out of the repository because they list the local
+agent setup and paths; `runs.jsonl` and `meta.json` are complete.
+
 ## Earlier results on the benchmark's pages
 
 `results/2026-10-24-published` (sources in `NOTES.md`): Bruse 0.17.0, claude-opus-5-5, effort medium,
@@ -79,9 +121,10 @@ lenient number rule; regrading them with `grading.mjs` changes none.
 Neither tool brought a benchmark page into the user's active tab.
 
 These results come from Bruse 0.17.0, which let agents use every tab. Since then Bruse keeps a tab the
-user did not share out of agents' reach by default, so the `existing-tab` task now expects Bruse to
-answer "brak dostępu" (no access) without loading the page again; reading the tab takes the user's
-**Share this tab** in the popup, which the runner does not click.
+user did not share out of agents' reach by default, and Claude in Chrome sees only its own tab group, so
+the `existing-tab` task now expects both tools to answer "brak dostępu" (no access) without loading the
+page again; reading the tab takes the user's **Share this tab** in Bruse's popup, which the runner does
+not click.
 
 Requirements: the Bruse extension and Claude in Chrome in the same Brave profile, and Claude Code signed
 in with an account that allows `--chrome` (an API-key or inference-only token does not). The runner opens
