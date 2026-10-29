@@ -83,7 +83,9 @@ Four Bruse Wikipedia runs lost a turn: the agent read the page twice, Wikipedia 
 in between, and the agent typed into the field's number from the first read. An element number from an
 earlier read of the same page now leads to the element that replaced it; four runs on the fixed code
 (`results/2026-10-29T18-17-28-608Z`) took 7.4, 7.9, 9.3 and 20.0 s, all in 3 turns, the 20 s run waiting
-on the API.
+on the API. Those four runs are not part of the table. The later fixes (a replaced element is followed only when
+the match is unambiguous, stopping a share also withholds its pending downloads, and the store package's
+code fingerprint) were not benchmarked again.
 
 The local tasks added for the review, 3 runs each (`results/2026-10-29T18-08-41-139Z`): the order the
 server rejects took a median 17.3 s with Bruse and 32.5 s with Claude in Chrome (ratio interval 0.45 to

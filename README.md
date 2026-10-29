@@ -21,8 +21,9 @@ second tool may not add much.
 On six read and interaction tasks on public websites (Wikipedia, GitHub, the Python documentation, a
 paginated shop and a single-page app), measured on 2026-10-29 with the same model and prompts, Bruse's
 median run took 48 to 68 % less time and 38 to 74 % less money than Claude in Chrome, with all 96 runs
-of both tools passing. That is one computer, one model and eight runs per task; see
-[the benchmark](bench/README.md) for the method, every run and what the numbers do not cover.
+of both tools passing. That is one computer, one browser (Brave), one model and eight runs per task,
+on the code before the last fixes to replaced elements and tab shares, which were not measured again;
+see [the benchmark](bench/README.md) for the method, every run and what the numbers do not cover.
 
 ## Requirements
 
