@@ -124,7 +124,10 @@ test("a session that ends while its tab is being created leaves no tab behind", 
     const result = await created;
     const tabs = await client.call("tabs.list");
     assert.ok(!tabs.some((t) => t.url === u || t.pendingUrl === u), JSON.stringify(tabs));
-    assert.match(String(result?.message), /ended while its tab was being created/);
+    await waitPage(u, false);
+    // Either creation wins and session cleanup closes it, or the ended session rejects creation.
+    if (result instanceof Error) assert.match(result.message, /ended while its tab was being created|No tab with id/);
+    else assert.ok(Number.isInteger(result.id), JSON.stringify(result));
   } finally {
     client.close();
     await hub.close();

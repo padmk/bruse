@@ -5,7 +5,8 @@ import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import { join } from "node:path";
 import { test } from "node:test";
-import { browserCopy, freePort, launchBrowser, offerPairing, startSession, until } from "./harness.mjs";
+import { browserCopy, freePort, hubClient, launchBrowser, offerPairing, startSession, until } from "./harness.mjs";
+import { extensionBuild } from "../browser/extension/shared.js";
 import { hostManifestPath, installPairingHost, pairingHostProblems } from "../installer/native-host.mjs";
 
 function nativeSecret(copy, stateDir) {
@@ -140,7 +141,7 @@ test("a saved pairing works without a host and an unpacked permission update sta
   const legacy = JSON.parse(current);
   legacy.permissions = legacy.permissions.filter((permission) => permission !== "nativeMessaging");
   writeFileSync(manifestPath, JSON.stringify(legacy));
-  let browser, session;
+  let browser, session, client;
   try {
     browser = await launchBrowser(copy.extensionDir);
     const { targetId } = await browser.cdp.send("Target.createTarget", { url: `chrome-extension://${browser.extensionId}/popup.html` });
@@ -151,12 +152,12 @@ test("a saved pairing works without a host and an unpacked permission update sta
     session = await startSession(copy.serverPath, { stateDir });
     await session.js("await cua.getState()");
     writeFileSync(manifestPath, current);
-    // The page goes away with the reload, so this call may never get its answer.
+    const expected = await extensionBuild((file) => Promise.resolve(readFileSync(join(copy.extensionDir, file), "utf8")));
+    client = await hubClient(port, stateDir);
+    // The popup's context ends during reload; its pending CDP request has a bounded lifetime.
     evaluate("chrome.runtime.reload()").catch(() => {});
-    await until(async () => {
-      const attempt = session.js("await cua.getState()").then(() => true, () => false);
-      return Promise.race([attempt, new Promise((resolve) => setTimeout(resolve, 5_000, false))]);
-    });
+    await until(async () => (await client.call("browser.info").catch(() => null))?.build === expected.hash,
+      { message: "the extension with the updated permission to reconnect" });
     assert.equal(readFileSync(join(stateDir, "extension-secret"), "utf8").trim(), secret);
-  } finally { await session?.close(); await browser?.close(); copy.remove(); }
+  } finally { client?.close(); await session?.close(); await browser?.close(); copy.remove(); }
 });
