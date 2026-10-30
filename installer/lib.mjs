@@ -2,6 +2,7 @@
 // registers with, and console output.
 
 import { execFileSync, spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync } from "node:fs";
 import { homedir, platform } from "node:os";
 import { dirname, join } from "node:path";
@@ -148,6 +149,6 @@ export function moveToTrash(path) {
   } else {
     const trash = join(process.env.XDG_DATA_HOME ?? join(homedir(), ".local", "share"), "Trash", "files");
     mkdirSync(trash, { recursive: true });
-    renameSync(path, join(trash, `${product.toLowerCase()}-${Date.now()}`));
+    renameSync(path, join(trash, `${product.toLowerCase()}-${Date.now()}-${randomUUID()}`));
   }
 }
