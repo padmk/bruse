@@ -23,7 +23,8 @@ export const STALE_ELEMENT_MESSAGE = "The element is no longer on the page (it w
 // Calls a function with `this` = the node. A node that left the document fails instead of being
 // changed without any effect on the page.
 export async function callOn(cdp, backendNodeId, functionDeclaration, args = []) {
-  const { object } = await cdp("DOM.resolveNode", { backendNodeId });
+  const objectGroup = `element-${Math.random().toString(36).slice(2)}`;
+  const { object } = await cdp("DOM.resolveNode", { backendNodeId, objectGroup });
   try {
     const { result, exceptionDetails } = await cdp("Runtime.callFunctionOn", {
       objectId: object.objectId,
@@ -39,7 +40,7 @@ export async function callOn(cdp, backendNodeId, functionDeclaration, args = [])
     return result.value;
   } finally {
     // Remote handles pin their DOM nodes until released.
-    cdp("Runtime.releaseObject", { objectId: object.objectId }).catch(() => {});
+    cdp("Runtime.releaseObjectGroup", { objectGroup }).catch(() => {});
   }
 }
 
@@ -209,8 +210,8 @@ const HIT_TEST = `function (points, mainSession, ownersOnly) {
 // Same-process frames between the session root and the node are passed by mapping the point into each
 // frame's document through the frame's quad.
 export async function coveringElement(cdp, backendNodeId, point, mainSession) {
-  const { object } = await cdp("DOM.resolveNode", { backendNodeId });
   const objectGroup = `hit-${Math.random().toString(36).slice(2)}`;
+  const { object } = await cdp("DOM.resolveNode", { backendNodeId, objectGroup });
   const call = (points, returnByValue, ownersOnly = false) =>
     cdp("Runtime.callFunctionOn", { objectId: object.objectId, functionDeclaration: HIT_TEST, arguments: [{ value: points }, { value: mainSession }, { value: ownersOnly }], returnByValue, objectGroup });
   try {
@@ -219,11 +220,15 @@ export async function coveringElement(cdp, backendNodeId, point, mainSession) {
     if (verdict === null || typeof verdict === "string") return verdict;
     // Frame owners as remote objects, to read their content boxes.
     const { result } = await call([point], false, true);
-    const { result: items } = await cdp("Runtime.getProperties", { objectId: result.objectId, ownProperties: true });
-    const owners = items.filter((p) => /^\d+$/.test(p.name)).sort((a, b) => a.name - b.name);
+    const { result: items, exceptionDetails } = await cdp("Runtime.callFunctionOn", {
+      objectId: result.objectId, objectGroup, functionDeclaration: "function () { return this; }",
+      serializationOptions: { serialization: "deep", additionalParameters: { maxNodeDepth: 0 } },
+    });
+    if (exceptionDetails) throw pageException(exceptionDetails);
+    const owners = items.deepSerializedValue.value;
     const points = [point];
     for (const [i, owner] of owners.entries()) {
-      const { node } = await cdp("DOM.describeNode", { objectId: owner.value.objectId });
+      const node = owner.value;
       // The content box is where the frame's document is drawn; its quad maps the frame's viewport.
       const { model } = await cdp("DOM.getBoxModel", { backendNodeId: node.backendNodeId }).catch(() => ({}));
       if (!model) return null;
@@ -233,7 +238,6 @@ export async function coveringElement(cdp, backendNodeId, point, mainSession) {
     }
     return (await call(points, true)).result.value;
   } finally {
-    cdp("Runtime.releaseObject", { objectId: object.objectId }).catch(() => {});
     cdp("Runtime.releaseObjectGroup", { objectGroup }).catch(() => {});
   }
 }
