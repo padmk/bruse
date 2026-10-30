@@ -57,3 +57,20 @@ test("a failed move of the previous copy to the Trash keeps the new installation
   assert.equal(backups.length, 1);
   assert.ok(output.includes(join(root, backups[0])), output);
 });
+
+// Runs setup's last check on a browser.info in its own process (fail() exits).
+function requireReady(info) {
+  const script = `const { requireReady } = await import(${JSON.stringify(installer)}); requireReady(${JSON.stringify(info)});`;
+  const result = spawnSync(process.execPath, ["--input-type=module", "-e", script], { encoding: "utf8", env: { ...process.env, XDG_DATA_HOME: join(dataHome, "ready") } });
+  return { code: result.status, output: result.stdout + result.stderr };
+}
+
+test("setup is not ready while the extension reports a problem or is paused", { timeout: 60_000 }, () => {
+  const problem = requireReady({ name: "Brave", paused: false, problem: "Storage stays open." });
+  assert.equal(problem.code, 1, problem.output);
+  assert.match(problem.output, /Brave refuses agent requests: Storage stays open\. Update Brave, then run `bruse setup`/);
+  const paused = requireReady({ name: "Brave", paused: true });
+  assert.equal(paused.code, 1, paused.output);
+  assert.match(paused.output, /Agents are paused in Brave/);
+  assert.equal(requireReady({ name: "Brave", paused: false }).code, 0);
+});

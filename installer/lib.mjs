@@ -40,6 +40,10 @@ export function fail(text) {
   process.exit(1);
 }
 
+// The problem a connected extension reports in its browser.info, which keeps it from running agent
+// requests, and what to do about it.
+export const problemMessage = (info) => `${info.name} refuses agent requests: ${info.problem} Update ${info.name}, then run \`bruse setup\` to reload the extension.`;
+
 export function requireNode() {
   if (Number(process.versions.node.split(".")[0]) < MIN_NODE_MAJOR) fail(`${product} needs Node.js ${MIN_NODE_MAJOR} or newer (this is ${process.version}).`);
 }
