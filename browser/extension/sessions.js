@@ -201,18 +201,20 @@ async function agentGroup(windowId, state) {
   return group?.windowId === windowId ? groupId : undefined;
 }
 
-// Sessions that ended, oldest first, and the tabs being created for each session: a session may end
-// while one of its tabs is still being created, and that tab then closes instead of outliving it. An
-// ended session is forgotten once more than MAX_ENDED_SESSIONS ended after it and none of its tabs is
-// being created.
+// Sessions that ended, oldest first, with the cause of each end ("explicit" when the session ended
+// itself, "absent" when it ended for its absence from the live report), and the tabs being created for
+// each session: a session may end while one of its tabs is still being created, and that tab then closes
+// instead of outliving it. An ended session is forgotten once more than MAX_ENDED_SESSIONS ended after it
+// and none of its tabs is being created. A session ended for its absence that is reported live again is
+// forgotten at once, so it may open tabs again.
 const MAX_ENDED_SESSIONS = 200;
-const endedSessions = new Set();
+const endedSessions = new Map(); // session id -> cause
 const creating = new Map(); // session id -> number of tabs being created
 
-function rememberEnded(sessionId) {
+function rememberEnded(sessionId, cause) {
   endedSessions.delete(sessionId);
-  endedSessions.add(sessionId);
-  for (const id of endedSessions) {
+  endedSessions.set(sessionId, cause);
+  for (const id of endedSessions.keys()) {
     if (endedSessions.size <= MAX_ENDED_SESSIONS) break;
     if (!creating.has(id)) endedSessions.delete(id);
   }
@@ -245,7 +247,7 @@ async function groupAgentTabsNow(tabIds, sessionId) {
   const state = await load();
   if (endedSessions.has(sessionId) && (await isPaused())) {
     for (const tabId of tabIds) state.tabs[tabId] = { sessionId, mark: null };
-    notePausedEnd(state, sessionId);
+    notePausedEnd(state, sessionId, endedSessions.get(sessionId));
     await save(state);
     throw new Error(tabIds.length === 1 ? "The agent session ended while its tab was being created; the tab closes when the user resumes agents" : "The agent session ended while its tabs were being created; the tabs close when the user resumes agents");
   }
@@ -302,19 +304,17 @@ export async function agentTabs() {
 // page) leave it too, so the group goes away. While agents are paused, a session that owns tabs is only
 // noted as ended (pausedEnds), and all this happens when the user resumes.
 export function endSession(sessionId) {
-  return serialized(() => {
-    reaped.delete(sessionId);
-    return endSessionNow(sessionId);
-  });
+  return serialized(() => endSessionNow(sessionId, "explicit"));
 }
 
-async function endSessionNow(sessionId) {
-  rememberEnded(sessionId);
+// Ends the session for `cause`, as in endSession (see endedSessions for the causes).
+async function endSessionNow(sessionId, cause) {
+  rememberEnded(sessionId, cause);
   const state = await load();
   if (await isPaused()) {
     const owns = Object.values(state.tabs).some((entry) => entry.sessionId === sessionId);
     if (owns) {
-      notePausedEnd(state, sessionId);
+      notePausedEnd(state, sessionId, cause);
       await save(state);
     }
     return { closed: 0 };
@@ -350,12 +350,13 @@ async function endSessionNow(sessionId) {
   return { closed: toClose.length };
 }
 
-// Notes in `state` that the session ended while agents are paused. An end for the session's absence
-// (reaped) is undone if the session is reported live again before the user resumes; its own end is not.
-function notePausedEnd(state, sessionId) {
+// Notes in `state` that the session ended for `cause` while agents are paused. An end for the session's
+// absence (absentEnds) is undone if the session is reported live again before the user resumes; its own
+// end is not.
+function notePausedEnd(state, sessionId, cause) {
   if (!state.pausedEnds.includes(sessionId)) state.pausedEnds.push(sessionId);
   const others = state.absentEnds.filter((id) => id !== sessionId);
-  state.absentEnds = reaped.has(sessionId) ? [...others, sessionId] : others;
+  state.absentEnds = cause === "absent" ? [...others, sessionId] : others;
 }
 
 // Sessions the connected hub reports as live (its own and its clients'), or null while no authenticated
@@ -368,8 +369,6 @@ function notePausedEnd(state, sessionId) {
 const ABSENT_SESSION_GRACE_MS = 45_000;
 let live = null; // { ids: Set of session ids, absentSince: Map session id -> time first found absent }
 let absenceTimer = null;
-// Sessions ended for their absence, which may come back; a session that ended itself does not.
-const reaped = new Set();
 
 export function setLiveSessions(sessionIds) {
   clearTimeout(absenceTimer);
@@ -380,7 +379,7 @@ export function setLiveSessions(sessionIds) {
   live = { ids: new Set(sessionIds), absentSince: live?.absentSince ?? new Map() };
   // A session that reconnected after it was ended for its absence may open tabs again.
   for (const id of live.ids) {
-    if (reaped.delete(id)) endedSessions.delete(id);
+    if (endedSessions.get(id) === "absent") endedSessions.delete(id);
   }
   serialized(endAbsentSessions);
 }
@@ -405,8 +404,7 @@ async function endAbsentSessions() {
     if (!current.absentSince.has(id)) current.absentSince.set(id, now);
     if (paused || now - current.absentSince.get(id) < ABSENT_SESSION_GRACE_MS) continue;
     current.absentSince.delete(id);
-    reaped.add(id);
-    await endSessionNow(id);
+    await endSessionNow(id, "absent");
   }
   if (paused || live !== current || !current.absentSince.size) return;
   const due = Math.min(...current.absentSince.values()) + ABSENT_SESSION_GRACE_MS - Date.now();
@@ -418,7 +416,8 @@ async function endAbsentSessions() {
 // service worker starts, in case the user resumed while it was not running.
 async function endPausedEnds() {
   if (await isPaused()) return;
-  for (const id of (await load()).pausedEnds) await endSessionNow(id);
+  const state = await load();
+  for (const id of state.pausedEnds) await endSessionNow(id, state.absentEnds.includes(id) ? "absent" : "explicit");
 }
 onPausedChange((paused) => {
   if (paused) return;
