@@ -3,10 +3,7 @@
 ## Unreleased
 
 - Pin Runtime object receiver calls to unique page contexts while preserving object groups and callable semantics. Convert zero-isolate node handles for supported DOM, Accessibility and Overlay commands through a pinned call with dialog handling, and refuse unsafe consumers including `DOM.getFileInfo`. Locators enumerate nodes through deep serialization so they work with Chrome 158's zero-isolate handles.
-||||||| parent of 9746879 (Confirm cross-origin pointer delivery before clicking)
-- Pin Runtime object receiver calls to unique page contexts, convert zero-isolate DOM handles to backend node IDs through a pinned call, and refuse Runtime handle commands that cannot name a unique context. Locators enumerate nodes through deep serialization so they work with Chrome 158's zero-isolate handles.
 - Wait for a cross-origin frame to receive pointer movement before pressing a mouse button. Retry only moves, and fail without pressing if the frame cannot receive input, instead of reporting a successful click on its parent iframe element.
-- Pin Runtime object receiver calls to unique page contexts, convert zero-isolate DOM handles to backend node IDs through a pinned call, and refuse Runtime handle commands that cannot name a unique context. Locators enumerate nodes through deep serialization so they work with Chrome 158's zero-isolate handles.
 - Pin the pairing state directory in MCP registrations so a client's different `XDG_DATA_HOME` does not select another state directory. Run setup again to update registrations.
 - Clarify that page scripts, including agent evaluations and clicks, can close a shared tab with `window.close()` when the browser permits it. Browser and Target commands remain refused.
 - Wait for chrome.tabs when checking window ownership and for the updated extension fingerprint after a permission reload. Cap the test suite at four concurrent files to avoid starting every browser at once.
