@@ -6,7 +6,7 @@ import { squareToQuad } from "./geometry.mjs";
 import { AXTracker, fetchPageTree, findReplacement, simplifyTree } from "./ax-tree.mjs";
 import { createContentApi } from "./content.mjs";
 import { OFF_PAGE, PAGE_CODE_MS, callOn, clickAt, coveringElement, dragBetween, elementCenter, focusNode, isAttached, pageException, prepareClick, watchFramePointer, STALE_ELEMENT_MESSAGE } from "./elements.mjs";
-import { pressChord } from "./keys.mjs";
+import { modifierMask, pressChord } from "./keys.mjs";
 import { Locator, functionSource, isRegExp } from "./locator.mjs";
 import { emitImage, emitText } from "./output.mjs";
 import { DISPATCH_PASTE, SELECT_TEXT, SET_VALUE } from "./page-scripts.mjs";
@@ -36,6 +36,7 @@ const NAVIGATION_TIMEOUT_MS = 30_000;
 const FILE_CHOOSER_WAIT_MS = 20_000;
 // How long a click by element number waits for something covering the element (an animation, a toast) to go away.
 const COVERED_WAIT_MS = 1_000;
+const FRAME_POINTER_WAIT_MS = 3_000;
 const DIRECTIONS = { up: [0, -1], u: [0, -1], down: [0, 1], d: [0, 1], left: [-1, 0], l: [-1, 0], right: [1, 0], r: [1, 0] };
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -211,10 +212,11 @@ export class Tab {
 
   // Main-page point at the center of a node. With `hitTest`, waits until a click there would reach the
   // node and fails if another element stays on top (`force` skips the check).
-  async nodePoint(backendNodeId, sessionId, { hitTest = false, force = false, timeoutMs = COVERED_WAIT_MS } = {}) {
+  async nodePoint(backendNodeId, sessionId, { hitTest = false, force = false, key, timeoutMs = COVERED_WAIT_MS } = {}) {
     const cdp = this.cdpSender(sessionId);
     await prepareClick(cdp, backendNodeId);
     const deadline = Date.now() + timeoutMs;
+    const probeDeadline = Date.now() + Math.max(timeoutMs, FRAME_POINTER_WAIT_MS);
     const pointer = sessionId && hitTest && !force ? await watchFramePointer(cdp, backendNodeId) : null;
     try {
       for (;;) {
@@ -225,9 +227,9 @@ export class Tab {
           if (!pointer) return pagePoint;
           await pointer.reset();
           const [x, y] = pagePoint;
-          await this.cdpSender()("Input.dispatchMouseEvent", { type: "mouseMoved", x, y });
-          if (await pointer.received()) return pagePoint;
-          if (Date.now() > deadline) throw new Error("The frame did not receive pointer input; no mouse button was pressed. Retry after the frame is ready");
+          await this.cdpSender()("Input.dispatchMouseEvent", { type: "mouseMoved", x, y, modifiers: modifierMask(key) });
+          // A page can stop mouse events from reaching the probe, so its silence does not prove the frame is unready.
+          if (await pointer.received() || Date.now() > probeDeadline) return pagePoint;
           await sleep(100);
           continue;
         }
@@ -315,7 +317,7 @@ export class Tab {
 
   async click(target, options = {}) {
     await this.ensureNoDialog();
-    await clickAt(this.cdpSender(), await this.pointFor(target, { hitTest: true, force: options.force }), options);
+    await clickAt(this.cdpSender(), await this.pointFor(target, { hitTest: true, force: options.force, key: options.key }), options);
     await this.afterInput({ mayNavigate: true });
   }
 
