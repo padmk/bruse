@@ -1,7 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.18.5
 
+- **Uninstall removes the extension:** `bruse uninstall` asks the connected extension to remove itself, and tells you to remove it on the extensions page only when it is not connected, is paused, or stayed.
 - **Setup and uninstall say why an agent CLI failed:** when a CLI crashes without printing anything, the message names the signal or exit status instead of showing empty parentheses.
 
 ## 0.18.4
