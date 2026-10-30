@@ -3,7 +3,7 @@
 
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { agentClients, fail, installRoot, installed, moveToTrash, note, product, source, step } from "./lib.mjs";
+import { agentClients, fail, failureReason, installRoot, installed, moveToTrash, note, product, source, step } from "./lib.mjs";
 
 export async function uninstall() {
   step(`Uninstalling ${product}`);
@@ -19,7 +19,7 @@ export async function uninstall() {
     if (result.status === 0) note(`${client.name}: removed`);
     else {
       failed++;
-      note(`${client.name}: failed (${(result.stderr || result.stdout).trim()})`);
+      note(`${client.name}: failed (${failureReason(result)})`);
     }
   }
   // A registration left behind, or one that could not be checked and removed, must still find its

@@ -11,7 +11,7 @@ import { homedir, platform } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { HUB_VERSION_MISMATCH, PORT, STORE_EXTENSION_ID } from "../browser/mcp/config.mjs";
-import { agentClients, clientId, extensionDir, fail, installRoot, installed, manifest, note, onPath, problemMessage, product, requireNode, serverPath, source, step, moveToTrash } from "./lib.mjs";
+import { agentClients, clientId, extensionDir, fail, failureReason, installRoot, installed, manifest, note, onPath, problemMessage, product, requireNode, serverPath, source, step, moveToTrash } from "./lib.mjs";
 
 const PAIR_WAIT_MS = 10 * 60_000;
 const PAIR_HINT_MS = 45_000;
@@ -137,7 +137,7 @@ async function registerServer(requested) {
     if (result.status === 0) note(`${client.name}: added`);
     else {
       failed++;
-      note(`${client.name}: failed (${(result.stderr || result.stdout).trim()})`);
+      note(`${client.name}: failed (${failureReason(result)})`);
     }
   }
   if (!found.length) {

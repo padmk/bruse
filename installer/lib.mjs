@@ -35,6 +35,14 @@ export function installedVersion() {
 export const step = (text) => console.log(`\n\x1b[1m${text}\x1b[0m`);
 export const note = (text) => console.log(`  ${text}`);
 
+// Why an agent CLI's command failed. A crashed CLI prints nothing, so its output may be empty.
+export function failureReason({ stderr, stdout, signal, error, status }) {
+  const output = `${stderr ?? ""}`.trim() || `${stdout ?? ""}`.trim();
+  if (output) return output;
+  if (error) return error.message;
+  return signal ? `its command was ended by ${signal}` : `its command exited with status ${status}`;
+}
+
 export function fail(text) {
   console.error(`\n\x1b[31m${text}\x1b[0m`);
   process.exit(1);
