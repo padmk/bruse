@@ -70,6 +70,11 @@ const { hash: checkoutBuild } = await extensionBuild((file) => fs.promises.readF
 let browserInfo = null;
 if (tools.includes("bruse")) {
   browserInfo = askBrowser("browser.info");
+  // A paused extension refuses the reload and every agent request.
+  if (browserInfo.paused) {
+    console.error(`Agents are paused in ${browserInfo.name}; resume them from the extension's icon in the browser toolbar.`);
+    process.exit(2);
+  }
   if (!browserInfo.error && browserInfo.build !== checkoutBuild) {
     askBrowser("extension.reload");
     await new Promise((r) => setTimeout(r, 5_000));

@@ -2,10 +2,13 @@
 // of all live sessions, and cleanup when a session ends or its server is gone. State lives in
 // chrome.storage.local so it survives service worker restarts and extension reloads, while MCP servers
 // keep their sessions; tab and group IDs change when the browser starts, so it starts empty then.
+// While the user has paused agents no session's tabs close: a session that ends then keeps its tabs
+// until the user resumes, so the user can look at what was done.
 
 import { loadAgentState as load, saveAgentState as save } from "./agent-state.js";
 import { anyoneMayAccess } from "./access.js";
 import { detach, onCdpEvent, sinceAgentInput } from "./cdp.js";
+import { isPaused, onPausedChange } from "./pause.js";
 import { AGENT_INPUT_WINDOW_MS } from "./shared.js";
 
 const GROUP_TITLE = chrome.runtime.getManifest().name;
@@ -240,6 +243,12 @@ export async function createAgentTab(sessionId, create) {
 async function groupAgentTabsNow(tabIds, sessionId) {
   if (!tabIds.length) return;
   const state = await load();
+  if (endedSessions.has(sessionId) && (await isPaused())) {
+    for (const tabId of tabIds) state.tabs[tabId] = { sessionId, mark: null };
+    if (!state.pausedEnds.includes(sessionId)) state.pausedEnds.push(sessionId);
+    await save(state);
+    throw new Error(tabIds.length === 1 ? "The agent session ended while its tab was being created; the tab closes when the user resumes agents" : "The agent session ended while its tabs were being created; the tabs close when the user resumes agents");
+  }
   if (endedSessions.has(sessionId)) {
     await Promise.all(tabIds.filter((tabId) => !KEPT_MARKS.has(state.tabs[tabId]?.mark)).map((tabId) => chrome.tabs.remove(tabId).catch(() => {})));
     throw new Error(tabIds.length === 1 ? "The agent session ended while its tab was being created; the tab was closed" : "The agent session ended while its tabs were being created; the tabs were closed");
@@ -290,7 +299,8 @@ export async function agentTabs() {
 // Closes the session's unmarked tabs (those it opened and those its pages opened) and forgets the
 // session. Its marked tabs leave the agent group: they are the user's now. When no live session has a
 // tab in a window's group anymore, the remaining tabs (ones the user moved there or opened from an agent
-// page) leave it too, so the group goes away.
+// page) leave it too, so the group goes away. While agents are paused, a session that owns tabs is only
+// noted as ended (pausedEnds), and all this happens when the user resumes.
 export function endSession(sessionId) {
   return serialized(() => {
     reaped.delete(sessionId);
@@ -301,6 +311,15 @@ export function endSession(sessionId) {
 async function endSessionNow(sessionId) {
   rememberEnded(sessionId);
   const state = await load();
+  if (await isPaused()) {
+    const owns = Object.values(state.tabs).some((entry) => entry.sessionId === sessionId);
+    if (owns && !state.pausedEnds.includes(sessionId)) {
+      state.pausedEnds.push(sessionId);
+      await save(state);
+    }
+    return { closed: 0 };
+  }
+  state.pausedEnds = state.pausedEnds.filter((id) => id !== sessionId);
   const toClose = [];
   const kept = [];
   for (const [tabId, entry] of Object.entries(state.tabs)) {
@@ -335,6 +354,8 @@ async function endSessionNow(sessionId) {
 // ended without saying so, for example because its server was killed while it was the hub: it ends as
 // in endSession, so its marked tabs stay. The grace period leaves the other servers time to elect a new
 // hub and reconnect. Without a hub, or when the hub changes, nothing is closed and the period starts over.
+// While agents are paused no session ends this way; one still absent when the user resumes ends then, and
+// one that reconnected meanwhile keeps its tabs.
 const ABSENT_SESSION_GRACE_MS = 45_000;
 let live = null; // { ids: Set of session ids, absentSince: Map session id -> time first found absent }
 let absenceTimer = null;
@@ -360,17 +381,31 @@ async function endAbsentSessions() {
   if (!current) return;
   const owners = new Set(Object.values((await load()).tabs).map((entry) => entry.sessionId).filter(Boolean));
   const now = Date.now();
+  const paused = await isPaused();
   for (const id of current.absentSince.keys()) if (!owners.has(id) || current.ids.has(id)) current.absentSince.delete(id);
   for (const id of owners) {
     if (current.ids.has(id)) continue;
     if (!current.absentSince.has(id)) current.absentSince.set(id, now);
-    if (now - current.absentSince.get(id) < ABSENT_SESSION_GRACE_MS) continue;
+    if (paused || now - current.absentSince.get(id) < ABSENT_SESSION_GRACE_MS) continue;
     current.absentSince.delete(id);
     reaped.add(id);
     await endSessionNow(id);
   }
-  if (live !== current || !current.absentSince.size) return;
+  if (paused || live !== current || !current.absentSince.size) return;
   const due = Math.min(...current.absentSince.values()) + ABSENT_SESSION_GRACE_MS - Date.now();
   clearTimeout(absenceTimer);
   absenceTimer = setTimeout(() => serialized(endAbsentSessions), Math.max(due, 0) + 50);
 }
+
+// Sessions that ended while agents were paused end fully once the user resumes; checked also when the
+// service worker starts, in case the user resumed while it was not running.
+async function endPausedEnds() {
+  if (await isPaused()) return;
+  for (const id of (await load()).pausedEnds) await endSessionNow(id);
+}
+onPausedChange((paused) => {
+  if (paused) return;
+  serialized(endPausedEnds);
+  serialized(endAbsentSessions);
+});
+serialized(endPausedEnds);

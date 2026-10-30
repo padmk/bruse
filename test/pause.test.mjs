@@ -2,16 +2,19 @@
 
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
-import { startEnvironment, startSite, until } from "./harness.mjs";
+import { hubClient, startEnvironment, startSite, until } from "./harness.mjs";
 
+const GRACE_MS = 2_000;
 let env;
 let site;
 let session;
 
 before(async () => {
-  env = await startEnvironment();
+  env = await startEnvironment({ absentSessionGraceMs: GRACE_MS });
   site = await startSite({ "/": "<title>Page</title><button>Press</button>" });
   session = await env.session();
+  // The session makes a call so that it runs the hub.
+  await session.js("await cua.getState();");
 });
 
 after(async () => {
@@ -56,4 +59,61 @@ test("pausing refuses agent requests and detaches from tabs until resumed", asyn
 
   assert.equal(await clickPopupButton(), "Agents can use this browser");
   assert.match(await session.js("await tab.getAXState({ disableDiffing: true });"), /button Press/);
+});
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const present = async (url) => (await env.browser.pages()).some((page) => page.url === url);
+const setPaused = (paused) => env.inPopup(`import("./pause.js").then((pause) => pause.setPaused(${paused}))`);
+
+test("a session that ends while paused keeps its tabs until the user resumes", async (t) => {
+  const client = await hubClient(env.port, env.stateDir);
+  t.after(() => client.close());
+  const url = `${site.origin}/?ended-while-paused`;
+  await client.call("tabs.create", { url });
+  await setPaused(true);
+  t.after(() => setPaused(false));
+  await client.call("session.end");
+  await sleep(1_000);
+  assert.equal(await present(url), true, "the tab stays open while paused");
+  await setPaused(false);
+  await until(async () => !(await present(url)), { message: "the ended session's tab to close after resume" });
+});
+
+test("pausing ends a download wait in progress", async (t) => {
+  const client = await hubClient(env.port, env.stateDir);
+  t.after(() => client.close());
+  const tab = await client.call("tabs.create", { url: `${site.origin}/?download-wait` });
+  // The outcome is caught at once, since the wait fails while the test is still pausing.
+  const waiting = client.call("downloads.wait", { tabId: tab.id, timeoutMs: 10_000 }).then(
+    () => null,
+    (error) => error,
+  );
+  await sleep(500);
+  await setPaused(true);
+  t.after(() => setPaused(false));
+  assert.match(String((await waiting)?.message), /paused/);
+});
+
+test("extension.reload is refused while paused", async (t) => {
+  const client = await hubClient(env.port, env.stateDir);
+  t.after(() => client.close());
+  await setPaused(true);
+  t.after(() => setPaused(false));
+  await assert.rejects(client.call("extension.reload"), /paused/);
+});
+
+// Runs last: it kills the hub's session.
+test("a session that vanishes from the live report while paused keeps its tabs until the user resumes", async (t) => {
+  const url = `${site.origin}/?vanished-while-paused`;
+  await session.js(`await cua.createBrowserTab("1", ${JSON.stringify(url)});`);
+  const other = await env.session();
+  await other.js("await cua.getState();");
+  await setPaused(true);
+  t.after(() => setPaused(false));
+  // The other session becomes the hub and reports only itself.
+  session.kill();
+  await sleep(GRACE_MS + 5_000);
+  assert.equal(await present(url), true, "the tab stays open while paused");
+  await setPaused(false);
+  await until(async () => !(await present(url)), { timeoutMs: GRACE_MS + 30_000, message: "the vanished session's tab to close after resume" });
 });
