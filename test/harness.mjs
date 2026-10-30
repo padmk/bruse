@@ -6,7 +6,7 @@ import { installPairingHost } from "../installer/native-host.mjs";
 import { spawn } from "node:child_process";
 import { createHmac, randomBytes, randomUUID } from "node:crypto";
 import { once } from "node:events";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import { homedir, platform, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -31,7 +31,11 @@ export function tempDir(prefix) {
 
 // Directories made by tempDir; tests remove only these.
 function removeTemp(path) {
-  if (path.startsWith(tmpdir()) && path.includes("bruse-test-")) rmSync(path, { recursive: true, force: true });
+  if (!path.startsWith(tmpdir()) || !path.includes("bruse-test-") || !existsSync(path)) return;
+  const trash = platform() === "darwin" ? join(homedir(), ".Trash") : join(homedir(), ".local", "share", "Trash", "files");
+  mkdirSync(trash, { recursive: true });
+  console.log(`Trash: ${path}`);
+  renameSync(path, join(trash, `${path.split("/").at(-1)}-${randomUUID()}`));
 }
 
 export async function freePort() {
@@ -103,15 +107,29 @@ async function connectCdp(url) {
     if (message.id !== undefined) {
       const entry = pending.get(message.id);
       pending.delete(message.id);
+      clearTimeout(entry?.timer);
       if (message.error) entry?.reject(new Error(`${entry.method}: ${message.error.message}`));
       else entry?.resolve(message.result);
     } else for (const listener of listeners) listener(message);
+  });
+  socket.addEventListener("close", () => {
+    for (const entry of pending.values()) {
+      clearTimeout(entry.timer);
+      entry.reject(new Error(`${entry.method}: CDP connection closed`));
+    }
+    pending.clear();
   });
   return {
     send(method, params = {}, sessionId) {
       const id = nextId++;
       socket.send(JSON.stringify({ id, method, params, sessionId }));
-      return new Promise((resolve, reject) => pending.set(id, { resolve, reject, method }));
+      return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+          pending.delete(id);
+          reject(new Error(`${method}: no CDP reply within 30 s`));
+        }, 30_000);
+        pending.set(id, { resolve, reject, method, timer });
+      });
     },
     on: (listener) => listeners.add(listener),
     close: () => socket.close(),
@@ -138,7 +156,7 @@ export async function launchBrowser(extensionDir, { pairing } = {}) {
     // Keeps a run with a temporary HOME from opening the "Keychain Not Found" dialog.
     "--use-mock-keychain",
     "--no-default-browser-check",
-    "--disable-features=DialMediaRouteProvider",
+    "--disable-features=DialMediaRouteProvider,MacAppCodeSignClone",
     ...(platform() === "linux" ? ["--no-sandbox"] : []),
     "about:blank",
   ];
@@ -308,7 +326,15 @@ export async function hubClient(port, stateDir, { sessionId = randomUUID() } = {
     call: (method, params = {}) =>
       new Promise((resolve, reject) => {
         const id = nextId++;
-        pending.set(id, (reply) => (reply.error ? reject(Object.assign(new Error(reply.error), { code: reply.code })) : resolve(reply.result)));
+        const timer = setTimeout(() => {
+          pending.delete(id);
+          reject(new Error(`${method}: no hub reply within 30 s`));
+        }, 30_000);
+        pending.set(id, (reply) => {
+          clearTimeout(timer);
+          if (reply.error) reject(Object.assign(new Error(reply.error), { code: reply.code }));
+          else resolve(reply.result);
+        });
         socket.send(JSON.stringify({ id, method, params }));
       }),
     close: () => socket.close(),

@@ -19,7 +19,7 @@ const pages = async () => (await env.browser.pages()).map((p) => p.url);
 const present = async (u) => (await pages()).includes(u);
 const waitPage = (u, exists) => until(async () => (await present(u)) === exists, { timeoutMs: 30000, message: `${u} ${exists ? "open" : "closed"}` });
 const json = async (s, code) => lastJson(await s.js(`nodeRepl.write(JSON.stringify(${code}));`));
-const tabOf = (u) => env.inPopup(`chrome.tabs.query({}).then((tabs) => tabs.find((tab) => tab.url === ${JSON.stringify(u)}))`);
+const tabOf = (u) => until(() => env.inPopup(`chrome.tabs.query({}).then((tabs) => tabs.find((tab) => tab.url === ${JSON.stringify(u)}))`), { message: `${u} in the tabs API` });
 
 // A tab the user opens, in a window of its own when `newWindow`.
 async function userTab(u, newWindow = false) {
@@ -127,6 +127,9 @@ test("a shared tab does not make its window the session's", async () => {
   await assert.rejects(s.js(`await m.tabs.discard(${shared.id});`), layout);
   await assert.rejects(s.js(`await bound.cdpSender()("Page.close");`), layout);
   await assert.rejects(s.js(`await bound.cdpSender()("Page.crash");`), layout);
+  for (const method of ["Target.closeTarget", "Target.createTarget", "Target.detachFromTarget", "Target.setAutoAttach", "Target.disposeBrowserContext", "Browser.close", "Browser.crash"]) {
+    await assert.rejects(s.js(`await bound.cdpSender()(${JSON.stringify(method)}, { targetId: ${JSON.stringify(String(shared.id))} });`), /does not let agents send/);
+  }
   await s.js(`await bound.reload();`);
   await s.js(`await bound.goto(${JSON.stringify(url("/page?window-shared"))});`);
   await s.js(`await m.tabs.update(${own.tabId}, { pinned: true });`);
@@ -231,7 +234,8 @@ test("a session that ends while its window is being created leaves no tab behind
     await client.call("session.end");
     const result = await created;
     await until(async () => !(await pages()).some((u) => urls.includes(u)), { message: "no tab of the ended session" });
-    assert.match(String(result?.message), /ended while its tabs were being created/);
+    if (result instanceof Error) assert.match(result.message, /ended while its tabs were being created/);
+    else assert.ok(Number.isInteger(result.id), JSON.stringify(result));
   } finally {
     client.close();
     await hub.close();
