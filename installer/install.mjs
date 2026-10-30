@@ -10,7 +10,7 @@ import { readFile } from "node:fs/promises";
 import { homedir, platform } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { HUB_VERSION_MISMATCH, PORT, STORE_EXTENSION_ID } from "../browser/mcp/config.mjs";
+import { HUB_VERSION_MISMATCH, PORT } from "../browser/mcp/config.mjs";
 import { agentClients, clientId, extensionDir, fail, failureReason, installRoot, installed, manifest, note, onPath, problemMessage, product, requireNode, serverPath, source, step, moveToTrash } from "./lib.mjs";
 
 const PAIR_WAIT_MS = 10 * 60_000;
@@ -151,10 +151,14 @@ function openExtensionsPage() {
   step("Load the extension (once)");
   const browser = platform() === "darwin" ? BROWSERS.find((b) => existsSync(`/Applications/${b.app}.app`) || existsSync(join(homedir(), "Applications", `${b.app}.app`))) : null;
   const page = browser?.page ?? "chrome://extensions";
+  // Agents and scripts read the path below; only someone at the terminal expects the clipboard to change.
+  const copied = platform() === "darwin" && process.stdout.isTTY && spawnSync("pbcopy", { input: extensionDir }).status === 0;
   note(`1. In ${page}, turn on Developer mode (top right).`);
-  note(`2. Drag the "extension" folder from the Finder window onto the page,`);
-  note(`   or choose Load unpacked and select:`);
+  note(`2. Click Load unpacked and select this folder:`);
   note(`   ${extensionDir}`);
+  if (copied) note(`   Its path is on your clipboard: in the dialog press Cmd+Shift+G, Cmd+V, Return, then Select.`);
+  note(`   Or drag the "extension" folder from the Finder window onto the page.`);
+  note(`Setup continues by itself once the extension connects.`);
   if (platform() !== "darwin" || process.env.BRUSE_NO_OPEN) return;
   spawnSync("open", ["-R", extensionDir]);
   if (browser) showPage(browser.app, page);
@@ -231,15 +235,6 @@ export function requireReady(info) {
   if (info.paused) fail(pausedMessage(info, "so agents cannot use it"));
 }
 
-// The Chrome Web Store's copy updates itself; reloading it would not change its version or its code.
-function checkStoreExtension(info, build) {
-  if (info.version !== manifest.version) note(`The extension from the Chrome Web Store is version ${info.version}; the browser updates it to ${manifest.version} on its own.`);
-  else if (build && info.build !== build) note(`The extension from the Chrome Web Store runs other code than ${extensionDir}, though its version is ${manifest.version}; \`bruse doctor\` says how to match them.`);
-  else note(`Connected to ${info.name}, extension from the Chrome Web Store.`);
-}
-
-const fromStore = (info) => info?.id === STORE_EXTENSION_ID;
-
 const portTaken = (error) =>
   `No ${product} hub that knows the hub token answers on 127.0.0.1:${PORT} (${error.message}). A new extension pairs with whatever answers there, so do not load it now: find the program with \`lsof -nP -iTCP:${PORT} -sTCP:LISTEN\`, stop it and run setup again.`;
 // The version stays the same between releases, so the extension must also report this copy's code
@@ -263,14 +258,12 @@ export async function setup({ clients } = {}) {
     if (!isNotConnected(error)) fail(portTaken(error));
     return null;
   });
-  if (fromStore(connected)) checkStoreExtension(connected, build);
-  else if (connected) await reloadExtension(callBrowser, connected, build);
+  if (connected) await reloadExtension(callBrowser, connected, build);
   else {
     openExtensionsPage();
     const info = await waitForExtension(callBrowser);
     // An extension enabled from another folder, or an older copy, connects too; it must run this version.
-    if (fromStore(info)) checkStoreExtension(info, build);
-    else if (!runsThisCode(info, build)) await reloadExtension(callBrowser, info, build);
+    if (!runsThisCode(info, build)) await reloadExtension(callBrowser, info, build);
   }
   // The user may pause agents while setup runs, so the extension's state counts as of now.
   requireReady(await callBrowser("browser.info").catch((error) => fail(`The extension stopped answering: ${error.message}`)));

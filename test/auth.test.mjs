@@ -130,13 +130,6 @@ test("hub rejects web origins", { timeout: 60_000 }, async () => {
   }
 });
 
-test("hub accepts the Chrome Web Store copy of the extension", { timeout: 60_000 }, async () => {
-  const { STORE_EXTENSION_ID } = await import(join(env.copy.browserDir, "mcp", "config.mjs"));
-  const result = await upgrade("/extension", `chrome-extension://${STORE_EXTENSION_ID}`);
-  assert.ok(result.socket, `store extension upgrade rejected: ${result.status}`);
-  result.socket.destroy();
-});
-
 test("hub rejects requests addressed to another host name", { timeout: 60_000 }, async () => {
   const accepted = await upgrade("/client");
   accepted.socket?.destroy();

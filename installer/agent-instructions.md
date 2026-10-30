@@ -1,7 +1,13 @@
 # Installing Bruse (instructions for an AI agent)
 
-You are in an unpacked Bruse package. Bruse gives AI agents background control of the user's own
-Chromium browser (Brave, Chrome, Edge). Install it for the user by following these steps.
+Bruse gives AI agents background control of the user's own Chromium browser (Brave, Chrome, Edge,
+Chromium, Vivaldi). Install it for the user by following these steps. Tell the user first that code run
+through Bruse has their user account's permissions and can use the accounts signed in to the browser
+profile ([SECURITY.md](https://github.com/padmk/bruse/blob/main/SECURITY.md)), and ask whether to go on.
+
+The commands below use `bruse`, as after a Homebrew install. If you were not given an unpacked package,
+ask the user, then run `brew install padmk/tap/bruse`. In an unpacked package run
+`node installer/install.mjs` in place of `bruse setup`, and `node bin/bruse.mjs` in place of `bruse`.
 
 ## What is in this package
 
@@ -19,25 +25,30 @@ Both parts are needed: the server cannot reach tabs, and the extension cannot ac
 
 1. **Check Node.js.** Run `node --version`; it must be 22 or newer. If it is missing or older, ask the user
    before installing Node (for example `brew install node` on macOS).
-2. **Run the installer** from this directory:
+2. **Run the installer:**
 
    ```sh
-   node installer/install.mjs --clients <names the user chose, such as claude-code,codex>
+   bruse setup --clients <names the user chose, such as claude-code,codex>
    ```
 
    It copies `browser/` to `~/.local/share/bruse/browser`, replacing an earlier version. It registers the
    MCP server as `bruse` with the agent clients the user picks (Claude Code, Codex, Cursor, VS Code and
    Insiders, GitHub Copilot CLI, Gemini CLI, Claude Desktop, Devin Desktop, Windsurf). Without a terminal
    it cannot ask, so ask the user which clients they want and pass them, for example
-   `node installer/install.mjs --clients claude-code,codex`; without `--clients` a first install stops
+   `bruse setup --clients claude-code,codex`; without `--clients` a first install stops
    and lists the clients it found. Then it waits up to 10 minutes for the extension to connect. Run it
    in the background or with a long timeout, and read its output.
-3. **Ask the user to load the extension.** This is needed once. The browser installs extensions from
-   outside its store only by hand, and you cannot do it for the user. On macOS the installer has
-   already opened the extensions page and shown the folder in Finder. Tell the user:
+3. **Get the extension loaded.** This is needed once, and no command can do it: browsers load an
+   extension from a folder only through their extensions page. On macOS the installer has already opened
+   that page and shown the folder in Finder. The steps are:
    - turn on **Developer mode** (top right of the extensions page);
-   - drag the `extension` folder onto the page, or choose **Load unpacked** and select the path the
-     installer printed, ending in `browser/extension`.
+   - click **Load unpacked**;
+   - select the path the installer printed, ending in `browser/extension`. In the macOS file dialog,
+     `Cmd+Shift+G` opens a field for the path. Dragging the folder onto the page works too.
+
+   If you have a tool that controls desktop apps, offer to do these steps, and do them only after the user
+   agrees. Otherwise, give the user the steps and the path. Either way the installer continues by itself
+   when the extension connects.
 
    The first time, macOS may ask whether the terminal may control the browser; the user can allow it,
    or open the extensions page by hand (`brave://extensions`, `chrome://extensions`, `edge://extensions`).
@@ -65,12 +76,13 @@ Use a stable Node path such as `/opt/homebrew/bin/node`, not a versioned one.
 
 ## Checking and uninstalling
 
-`node bin/bruse.mjs doctor` checks the installation, the registrations and the browser connection and
-says what to do about each problem. `node bin/bruse.mjs uninstall` removes the registrations and moves
-the installed copy and the pairing state to the Trash; the user then removes the extension on the
-browser's extensions page.
+`bruse doctor` checks the installation, the registrations and the browser connection and
+says what to do about each problem. `bruse uninstall` removes the registrations and a connected extension and
+moves the installed copy and the pairing state to the Trash. It says so when the user has to remove the
+extension on the browser's extensions page.
 
 ## Rules
 
-- Do not change browser profiles, policies or system settings; the installer needs none of that.
+- Do not edit browser profile files or policies, and do not change system settings; the installer needs
+  none of that. Developer mode is changed only on the extensions page, with the user's permission.
 - Do not read, print or copy files in `~/.local/share/bruse/state`; they hold the pairing secrets.

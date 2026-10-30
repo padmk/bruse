@@ -47,6 +47,11 @@ Or download a release zip, unpack it and double-click **Install Bruse.command**.
 agent in the unpacked folder and ask it to install Bruse; the package's `AGENTS.md` tells it how. From
 a checkout of this repository, run `node bin/bruse.mjs setup`.
 
+Or ask an agent you trust, with no download first:
+
+> Install Bruse for me by following https://github.com/padmk/bruse/blob/main/installer/agent-instructions.md
+> Ask me before you install anything or change a browser setting.
+
 Setup:
 
 - copies the extension and the MCP server to `~/.local/share/bruse/browser`, replacing a previous
@@ -68,10 +73,17 @@ Setup:
 - waits until the extension connects, which also pairs it (see [Security and privacy](#security-and-privacy)),
   or reloads an extension that is already connected and waits until it runs the new version.
 
-The one manual step, on first install only: on the extensions page turn on **Developer mode** and drag
-the `extension` folder onto the page (or choose **Load unpacked**). Chromium browsers let no installer
-add an extension that is not from the Chrome Web Store, so this step stays manual. Later updates need
-no manual step: `bruse setup` reloads the extension.
+The one manual step, on first install only, takes three clicks on the extensions page that setup opens:
+
+1. Turn on **Developer mode** (top right).
+2. Click **Load unpacked**.
+3. Select the `extension` folder. In a terminal on macOS setup puts its path on the clipboard, so in the
+   dialog press `Cmd+Shift+G`, `Cmd+V`, `Return`, then **Select**. Dragging the folder from the Finder
+   window onto the page works too.
+
+Setup continues by itself once the extension connects. Chromium browsers let no installer load an
+extension from a folder, so this step stays with you, or with an agent that has a desktop control tool
+and your permission. Later updates need no manual step: `bruse setup` reloads the extension.
 
 A zip downloaded from the internet is quarantined: macOS refuses to open the unsigned
 `Install Bruse.command` until you allow it in System Settings › Privacy & Security (**Open Anyway**).

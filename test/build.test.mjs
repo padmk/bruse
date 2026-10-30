@@ -12,15 +12,6 @@ const manifest = JSON.parse(await readFile(join(extensionDir, "manifest.json"), 
 const buildWith = async (replaced = {}) => (await extensionBuild((file) => replaced[file] ?? readFile(join(extensionDir, file), "utf8"))).hash;
 const unpacked = await buildWith();
 
-test("the store package and a browser's copy of it have the unpacked folder's fingerprint", async () => {
-  // scripts/store-package.mjs leaves out the key and writes the manifest again.
-  const { key: _key, ...storeManifest } = manifest;
-  assert.equal(await buildWith({ "manifest.json": `${JSON.stringify(storeManifest, null, 2)}\n` }), unpacked);
-  // A browser that installs the store's package keeps the manifest with its own key and update URL.
-  const installed = { update_url: "https://clients2.google.com/service/update2/crx", ...storeManifest, key: "c3RvcmUta2V5" };
-  assert.equal(await buildWith({ "manifest.json": JSON.stringify(installed, null, 3) }), unpacked);
-});
-
 test("a change to the manifest or the code changes the fingerprint", async () => {
   const changed = [
     { ...manifest, permissions: [...manifest.permissions, "cookies"] },
