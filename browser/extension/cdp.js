@@ -486,7 +486,7 @@ function groupKey(session, sessionId, handle) {
 // returned by value. Property descriptors carry RemoteObjects in their value fields, so recurse there.
 function rememberObjectGroups(session, method, params, reply, sessionId) {
   if (!session) return;
-  const group = params.objectGroup ?? session.objectGroups.get(groupKey(session, sessionId, params.objectId ?? params.promiseObjectId ?? params.errorObjectId));
+  const group = params.objectGroup ?? session.objectGroups.get(groupKey(session, sessionId, params.objectId ?? params.promiseObjectId ?? params.errorObjectId ?? params.prototypeObjectId));
   if (method === "Runtime.releaseObjectGroup") {
     for (const [key, value] of session.objectGroups) {
       if (key.startsWith(`${sessionId ?? "main"}:`) && value === params.objectGroup) session.objectGroups.delete(key);
