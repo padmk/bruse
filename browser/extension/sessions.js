@@ -311,25 +311,25 @@ export function endSession(sessionId) {
 async function endSessionNow(sessionId, cause) {
   rememberEnded(sessionId, cause);
   const state = await load();
-  if (await isPaused()) {
-    const owns = Object.values(state.tabs).some((entry) => entry.sessionId === sessionId);
-    if (owns) {
-      notePausedEnd(state, sessionId, cause);
-      await save(state);
-    }
-    return { closed: 0 };
-  }
+  if (await isPaused()) return keepUntilResume(state, sessionId, cause);
   state.pausedEnds = state.pausedEnds.filter((id) => id !== sessionId);
   state.absentEnds = state.absentEnds.filter((id) => id !== sessionId);
   const toClose = [];
   const kept = [];
+  const ended = {};
   for (const [tabId, entry] of Object.entries(state.tabs)) {
     if (entry.sessionId !== sessionId) continue;
     if (KEPT_MARKS.has(entry.mark)) kept.push(Number(tabId));
     else toClose.push(Number(tabId));
+    ended[tabId] = entry;
     delete state.tabs[tabId];
   }
   await save(state);
+  // The user may have paused agents meanwhile; then the session keeps its tabs after all.
+  if (await isPaused()) {
+    Object.assign(state.tabs, ended);
+    return keepUntilResume(state, sessionId, cause);
+  }
   // One by one, so a tab that is already gone does not keep the others open.
   await Promise.all(toClose.map((tabId) => chrome.tabs.remove(tabId).catch(() => {})));
   // A kept tab is the user's again, so the browser may discard it like any other (see keepLoaded).
@@ -348,6 +348,16 @@ async function endSessionNow(sessionId, cause) {
     if (strays.length) await chrome.tabs.ungroup(strays).catch(() => {});
   }
   return { closed: toClose.length };
+}
+
+// Ends the session while agents are paused: a session that owns tabs is only noted as ended, so they stay
+// open until the user resumes.
+async function keepUntilResume(state, sessionId, cause) {
+  if (Object.values(state.tabs).some((entry) => entry.sessionId === sessionId)) {
+    notePausedEnd(state, sessionId, cause);
+    await save(state);
+  }
+  return { closed: 0 };
 }
 
 // Notes in `state` that the session ended for `cause` while agents are paused. An end for the session's

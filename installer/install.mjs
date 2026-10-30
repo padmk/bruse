@@ -11,7 +11,7 @@ import { homedir, platform } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { HUB_VERSION_MISMATCH, PORT, STORE_EXTENSION_ID } from "../browser/mcp/config.mjs";
-import { agentClients, clientId, extensionDir, fail, installRoot, installed, manifest, note, onPath, product, requireNode, serverPath, source, step, moveToTrash } from "./lib.mjs";
+import { agentClients, clientId, extensionDir, fail, installRoot, installed, manifest, note, onPath, problemMessage, product, requireNode, serverPath, source, step, moveToTrash } from "./lib.mjs";
 
 const PAIR_WAIT_MS = 10 * 60_000;
 const PAIR_HINT_MS = 45_000;
@@ -198,8 +198,9 @@ async function waitForExtension(callBrowser) {
 const pausedMessage = (info, consequence) =>
   `Agents are paused in ${info.name}, ${consequence}. Resume agents from the ${product} icon in the browser toolbar and run setup again.`;
 
-// The reloaded extension reconnects within moments; it reports its version from then on.
-// A paused extension refuses the reload, which would end the user's tab shares.
+// The reloaded extension reconnects within moments; it reports its version from then on. Returns the
+// reloaded extension's browser.info. A paused extension refuses the reload, which would end the user's
+// tab shares.
 async function reloadExtension(callBrowser, connected, build) {
   step("Updating the extension");
   if (connected.paused) fail(pausedMessage(connected, "so the extension cannot be updated"));
@@ -211,7 +212,7 @@ async function reloadExtension(callBrowser, connected, build) {
     info = await callBrowser("browser.info").catch(() => null);
     if (runsThisCode(info, build)) {
       note(`Reloaded in ${info.name}.`);
-      return;
+      return info;
     }
     await new Promise((resolve) => setTimeout(resolve, 1_000));
   }
@@ -221,6 +222,13 @@ async function reloadExtension(callBrowser, connected, build) {
       ? `The connected extension runs other code than ${extensionDir}, though its version is ${manifest.version}. It is probably loaded from another folder: remove it on the extensions page and load ${extensionDir}.`
       : `The connected extension is version ${info.version ?? "unknown"}, not ${manifest.version}. It is probably loaded from another folder: remove it on the extensions page and load ${extensionDir}.`,
   );
+}
+
+// A paused extension, or one with a problem, refuses every agent request, so setup is not done until
+// that changes. Exported for tests.
+export function requireReady(info) {
+  if (info.problem) fail(problemMessage(info));
+  if (info.paused) fail(pausedMessage(info, "so agents cannot use it"));
 }
 
 // The Chrome Web Store's copy updates itself; reloading it would not change its version or its code.
@@ -255,18 +263,17 @@ export async function setup({ clients } = {}) {
     if (!isNotConnected(error)) fail(portTaken(error));
     return null;
   });
-  let info = connected;
   if (fromStore(connected)) checkStoreExtension(connected, build);
   else if (connected) await reloadExtension(callBrowser, connected, build);
   else {
     openExtensionsPage();
-    info = await waitForExtension(callBrowser);
+    const info = await waitForExtension(callBrowser);
     // An extension enabled from another folder, or an older copy, connects too; it must run this version.
     if (fromStore(info)) checkStoreExtension(info, build);
     else if (!runsThisCode(info, build)) await reloadExtension(callBrowser, info, build);
   }
-  // A paused extension refuses every agent request, so setup is not done until the user resumes.
-  if (info.paused) fail(pausedMessage(info, "so agents cannot use it"));
+  // The user may pause agents while setup runs, so the extension's state counts as of now.
+  requireReady(await callBrowser("browser.info").catch((error) => fail(`The extension stopped answering: ${error.message}`)));
   if (!registered) fail(`${product} is installed, but registering the MCP server failed for an agent CLI (see above).`);
   step(`${product} is ready. Start a new agent session to use it.`);
 }
