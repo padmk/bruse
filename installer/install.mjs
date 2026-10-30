@@ -235,8 +235,21 @@ export function requireReady(info) {
   if (info.paused) fail(pausedMessage(info, "so agents cannot use it"));
 }
 
-const portTaken = (error) =>
-  `No ${product} hub that knows the hub token answers on 127.0.0.1:${PORT} (${error.message}). A new extension pairs with whatever answers there, so do not load it now: find the program with \`lsof -nP -iTCP:${PORT} -sTCP:LISTEN\`, stop it and run setup again.`;
+// The process listening on the hub port and its command line, when the system can tell.
+function portHolder() {
+  const lsof = spawnSync("lsof", ["-nP", "-t", `-iTCP:${PORT}`, "-sTCP:LISTEN"], { encoding: "utf8" });
+  const pid = lsof.stdout?.trim().split("\n")[0];
+  if (!pid) return null;
+  return { pid, command: spawnSync("ps", ["-o", "command=", "-p", pid], { encoding: "utf8" }).stdout?.trim() ?? "" };
+}
+
+function portTaken(error) {
+  const holder = portHolder();
+  // Such a server outlives an uninstall, which takes the token it could prove itself with.
+  if (holder?.command.includes(join("mcp", "server.mjs"))) return `An agent session started earlier still holds 127.0.0.1:${PORT} with its ${product} server (process ${holder.pid}), and setup cannot verify it (${error.message}). Restart or end the agent sessions that use ${product}, then run setup again. Do not load the extension before that.`;
+  return `No ${product} hub that knows the hub token answers on 127.0.0.1:${PORT} (${error.message}). A new extension pairs with whatever answers there, so do not load it now: find the program with \`lsof -nP -iTCP:${PORT} -sTCP:LISTEN\`, stop it and run setup again.`;
+}
+
 // The version stays the same between releases, so the extension must also report this copy's code
 // fingerprint (`build`, see shared.js) to count as updated.
 const runsThisCode = (info, build) => info?.version === manifest.version && (!build || info.build === build);
