@@ -9,7 +9,8 @@ import { join } from "node:path";
 import { extensionId } from "../browser/mcp/config.mjs";
 import { PAIRING_HOST } from "../browser/extension/shared.js";
 
-// User data directories of the Chromium browsers that load the extension.
+// User data directories of the Chromium browsers that load the extension. A directory is written even
+// when that browser is not installed: on macOS Brave looks for hosts in Google/Chrome, not in its own.
 export function browserDataDirs({ home = homedir(), os = platform(), config = process.env.XDG_CONFIG_HOME || join(home, ".config") } = {}) {
   if (os === "darwin") {
     const support = join(home, "Library", "Application Support");
