@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.18.2
+
+- **Fixed, raw DevTools commands reached extensions' script worlds:** when the extension removed another extension's frame from a page, it ran its own script there in an isolated world with the extension's storage and messaging, and an agent's raw `Runtime` commands could name that world, or another extension's content-script world, by context ID or object handle. Raw commands now run JavaScript and use objects only in the page's own contexts: a numeric context ID of `Runtime.evaluate` or `Runtime.callFunctionOn` is sent as that context's unique ID (which a new renderer process does not reuse), other numeric context IDs, `executionContextName`, `Runtime.addBinding` and `Runtime.disable` are refused, and object handles must belong to a page context. The extension's storage is open only to its own pages, and its service worker and offscreen document take messages only from each other.
+- **Only about:blank and about:srcdoc:** other `about:` addresses, which the browser turns into its internal pages (`about:settings` opens `chrome://settings`), are refused like those pages.
+- **Hidden tabs reveal nothing:** a request for a tab the session may not use fails with the access error before the tab's address is checked, so the error no longer names the scheme of the page in it.
+- **Agent tab group named after the extension:** the group of agent tabs is titled with the extension's name, in grey, instead of "Claude" in orange, which read as another product's group.
+- **Hub limits for unauthenticated connections:** control frames over 125 bytes or fragmented close the connection, as RFC 6455 requires, and a connection that has not authenticated and leaves more than 64 KiB of the hub's replies unread is closed.
+- **Hub token stays private:** the hub writes its token to a new file readable only by the user and moves it into place, and sets the state directory to the user only, also when they existed with wider permissions.
+- **The js tool says what it runs:** its description says that the code runs as Node.js on the user's computer with the user's permissions.
+- **Restore command quoting:** the command that setup prints to restore a kept installation quotes paths in single quotes, so the shell does not expand `$` or backquotes in them.
+
 ## 0.18.1
 
 - **Agents stay out of your windows:** in the default access mode a window is a session's only when every tab in it is the session's or shared. Management calls change, focus or remove only such windows (`windows.update`, `windows.remove`), move tabs and groups into another window only when it is the session's (`tabs.move`, `tabs.group`, `tabGroups.move`), add tabs to a group only when the session reaches every tab in it, and activate, highlight or unhighlight a tab only in the session's windows, so an agent cannot switch the tab you are looking at. `windows.get`, `getAll`, `getCurrent` and `getLastFocused` leave out windows without a tab the session reaches.
