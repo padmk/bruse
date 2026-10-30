@@ -111,7 +111,8 @@ export function agentClients() {
       },
     });
   }
-  return [...clients, ...moreClients(onPath, MCP_NAME)];
+  // By name, which keeps clients of the same family next to each other.
+  return [...clients, ...moreClients(onPath, MCP_NAME)].sort((a, b) => a.name.localeCompare(b.name));
 }
 
 export function moveToTrash(path) {
