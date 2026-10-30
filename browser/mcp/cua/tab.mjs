@@ -216,7 +216,7 @@ export class Tab {
     const cdp = this.cdpSender(sessionId);
     await prepareClick(cdp, backendNodeId);
     const deadline = Date.now() + timeoutMs;
-    const probeDeadline = Date.now() + Math.max(timeoutMs, FRAME_POINTER_WAIT_MS);
+    const probeDeadline = Date.now() + FRAME_POINTER_WAIT_MS;
     const pointer = sessionId && hitTest && !force ? await watchFramePointer(cdp, backendNodeId) : null;
     try {
       for (;;) {
