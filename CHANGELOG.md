@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Pair through a native messaging host for Brave, Chrome, Edge, Chromium and Vivaldi. Secrets never cross the hub port, including first use. Setup writes manifests and a stable launcher; uninstall removes them and doctor reports repairs.
+- Preserve existing pairings and HMAC compatibility. Reinstalled extensions retrieve the existing secret automatically. Remove port-based first pairing, reset approval and pairing-offer errors. Older unpaired extensions must update.
+
 ## 0.18.9
 
 - **Shared tabs keep their place:** agents cannot pin, unpin, move or group a tab you shared, or a group holding one; sharing lets them use the tab, not rearrange your tab strip.

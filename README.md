@@ -10,8 +10,8 @@ with a `cua` object that reads and operates your Chromium browser's tabs in the 
 taking focus or moving the cursor. The API follows the shape of Codex's browser computer use: numbered
 accessibility trees with diffs, input by element number, Playwright-style locators, dialogs, uploads
 and downloads. Its tabs open in your browser profile, where you are already signed in; by default an
-agent uses only the tabs it opens and the tabs you share with it. Nothing is written into the browser's
-or the system's configuration.
+agent uses only the tabs it opens and the tabs you share with it. Setup writes native messaging host manifests in the browser's user data directory. It does not change
+browser profiles, browser policies or system settings.
 
 Bruse is one browser tool for every MCP client you use, including ones without a browser tool of their
 own, and it works in background tabs of your everyday browser profile. An agent can batch many steps
@@ -57,7 +57,8 @@ Or ask an agent you trust, with no download first:
 Setup:
 
 - copies the extension and the MCP server to `~/.local/share/bruse/browser`, replacing a previous
-  version (`~/.local/share/bruse` holds everything Bruse keeps, the pairing state included). When the
+  version (`~/.local/share/bruse` holds the program and pairing state; native host manifests live
+  in each browser's `NativeMessagingHosts` directory). When the
   new copy cannot take the place of the previous one, setup puts the previous one back and stops; if
   that fails too, it keeps it next to the installed path and prints the command that restores it;
 - on a first install, says what agents can reach through Bruse (your user account's permissions and
@@ -72,7 +73,7 @@ Setup:
   leaves a file with comments untouched and reports it;
 - when the extension is not connected yet, shows its folder in Finder and opens the browser's
   extensions page (the first time, macOS asks to let the terminal control the browser);
-- waits until the extension connects, which also pairs it (see [Security and privacy](#security-and-privacy)),
+- registers the native pairing host and waits until the extension connects (see [Security and privacy](#security-and-privacy)),
   or reloads an extension that is already connected and waits until it runs the new version.
 
 The one manual step, on first install only, takes three clicks on the extensions page that setup opens:
@@ -108,10 +109,10 @@ doctor` tells you when the browser still runs older extension code.
 
 From a checkout or the unpacked zip, run them as `node bin/bruse.mjs <command>`. To update, run `bruse setup` again with
 the new version; it reloads the extension in the browser. Agent sessions started before the update
-keep working; while one of them holds the hub, setup and newer sessions say that the versions differ,
-and restarting the older sessions fixes it. To uninstall, run `bruse uninstall` and, after a Homebrew install,
+keep working when their hub protocol is compatible. If setup or newer sessions report a version
+mismatch, restart the older sessions. To uninstall, run `bruse uninstall` and, after a Homebrew install,
 `brew uninstall bruse`. On macOS the command opens the browser's extensions page; remove the extension
-there before you install again, because a copy left behind cannot pair. Agent sessions
+there to finish uninstalling. Agent sessions
 started before the uninstall keep the removed server until they end.
 
 ## Usage
@@ -206,26 +207,22 @@ The full API is in [browser/mcp/cua/docs.mjs](browser/mcp/cua/docs.mjs).
   itself is never sent: a server sends no request until the hub has proved the token too, so a process
   of another user that takes the port after the hub exits gets neither the token nor any request.
   Until a connection has authenticated, the hub takes only small messages from it, closes it when it
-  leaves the hub's replies unread, and keeps only a few such connections at a time. Hub and extension authenticate each other: on first connection the extension pairs by sending a
-  random secret, which the hub stores in `~/.local/share/bruse/state/extension-secret` (0600);
-  every later connection proves that secret in both directions with HMAC over fresh nonces. The
-  extension executes requests only on an authenticated connection, so a process posing as the hub on
-  the port gets nothing, and one posing as the extension cannot replace it.
-- **Pairing trusts the first connection.** While the extension has no secret (on first install or after
-  a reinstall) it offers its new secret to whatever listens on the port, and while the hub has no
-  `extension-secret` it accepts the first extension that pairs. A program already running on the
-  computer, also of another user, could take either side in that moment: as the hub it would drive agent
-  tabs in your profile, as the extension it would receive agent requests and could answer them with
-  made-up pages. `bruse setup` checks that a hub that knows the token holds the port before you load the
-  extension, and stops otherwise; the remaining window is a program that pairs as the extension while
-  setup waits, or an extension loaded without setup while no hub runs. Pairing through the browser's
-  native messaging would close it; it is the intended fix and not built into a release yet. After
-  reinstalling the extension, run `bruse setup` in a terminal: it asks before it moves `extension-secret`
-  to the Trash, and the new extension then pairs within a second. Answer yes only if you just loaded the
-  extension yourself and nobody else uses this computer's accounts. After a yes the hub accepts only the
-  one secret on offer, and a program offering a different one during the same window stops the reset; a
-  program that alone offers a secret still gets it approved, and the first pairing stays trust on first
-  use until native messaging.
+  leaves the hub's replies unread, and keeps only a few such connections at a time. Hub and extension authenticate each other with HMAC over fresh nonces.
+  The extension executes requests only after the hub proves the shared secret.
+- **Native pairing.** Setup registers a native messaging host for Brave, Chrome, Edge, Chromium and
+  Vivaldi. The manifest's public key pins the unpacked extension ID regardless of its folder. The
+  browser starts the host over private pipes and the extension retrieves the secret from
+  `~/.local/share/bruse/state/extension-secret` (0600). The secret never crosses the hub port, even
+  on first use, so a process of another account that binds the port first cannot pair or drive tabs.
+  The host reuses existing pairings; removing and loading the extension again needs no pairing reset.
+  Programs running as your user remain outside this protection: they can read your files or copy an
+  unpacked extension's public key.
+- **Upgrading.** Run `bruse setup` after upgrading. Existing paired extensions keep working with newer
+  servers, and newer extensions use the same HMAC handshake with older servers. An older unpaired
+  extension must be updated; the hub no longer accepts secrets over the port. A newer extension with
+  a saved pairing can connect before the native host is installed. With no saved pairing and no host
+  it stays disconnected; run setup. If the browser disables the extension after adding the
+  `nativeMessaging` permission, enable it on its extensions page and run setup again.
 
 - **No independent audit yet.** No external security audit of Bruse has been published. The changes
   are reviewed by models and covered by end-to-end tests, which do not replace one.
@@ -245,6 +242,7 @@ The extension asks for these permissions:
 | `webNavigation` | Telling which tab a page opened, so new tabs and downloads go to the right session |
 | `downloads` | Reporting the files a tab downloaded |
 | `history`, `bookmarks` (optional) | `browser.history()` and bookmarks in the `management` capability; off until you turn them on under **Access** in the popup, and the browser asks you to confirm |
+| `nativeMessaging` | Retrieve the pairing secret through the locally installed host |
 | `storage` | The pairing secret and which session owns which tab |
 | `offscreen`, `alarms` | Keeping the connection to the local hub open |
 

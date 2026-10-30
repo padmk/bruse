@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { createHmac, randomBytes } from "node:crypto";
-import { existsSync, readFileSync, renameSync, statSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import http from "node:http";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
-import { hubClient, offerPairing, sendFrame, startEnvironment, until } from "./harness.mjs";
+import { hubClient, sendFrame, startEnvironment, until } from "./harness.mjs";
 
 let env;
 let hub;
@@ -225,58 +225,12 @@ test("impostors cannot authenticate or replace the pairing", { timeout: 120_000 
   }
 });
 
-test("reinstalled extension requires pairing reset", { timeout: 120_000 }, async () => {
-  const oldSecret = readFileSync(secretPath(), "utf8");
-  await env.browser.cdp.send("Extensions.uninstall", { id: env.browser.extensionId });
-  await env.browser.cdp.send("Extensions.loadUnpacked", { path: env.copy.extensionDir });
-  await assert.rejects(call(hub), /did not connect/i);
-  // Another session, through the hub, learns why; it gets no way around the refusal.
-  const client = await hubClient(env.port, env.stateDir);
-  await assert.rejects(client.call("browser.info"), (error) => error.code === "PAIRING_NEW_EXTENSION" && /only the user can reset/i.test(error.message));
-  client.close();
-  assert.equal(readFileSync(secretPath(), "utf8"), oldSecret);
-  renameSync(secretPath(), join(env.stateDir, "old-extension-secret"));
-  await call(hub);
-  assert.notEqual(readFileSync(secretPath(), "utf8"), oldSecret);
-});
-
-test("a pairing reset accepts only the one secret on offer", { timeout: 120_000 }, async () => {
+test("reinstalled extension retrieves the existing native pairing without a reset", { timeout: 120_000 }, async () => {
   const original = readFileSync(secretPath(), "utf8");
-  const offer = (secret) => offerPairing(env.port, env.browser.extensionId, secret);
-  const client = await hubClient(env.port, env.stateDir);
-  // While the paired extension is connected, nothing is on offer even if a forger asks.
-  assert.equal(await offer("f".repeat(64)), false);
-  assert.deepEqual(await client.approvePairingReset(), { moved: null });
   await env.browser.cdp.send("Extensions.uninstall", { id: env.browser.extensionId });
-  // The failed call waits as long as an offer stays fresh, so the forger's has aged out by then.
-  await until(() => client.call("browser.info").then(() => false, () => true), { timeoutMs: 30_000, message: "the extension to go away" });
-  assert.deepEqual(await client.approvePairingReset(), { moved: null });
-  const real = "a".repeat(64);
-  const forged = "b".repeat(64);
-  // Two different secrets on offer: the reset is refused and the pairing stays.
-  assert.equal(await offer(real), false);
-  assert.equal(await offer(forged), false);
-  await assert.rejects(client.approvePairingReset(), (error) => error.code === "PAIRING_SEVERAL_OFFERS");
-  assert.equal(readFileSync(secretPath(), "utf8"), original);
-  // One secret on offer: only that one pairs. A request through the normal path never resets anything.
-  await new Promise((resolve) => setTimeout(resolve, 8_500));
-  assert.equal(await offer(real), false);
-  await assert.rejects(client.call("approve-pairing-reset"));
-  assert.equal(readFileSync(secretPath(), "utf8"), original);
-  assert.equal(await offer(real), false);
-  const { moved } = await client.approvePairingReset();
-  assert.equal(existsSync(secretPath()), false);
-  assert.equal(readFileSync(moved, "utf8"), original);
-  assert.equal(await offer(forged), false);
-  assert.equal(existsSync(secretPath()), false);
-  assert.equal(await offer(real), true);
-  assert.equal(readFileSync(secretPath(), "utf8"), real);
-  client.close();
-  // Back to the real extension, for the tests after this one.
   await env.browser.cdp.send("Extensions.loadUnpacked", { path: env.copy.extensionDir });
-  renameSync(secretPath(), join(env.stateDir, "forged-extension-secret"));
   await call(hub);
-  assert.notEqual(readFileSync(secretPath(), "utf8"), real);
+  assert.equal(readFileSync(secretPath(), "utf8"), original);
 });
 
 test("another session takes over the hub without re-pairing", { timeout: 120_000 }, async () => {

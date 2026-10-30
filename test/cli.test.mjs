@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import { chmodSync, cpSync, existsSync, readFileSync, mkdirSync, readdirSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { after, before, test } from "node:test";
-import { browserCopy, freePort, launchBrowser, offerPairing, until } from "./harness.mjs";
+import { browserCopy, freePort, launchBrowser, until } from "./harness.mjs";
 
 let copy, port, browser, home, installed, cli, environment;
 const children = new Map();
@@ -65,22 +65,6 @@ async function inPage(url, expression) {
     await cdp.send("Target.closeTarget", { targetId });
   }
 }
-// Runs setup as at a terminal, where setup tells by stdin's isTTY, and gives `answer` to its question;
-// returns the output.
-async function inTerminal(answer) {
-  const child = spawn(process.execPath, ["--import", "data:text/javascript,process.stdin.isTTY=true", cli, "setup"], { env: environment, stdio: ["pipe", "pipe", "pipe"] });
-  let output = "";
-  child.stdout.on("data", (chunk) => (output += chunk));
-  child.stderr.on("data", (chunk) => (output += chunk));
-  const done = new Promise((resolve) => child.on("close", resolve));
-  children.set(child, done);
-  await until(() => output.includes("Reset the pairing?"), { timeoutMs: 60_000, message: "setup to ask" });
-  child.stdin.write(`${answer}\n`);
-  const code = await done;
-  output += `\nexit code ${code}`;
-  children.delete(child);
-  return output;
-}
 const setPaused = (paused) => inPage(`chrome-extension://${browser.extensionId}/popup.html`, `chrome.storage.local.set({ paused: ${paused} })`);
 const setEnabled = (enabled) => inPage("chrome://extensions", `chrome.management.setEnabled(${JSON.stringify(browser.extensionId)}, ${enabled})`);
 
@@ -97,7 +81,7 @@ test("setup, reload, doctor and uninstall", { timeout: 180_000 }, async () => {
   assert.match(setup.output(), /meant for agents you trust/);
   assert.ok(setup.output().indexOf("meant for agents you trust") < setup.output().indexOf("Registering the MCP server"), setup.output());
   assert.ok(setup.output().includes(join(installed, "browser", "mcp", "server.mjs")));
-  browser = await launchBrowser(join(installed, "browser", "extension"));
+  browser = await launchBrowser(join(installed, "browser", "extension"), { pairing: { browserDir: join(installed, "browser"), stateDir: join(installed, "state") } });
   const first = await setup.done;
   assert.equal(first.code, 0, first.output);
   assert.match(first.output, /is ready/);
@@ -130,53 +114,18 @@ test("setup, reload, doctor and uninstall", { timeout: 180_000 }, async () => {
   const uninstall = await run("uninstall").done;
   assert.equal(uninstall.code, 0, uninstall.output);
   assert.equal(existsSync(installed), false);
-  assert.match(uninstall.output, /Remove the .* extension on the extensions page of the browser you loaded it in.* before you install again/);
+  assert.match(uninstall.output, /Remove the .* extension on the extensions page of the browser you loaded it in/);
 });
-test("setup reports a leftover extension and asks before it resets a pairing", { timeout: 300_000 }, async () => {
+test("setup reconnects a leftover extension and preserves pairing on extension reinstall", { timeout: 120_000 }, async () => {
+  const result = await run("setup").done;
+  assert.equal(result.code, 0, result.output);
   const secretPath = join(installed, "state", "extension-secret");
-  // The extension the uninstall left in the browser still holds the old secret.
-  const leftover = await run("setup").done;
-  assert.notEqual(leftover.code, 0, leftover.output);
-  assert.match(leftover.output, /holds a pairing from an earlier installation.*Remove it on the browser's extensions page, load it again/);
-  assert.equal(existsSync(secretPath), false);
-  const reinstall = async () => {
-    await browser.cdp.send("Extensions.uninstall", { id: browser.extensionId });
-    await browser.cdp.send("Extensions.loadUnpacked", { path: join(installed, "browser", "extension") });
-  };
-  // Doing what the message says pairs again.
-  await reinstall();
-  const paired = await run("setup").done;
-  assert.equal(paired.code, 0, paired.output);
-  const secret = readFileSync(secretPath, "utf8");
-  // Removed and loaded again by hand: without a terminal nobody can agree to a reset.
-  await reinstall();
-  const refused = await run("setup").done;
-  assert.notEqual(refused.code, 0, refused.output);
-  assert.match(refused.output, /A new extension wants to pair.*The user must decide.*bruse setup. in a terminal/);
-  assert.equal(readFileSync(secretPath, "utf8"), secret);
-  // At a terminal, only yes resets it, and the extension then pairs by itself.
-  const declined = await inTerminal("n");
-  assert.match(declined, /Reset the pairing\? \[y\/N\]/);
-  assert.match(declined, /The pairing was not reset/);
-  assert.equal(readFileSync(secretPath, "utf8"), secret);
-  const accepted = await inTerminal("y");
-  assert.match(accepted, /is ready/);
-  assert.notEqual(readFileSync(secretPath, "utf8"), secret);
-  // A second program offering another secret while the question is open stops the reset.
-  const kept = readFileSync(secretPath, "utf8");
-  await reinstall();
-  let forging = true;
-  const forger = (async () => {
-    while (forging) {
-      await offerPairing(port, browser.extensionId, "f".repeat(64)).catch(() => {});
-      await new Promise((resolve) => setTimeout(resolve, 300));
-    }
-  })();
-  const contested = await inTerminal("y").finally(() => (forging = false));
-  await forger;
-  assert.match(contested, /Two programs are trying to pair.*The pairing was kept.*Find out what the other one is/);
-  assert.match(contested, /exit code 1/);
-  assert.equal(readFileSync(secretPath, "utf8"), kept);
+  const original = readFileSync(secretPath, "utf8");
+  await browser.cdp.send("Extensions.uninstall", { id: browser.extensionId });
+  await browser.cdp.send("Extensions.loadUnpacked", { path: join(installed, "browser", "extension") });
+  const reinstalled = await run("setup").done;
+  assert.equal(reinstalled.code, 0, reinstalled.output);
+  assert.equal(readFileSync(secretPath, "utf8"), original);
 });
 test("file clients preserve configuration and reject comments", { timeout: 180_000 }, async () => {
   const app = process.platform === "darwin" ? join(home, "Library", "Application Support") : join(home, ".config");

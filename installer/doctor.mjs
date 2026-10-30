@@ -1,5 +1,6 @@
 // Checks an installation step by step and says what to do about each problem.
 
+import { pairingHostProblems } from "./native-host.mjs";
 import { readFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
@@ -24,6 +25,10 @@ export async function doctor() {
   else if (!copy) bad(`Not installed in ${installed}; run \`bruse setup\`.`);
   else if (copy !== manifest.version) bad(`The installed copy is ${copy}; run \`bruse setup\` to install ${manifest.version}.`);
   else ok(`Installed in ${installed}`);
+
+  const hostProblems = pairingHostProblems(installed);
+  for (const problem of hostProblems) bad(problem);
+  if (!hostProblems.length) ok("Native pairing hosts registered");
 
   // Setup registers only the clients the user picked, so an unregistered client is not a problem.
   const clients = agentClients();
@@ -63,7 +68,7 @@ export async function doctor() {
     return finish();
   }
   if (existsSync(EXTENSION_SECRET_PATH)) ok("Paired with an extension");
-  else bad("No extension has paired yet; load the extension (see `bruse setup`).");
+  else bad("No native pairing secret yet; run `bruse setup` and load the extension.");
   try {
     const info = await callBrowser("browser.info");
     if (info.version === manifest.version && info.build !== build) bad(`Connected to ${info.name}, but its extension ${info.version} runs other code than ${join(browserDir, "extension")}, most likely from before an update; reload the extension (\`bruse setup\` does that).`);

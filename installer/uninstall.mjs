@@ -2,6 +2,7 @@
 // removes the extension on the extensions page, which this opens: the browser lets an extension remove
 // itself without asking, or with a dialog only after a click, and agents must not be able to do the former.
 
+import { installedPairingHosts } from "./native-host.mjs";
 import { existsSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
 import { agentClients, fail, failureReason, installRoot, installed, installedBrowser, moveToTrash, note, product, showPage, source, step } from "./lib.mjs";
@@ -28,6 +29,14 @@ export async function uninstall() {
   // server, so the files stay until it is gone.
   if (failed) fail("Removing the MCP server failed for an agent CLI (see above); the installed files were kept.");
   const left = [];
+  for (const host of installedPairingHosts(installed)) {
+    try {
+      note(`Moving ${host.path} to the Trash`);
+      moveToTrash(host.path);
+    } catch (error) {
+      fail(`Could not remove ${host.path}: ${error.message}. The installed files were kept; retry bruse uninstall.`);
+    }
+  }
   for (const path of [installRoot, STATE_DIR]) {
     if (!existsSync(path)) continue;
     // Moving the rest would leave an installation that remains without its pairing.
@@ -45,7 +54,7 @@ export async function uninstall() {
   }
   step("To finish");
   const browser = installedBrowser();
-  note(`Remove the ${product} extension on the extensions page of the browser you loaded it in${browser ? ` (this opens ${browser.page})` : ""} before you install again; a copy left behind cannot pair.`);
+  note(`Remove the ${product} extension on the extensions page of the browser you loaded it in${browser ? ` (this opens ${browser.page})` : ""}.`);
   if (browser && !process.env.BRUSE_NO_OPEN) showPage(browser.app, browser.page);
   // The bruse command itself is a Homebrew package when it runs from Homebrew's Cellar.
   if (/\/Cellar\//.test(source)) note(`Run \`brew uninstall ${product.toLowerCase()}\` to remove the \`${product.toLowerCase()}\` command.`);
