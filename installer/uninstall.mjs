@@ -1,13 +1,30 @@
-// Removes what setup added: the MCP registrations, the installed copy and the pairing state. The
-// browser extension is removed by the user on the extensions page.
+// Removes what setup added: the MCP registrations, the extension, the installed copy and the pairing
+// state. An extension that does not answer is removed by the user on the extensions page.
 
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { agentClients, fail, failureReason, installRoot, installed, moveToTrash, note, product, source, step } from "./lib.mjs";
 
+// Asks the connected extension to remove itself and checks that it stopped answering. A paused or older
+// extension refuses, and an extension that is not connected cannot be asked.
+async function removeExtension(callBrowser) {
+  try {
+    const { name } = await callBrowser("browser.info");
+    await callBrowser("extension.uninstall");
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
+    const removed = await callBrowser("browser.info").then(() => false, () => true);
+    if (removed) note(`Removed the extension from ${name}`);
+    return removed;
+  } catch {
+    return false;
+  }
+}
+
 export async function uninstall() {
   step(`Uninstalling ${product}`);
-  const { STATE_DIR } = await import(join(existsSync(installed) ? installed : source, "mcp", "config.mjs"));
+  const browserDir = existsSync(installed) ? installed : source;
+  const { STATE_DIR } = await import(join(browserDir, "mcp", "config.mjs"));
+  const { callBrowser } = await import(join(browserDir, "mcp", "browser-link.mjs"));
   let failed = 0;
   for (const client of agentClients()) {
     const registration = client.registration();
@@ -25,13 +42,14 @@ export async function uninstall() {
   // A registration left behind, or one that could not be checked and removed, must still find its
   // server, so the files stay until it is gone.
   if (failed) fail("Removing the MCP server failed for an agent CLI (see above); the installed files were kept.");
+  const extensionRemoved = await removeExtension(callBrowser);
   for (const path of [installRoot, STATE_DIR]) {
     if (!existsSync(path)) continue;
     moveToTrash(path);
     note(`Moved ${path} to the Trash`);
   }
   step("To finish");
-  note(`Remove the ${product} extension on the browser's extensions page.`);
+  if (!extensionRemoved) note(`Remove the ${product} extension on the browser's extensions page.`);
   // The bruse command itself is a Homebrew package when it runs from Homebrew's Cellar.
   if (/\/Cellar\//.test(source)) note(`Run \`brew uninstall ${product.toLowerCase()}\` to remove the \`${product.toLowerCase()}\` command.`);
   note(`Restart agent sessions started before now; they keep running the removed MCP server until they end.`);

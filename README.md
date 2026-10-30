@@ -89,14 +89,15 @@ doctor` tells you when the browser still runs older extension code.
 | `bruse setup` | Install or update, register the MCP server with the clients you pick and wait for the extension |
 | `bruse setup --clients claude-code,codex` | The same, with the named clients and without asking (names as `bruse doctor` shows them) |
 | `bruse doctor` | Check Node.js, the installed copy, the registrations, pairing and the browser connection |
-| `bruse uninstall` | Remove the registrations, the installed copy and the pairing state |
+| `bruse uninstall` | Remove the registrations, the connected extension, the installed copy and the pairing state |
 | `bruse version` | Print the version |
 
 From a checkout or the unpacked zip, run them as `node bin/bruse.mjs <command>`. To update, run `bruse setup` again with
 the new version; it reloads the extension in the browser. Agent sessions started before the update
 keep working; while one of them holds the hub, setup and newer sessions say that the versions differ,
-and restarting the older sessions fixes it. To uninstall, run `bruse uninstall`, remove the extension on the
-browser's extensions page and, after a Homebrew install, run `brew uninstall bruse`. Agent sessions
+and restarting the older sessions fixes it. To uninstall, run `bruse uninstall` and, after a Homebrew install,
+`brew uninstall bruse`. The command removes the extension when it is connected and not paused; otherwise it
+tells you to remove it on the browser's extensions page. Agent sessions
 started before the uninstall keep the removed server until they end.
 
 ## Usage

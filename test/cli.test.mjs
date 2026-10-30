@@ -113,6 +113,8 @@ test("setup, reload, doctor and uninstall", { timeout: 180_000 }, async () => {
   const uninstall = await run("uninstall").done;
   assert.equal(uninstall.code, 0, uninstall.output);
   assert.equal(existsSync(installed), false);
+  assert.match(uninstall.output, /Removed the extension from/);
+  assert.doesNotMatch(uninstall.output, /extensions page/);
 });
 test("file clients preserve configuration and reject comments", { timeout: 180_000 }, async () => {
   const app = process.platform === "darwin" ? join(home, "Library", "Application Support") : join(home, ".config");
