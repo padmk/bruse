@@ -237,3 +237,119 @@ test("a handle command queued across a process navigation keeps its unique conte
     await cdp.send("Target.detachFromTarget", { sessionId });
   }
 });
+
+
+test("receiver calls preserve object groups, async results and callable semantics", async () => {
+  const tabId = await tabWithExtensionWorld("receiver-contract");
+  const send = (method, params) => client.call("cdp", { tabId, method, params });
+  const { result: receiver } = await send("Runtime.evaluate", { expression: "({ answer: 42 })", objectGroup: "receiver-contract" });
+  const { result: child } = await send("Runtime.callFunctionOn", { objectId: receiver.objectId,
+    functionDeclaration: "async function () { return { answer: this.answer }; }", awaitPromise: true });
+  assert.equal((await send("Runtime.callFunctionOn", { objectId: child.objectId,
+    functionDeclaration: "async function () { return this.answer; }", awaitPromise: true, returnByValue: true })).result.value, 42);
+  const { result: separate } = await send("Runtime.callFunctionOn", { objectId: child.objectId,
+    objectGroup: "explicit-contract", functionDeclaration: "function () { return { answer: this.answer }; }" });
+  await send("Runtime.releaseObjectGroup", { objectGroup: "receiver-contract" });
+  await assert.rejects(send("Runtime.callFunctionOn", { objectId: child.objectId,
+    functionDeclaration: "function () { return this.answer; }", returnByValue: true }), /object|context/i);
+  assert.equal((await send("Runtime.callFunctionOn", { objectId: separate.objectId,
+    functionDeclaration: "function () { return this.answer; }", returnByValue: true })).result.value, 42);
+  await send("Runtime.releaseObjectGroup", { objectGroup: "explicit-contract" });
+  const { result: callableReceiver } = await send("Runtime.evaluate", { expression: "({ answer: 42 })" });
+  const callable = await send("Runtime.callFunctionOn", { objectId: callableReceiver.objectId,
+    functionDeclaration: "Object.assign(function () { return this.answer; }, { apply() { throw Error('own apply'); } })", returnByValue: true });
+  assert.equal(callable.result.value, 42);
+  const binding = await send("Runtime.callFunctionOn", { objectId: callableReceiver.objectId,
+    functionDeclaration: "function () { return typeof receiver; }", returnByValue: true });
+  assert.equal(binding.result.value, "undefined");
+});
+
+test("zero-isolate node contracts pin every DOM, accessibility and overlay consumer", async (t) => {
+  const tabId = await tabWithExtensionWorld("node-contracts");
+  const send = (method, params) => client.call("cdp", { tabId, method, params });
+  const { result: node } = await send("Runtime.evaluate", { expression: "document.body" });
+  if (!node.objectId.startsWith("0.")) return t.skip("browser uses nonzero isolate handles");
+  const { cdp } = env.browser;
+  const { targetInfos } = await cdp.send("Target.getTargets");
+  const worker = targetInfos.find((target) => target.type === "service_worker" && target.url.startsWith(`chrome-extension://${extensionId}/`));
+  const { sessionId } = await cdp.send("Target.attachToTarget", { targetId: worker.targetId, flatten: true });
+  const evaluate = async (expression) => (await cdp.send("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true }, sessionId)).result.value;
+  await evaluate(`(() => {
+    const original = chrome.debugger.sendCommand;
+    globalThis.nodeContracts = { original, calls: [] };
+    chrome.debugger.sendCommand = (target, method, params, callback) => {
+      nodeContracts.calls.push({ method, params });
+      return original.call(chrome.debugger, target, method, params, callback);
+    };
+  })()`);
+  try {
+    await send("Overlay.enable", {});
+    const contracts = [
+      ["DOM.describeNode", {}], ["DOM.scrollIntoViewIfNeeded", {}], ["DOM.focus", {}],
+      ["DOM.getBoxModel", {}], ["DOM.getContentQuads", {}], ["DOM.getOuterHTML", {}],
+      ["DOM.setFileInputFiles", { files: [] }], ["DOM.setTextMarker", { type: "spelling", start: 0, end: 0 }],
+      ["Accessibility.getPartialAXTree", {}], ["Accessibility.getAXNodeAndAncestors", {}], ["Accessibility.queryAXTree", {}],
+      ["Overlay.highlightNode", { highlightConfig: {} }],
+      ["Overlay.highlightSourceOrder", { sourceOrderConfig: { parentOutlineColor: { r: 0, g: 0, b: 0 }, childOutlineColor: { r: 0, g: 0, b: 0 } } }],
+    ];
+    for (const [method, params] of contracts) {
+      await evaluate("nodeContracts.calls = []; true");
+      // Some commands require an input or a newer browser; the wire contract must still be pinned.
+      await send(method, { ...params, objectId: node.objectId }).catch(() => {});
+      const calls = await evaluate("nodeContracts.calls");
+      assert.ok(calls.some((call) => call.method === "Runtime.callFunctionOn" && call.params.uniqueContextId), method);
+      const forwarded = calls.find((call) => call.method === method);
+      assert.ok(forwarded?.params.backendNodeId, method);
+      assert.equal(forwarded.params.objectId, undefined, method);
+    }
+    await send("DOM.getDocument", {});
+    assert.ok((await send("DOM.requestNode", { objectId: node.objectId })).nodeId);
+    const { result: file } = await send("Runtime.evaluate", { expression: "new File(['x'], 'x.txt')" });
+    await assert.rejects(send("DOM.getFileInfo", { objectId: file.objectId }), /DOM.getFileInfo.*zero-isolate/);
+    // The open-dialog check must happen before even the conversion's Runtime command.
+    await send("Runtime.evaluate", { expression: "alert('node dialog')" }).catch(() => {});
+    await evaluate("nodeContracts.calls = []; true");
+    await assert.rejects(send("DOM.requestNode", { objectId: node.objectId }), /dialog is open/);
+    assert.deepEqual(await evaluate("nodeContracts.calls"), []);
+  } finally {
+    await send("Page.handleJavaScriptDialog", { accept: false }).catch(() => {});
+    await evaluate("chrome.debugger.sendCommand = nodeContracts.original; true");
+    await cdp.send("Target.detachFromTarget", { sessionId });
+  }
+});
+
+
+test("node conversion refuses open dialogs before running Runtime", async () => {
+  const tabId = await tabWithExtensionWorld("node-dialog");
+  const send = (method, params) => client.call("cdp", { tabId, method, params });
+  const { result: node } = await send("Runtime.evaluate", { expression: "document.body" });
+  await send("Runtime.evaluate", { expression: "alert('conversion dialog')" }).catch(() => {});
+  try {
+    await assert.rejects(send("DOM.requestNode", { objectId: node.objectId }), /dialog is open/);
+  } finally {
+    await send("Page.handleJavaScriptDialog", { accept: false });
+  }
+});
+
+
+test("node conversion reports a dialog opened during its pinned Runtime call", async (t) => {
+  const tabId = await tabWithExtensionWorld("conversion-race");
+  const send = (method, params) => client.call("cdp", { tabId, method, params });
+  const { result: node } = await send("Runtime.evaluate", { expression: "document.body" });
+  if (!node.objectId.startsWith("0.")) return t.skip("browser uses nonzero isolate handles");
+  await send("Runtime.evaluate", { expression: `{
+    const original = Reflect.apply;
+    Reflect.apply = function () {
+      Reflect.apply = original;
+      alert('conversion race');
+      return original(...arguments);
+    };
+  }` });
+  const started = Date.now();
+  try {
+    await assert.rejects(send("DOM.describeNode", { objectId: node.objectId }), /dialog opened while Runtime.callFunctionOn/);
+    assert.ok(Date.now() - started < 5000, "conversion reports the dialog without waiting for cleanup");
+  } finally {
+    await send("Page.handleJavaScriptDialog", { accept: false });
+  }
+});

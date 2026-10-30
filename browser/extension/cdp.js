@@ -70,6 +70,7 @@ chrome.debugger.onEvent.addListener(({ tabId, sessionId: source }, method, param
       dropRequests(session, (r) => r.url === scriptUrl);
     }
   } else if (method === "Target.detachedFromTarget") {
+    for (const key of session.objectGroups.keys()) if (key.startsWith(`${params.sessionId}:`)) session.objectGroups.delete(key);
     for (const [frameId, frame] of session.frames) if (frame.sessionId === params.sessionId) session.frames.delete(frameId);
     for (const key of session.pageContexts.keys()) if (key.startsWith(`${params.sessionId}:`)) session.pageContexts.delete(key);
     // Requests of a frame that went away report no end. A cross-origin frame's target ID is its frame ID.
@@ -91,9 +92,12 @@ chrome.debugger.onEvent.addListener(({ tabId, sessionId: source }, method, param
     }
   } else if (method === "Runtime.executionContextDestroyed") {
     // A later context (such as a content script's world) may get the same ID.
+    const unique = session.pageContexts.get(contextKey(params.executionContextId)) ?? params.executionContextUniqueId;
+    for (const key of session.objectGroups.keys()) if (key.startsWith(`${source ?? "main"}:${unique}:`)) session.objectGroups.delete(key);
     session.pageContexts.delete(contextKey(params.executionContextId));
     session.pageContexts.delete(contextKey(params.executionContextUniqueId));
   } else if (method === "Runtime.executionContextsCleared") {
+    for (const key of session.objectGroups.keys()) if (key.startsWith(`${source ?? "main"}:`)) session.objectGroups.delete(key);
     for (const key of session.pageContexts.keys()) if (key.startsWith(`${source ?? "main"}:`)) session.pageContexts.delete(key);
   } else if (method === "Runtime.consoleAPICalled") {
     if (!session.pageContexts.has(contextKey(params.executionContextId))) return;
@@ -151,6 +155,7 @@ chrome.alarms.onAlarm.addListener(async ({ name }) => {
 });
 
 function rawSend(tabId, method, params = {}, sessionId, timeoutMs) {
+  const owner = sessions.get(tabId);
   return new Promise((resolve, reject) => {
     const limit = timeoutMs ?? (method.startsWith("Input.") ? INPUT_TIMEOUT_MS : COMMAND_TIMEOUT_MS);
     const timer = setTimeout(
@@ -162,7 +167,10 @@ function rawSend(tabId, method, params = {}, sessionId, timeoutMs) {
       clearTimeout(timer);
       const error = chrome.runtime.lastError;
       if (error) reject(new Error(`${method}: ${error.message}`));
-      else resolve(result);
+      else {
+        if (sessions.get(tabId) === owner) rememberObjectGroups(owner, method, params, result, sessionId);
+        resolve(result);
+      }
     });
   });
 }
@@ -226,7 +234,7 @@ async function attachNow(tabId) {
     if (!/already attached/i.test(error.message)) throw error;
     reattached = true;
   }
-  const session = { lastUsed: Date.now(), dialog: null, console: [], dialogWaiters: [], pageContexts: new Map(), frames: new Map(), requests: [], inflight: new Map(), attachedAt: Date.now(), networkActivityAt: null };
+  const session = { lastUsed: Date.now(), dialog: null, console: [], dialogWaiters: [], objectGroups: new Map(), pageContexts: new Map(), frames: new Map(), requests: [], inflight: new Map(), attachedAt: Date.now(), networkActivityAt: null };
   sessions.set(tabId, session);
   // A pause that came while the attach was in flight found no session to detach; one that comes from
   // now on finds this one.
@@ -460,6 +468,43 @@ function objectHandles(method, params) {
   return handles;
 }
 
+// Protocol contracts for allowed node-handle consumers. Other zero-isolate consumers are refused.
+const NODE_HANDLE_CONTRACTS = new Map([
+  ...["DOM.describeNode", "DOM.scrollIntoViewIfNeeded", "DOM.focus", "DOM.getBoxModel",
+    "DOM.getContentQuads", "DOM.getOuterHTML", "DOM.setFileInputFiles", "DOM.setTextMarker",
+    "Accessibility.getPartialAXTree", "Accessibility.getAXNodeAndAncestors", "Accessibility.queryAXTree",
+    "Overlay.highlightNode", "Overlay.highlightSourceOrder"].map((method) => [method, "backendNodeId"]),
+  ["DOM.requestNode", "nodeId"],
+]);
+
+function groupKey(session, sessionId, handle) {
+  const context = session.pageContexts.get(`${sessionId ?? "main"}:${OBJECT_HANDLE.exec(handle ?? "")?.[1]}`);
+  return `${sessionId ?? "main"}:${context}:${handle}`;
+}
+
+// A RemoteObjectId contains no group name. Remember groups from replies without inspecting page data
+// returned by value. Property descriptors carry RemoteObjects in their value fields, so recurse there.
+function rememberObjectGroups(session, method, params, reply, sessionId) {
+  if (!session) return;
+  const group = params.objectGroup ?? session.objectGroups.get(groupKey(session, sessionId, params.objectId ?? params.promiseObjectId ?? params.errorObjectId));
+  if (method === "Runtime.releaseObjectGroup") {
+    for (const [key, value] of session.objectGroups) {
+      if (key.startsWith(`${sessionId ?? "main"}:`) && value === params.objectGroup) session.objectGroups.delete(key);
+    }
+  } else if (method === "Runtime.releaseObject") {
+    session.objectGroups.delete(groupKey(session, sessionId, params.objectId));
+  }
+  const visit = (value) => {
+    if (!value || typeof value !== "object") return;
+    if (typeof value.type === "string" && ("objectId" in value || "value" in value || "description" in value)) {
+      if (value.objectId && group !== undefined) session.objectGroups.set(groupKey(session, sessionId, value.objectId), group);
+      return;
+    }
+    for (const child of Object.values(value)) visit(child);
+  };
+  visit(reply);
+}
+
 // Raw commands run JavaScript and use objects only in the page's own (default) contexts of the target
 // they go to, never in an isolated world where this or another extension's content script runs with
 // extension APIs. The contexts are known from Runtime events, so commands that stop them are refused.
@@ -492,13 +537,15 @@ function requirePageContext(session, method, params = {}, sessionId) {
       if (handles.length && !context) throw new Error("Object arguments require an explicit page context");
       if (sent.objectId) {
         const { objectId, functionDeclaration, arguments: args = [], ...rest } = sent;
-        return { ...rest, uniqueContextId: context,
-          functionDeclaration: `function (receiver, ...args) { return (${functionDeclaration}).apply(receiver, args); }`,
+        // Arrow declarations can see this wrapper's arguments; avoiding that requires eval or another call.
+        const objectGroup = sent.objectGroup ?? session.objectGroups.get(groupKey(session, sessionId, objectId));
+        return { ...rest, ...(objectGroup === undefined ? {} : { objectGroup }), uniqueContextId: context,
+          functionDeclaration: `function () { return Reflect.apply((${functionDeclaration}), arguments[0], Array.prototype.slice.call(arguments, 1)); }`,
           arguments: [{ objectId }, ...args] };
       }
       return sent;
     }
-    if (method.startsWith("Runtime.") && objectHandles(method, sent).some((handle) => ZERO_ISOLATE_HANDLE.test(handle))) {
+    if (objectHandles(method, sent).some((handle) => ZERO_ISOLATE_HANDLE.test(handle)) && !NODE_HANDLE_CONTRACTS.has(method)) {
       throw new Error(`${method} cannot safely use a zero-isolate object handle; use Runtime.callFunctionOn with a page context instead`);
     }
     return sent;
@@ -516,30 +563,42 @@ async function sendChecked(tabId, session, method, params, sessionId, timeoutMs,
   // which asks the gate again.
   if (sessions.get(tabId) !== session) throw new Error("Debugger is not attached to the tab");
   params = requirePageContext(session, method, params, sessionId);
-  // DOM commands have no unique context selector. Resolve the handle inside its pinned world first;
+  requireNoDialog(session, method);
+  // Node commands have no unique context selector. Resolve the handle inside its pinned world first;
   // backend node IDs identify DOM nodes, not JavaScript objects in another world's object table.
-  if (method.startsWith("DOM.") && typeof params?.objectId === "string" && ZERO_ISOLATE_HANDLE.test(params.objectId)) {
+  if (NODE_HANDLE_CONTRACTS.has(method) && typeof params?.objectId === "string" && ZERO_ISOLATE_HANDLE.test(params.objectId)) {
     const objectGroup = `node-conversion-${crypto.randomUUID()}`;
     const pinned = requirePageContext(session, "Runtime.callFunctionOn", {
       objectId: params.objectId, objectGroup, functionDeclaration: "function () { return this; }",
       serializationOptions: { serialization: "deep", additionalParameters: { maxNodeDepth: 0 } },
     }, sessionId);
-    const { result, exceptionDetails } = await rawSend(tabId, "Runtime.callFunctionOn", pinned, sessionId, timeoutMs)
-      .finally(() => rawSend(tabId, "Runtime.releaseObjectGroup", { objectGroup }, sessionId).catch(() => {}));
+    const { result, exceptionDetails } = await executeWithDialog(tabId, session, "Runtime.callFunctionOn", pinned, sessionId, timeoutMs)
+      .finally(() => {
+        // Release can wait behind a modal dialog too; cleanup must not delay the dialog error.
+        rawSend(tabId, "Runtime.releaseObjectGroup", { objectGroup }, sessionId).catch(() => {});
+      });
     const node = result?.deepSerializedValue;
     if (exceptionDetails || node?.type !== "node" || !node.value?.backendNodeId) throw new Error("The object is not a page DOM node");
     const { objectId, ...rest } = params;
     await requireDebugAccess(tabId, caller);
     if (sessions.get(tabId) !== session) throw new Error("Debugger is not attached to the tab");
-    if (method === "DOM.requestNode") {
-      const { nodeIds } = await rawSend(tabId, "DOM.pushNodesByBackendIdsToFrontend", { backendNodeIds: [node.value.backendNodeId] }, sessionId, timeoutMs);
+    if (NODE_HANDLE_CONTRACTS.get(method) === "nodeId") {
+      const { nodeIds } = await executeWithDialog(tabId, session, "DOM.pushNodesByBackendIdsToFrontend", { backendNodeIds: [node.value.backendNodeId] }, sessionId, timeoutMs);
       return { nodeId: nodeIds[0] };
     }
     params = { ...rest, backendNodeId: node.value.backendNodeId };
   }
+  return executeWithDialog(tabId, session, method, params, sessionId, timeoutMs);
+}
+
+function requireNoDialog(session, method) {
   if (session.dialog && !DIALOG_SAFE_METHODS.has(method) && !method.startsWith("Input.")) {
     throw new Error(`A JavaScript ${session.dialog.type} dialog is open on this tab ("${session.dialog.message}"); handle it with getJsDialog() first`);
   }
+}
+
+async function executeWithDialog(tabId, session, method, params, sessionId, timeoutMs) {
+  requireNoDialog(session, method);
   const isInput = method.startsWith("Input.");
   // While a dialog is open the page handles no input; further events of the same action are skipped.
   if (isInput && session.dialog) return {};
