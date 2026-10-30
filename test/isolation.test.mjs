@@ -102,6 +102,24 @@ test("an own tab in a user window cannot become the active tab", async () => {
   await s.close();
 });
 
+test("a shared tab does not make its window the session's", async () => {
+  const shared = await userTab(url("/page?window-shared"), true);
+  await env.share(shared.id);
+  const { s } = await sessionWithTab(url("/page?window-shared-own"));
+  const own = await ownWindow(s, url("/page?window-shared-window"));
+  await assert.rejects(s.js(`await m.windows.update(${shared.windowId}, { width: 700 });`), /holds tabs that are not this session's/);
+  await assert.rejects(s.js(`await m.windows.remove(${shared.windowId});`), /holds tabs that are not this session's/);
+  await assert.rejects(s.js(`await m.tabs.move(${own.tabId}, { windowId: ${shared.windowId}, index: -1 });`), /holds tabs that are not this session's/);
+  await assert.rejects(s.js(`await m.tabs.group({ tabIds: [${own.tabId}], createProperties: { windowId: ${shared.windowId} } });`), /holds tabs that are not this session's/);
+  await assert.rejects(s.js(`await m.tabs.update(${shared.id}, { active: true });`), /holds tabs that are not this session's/);
+  assert.ok((await json(s, "await m.windows.getAll()")).some((window) => window.id === shared.windowId), "the window stays visible");
+  await s.js(`await m.windows.update(${own.id}, { width: 700 });`);
+  await s.js(`await m.tabs.update(${own.tabId}, { active: true });`);
+  assert.equal(await present(url("/page?window-shared")), true);
+  await env.share(shared.id, false);
+  await s.close();
+});
+
 test("windows without a tab of the session are hidden", async () => {
   const user = await userTab(url("/page?hidden-user"), true);
   const s = await env.session();

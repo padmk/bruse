@@ -12,9 +12,16 @@ import { fromExtensionPage } from "./sender.js";
 import { MANAGEMENT_METHODS, extensionBuild, isPressInput } from "./shared.js";
 
 // Content scripts that this extension runs in pages (see cdp.js) get no access to its storage, which
-// holds the access setting, the shares and the hub secret. Session storage starts out this way.
-chrome.storage.local.setAccessLevel({ accessLevel: "TRUSTED_CONTEXTS" });
-chrome.storage.session.setAccessLevel({ accessLevel: "TRUSTED_CONTEXTS" });
+// holds the access setting, the shares and the hub secret. Session storage starts out this way. Agent
+// requests wait for the restriction, and fail while it has not taken effect (see handle).
+const storageRestriction = Promise.all([
+  chrome.storage.local.setAccessLevel({ accessLevel: "TRUSTED_CONTEXTS" }),
+  chrome.storage.session.setAccessLevel({ accessLevel: "TRUSTED_CONTEXTS" }),
+]).then(
+  () => null,
+  (error) =>
+    `${chrome.runtime.getManifest().name} could not keep web pages' content scripts out of its storage (${error?.message ?? error}), so it runs no agent requests. Ask the user to update the browser and reload the extension.`,
+);
 
 const OFFSCREEN_ALARM = "offscreen-check";
 const LOAD_TIMEOUT_MS = 20_000;
@@ -73,7 +80,17 @@ const handlers = {
   "browser.info": async (_, session) => {
     const mode = await accessMode();
     const { hidden } = await visibleTabs(session, await chrome.tabs.query({}));
-    return { name: browserName(), userAgent: navigator.userAgent, version: chrome.runtime.getManifest().version, build: (await build).hash, id: chrome.runtime.id, paused: await isPaused(), access: { mode, hiddenTabs: hidden } };
+    const problem = await storageRestriction;
+    return {
+      name: browserName(),
+      userAgent: navigator.userAgent,
+      version: chrome.runtime.getManifest().version,
+      build: (await build).hash,
+      id: chrome.runtime.id,
+      paused: await isPaused(),
+      access: { mode, hiddenTabs: hidden },
+      ...(problem && { problem }),
+    };
   },
 
   "tabs.list": async (_, session) => (await visibleTabs(session, await chrome.tabs.query({}))).shown.map(tabInfo),
@@ -257,12 +274,14 @@ async function checkManagementAccess(session, namespace, method, args) {
 // session: its own, in the agent group, closed when it ends.
 const OPENING_METHODS = {
   // The duplicate is the session's; the original keeps its owner or share. The browser activates a
-  // duplicate, so the tab that was active in its window becomes active again.
+  // duplicate, so the tab that was active in its window becomes active again, unless the user has
+  // switched tabs since.
   "tabs.duplicate": async (session, [tabId]) => {
     const { windowId } = await chrome.tabs.get(tabId);
     const [active] = await chrome.tabs.query({ windowId, active: true });
     const [duplicate] = await createAgentTabs(session, async () => [await chrome.tabs.duplicate(tabId)]);
-    if (active && active.id !== duplicate.id) await chrome.tabs.update(active.id, { active: true }).catch(() => {});
+    const stillActive = (await chrome.tabs.get(duplicate.id).catch(() => null))?.active;
+    if (active && active.id !== duplicate.id && stillActive) await chrome.tabs.update(active.id, { active: true }).catch(() => {});
     return chrome.tabs.get(duplicate.id);
   },
   // A tab moved into the new window with `tabId` keeps its owner or share; the others are new.
@@ -418,6 +437,8 @@ async function handle(gen, text) {
   }
   if (id === undefined) return null; // keepalive
   if (!hub.verified) return JSON.stringify({ id, error: "The browser connection is being authenticated again; retry the call" });
+  const storageProblem = await storageRestriction;
+  if (storageProblem && !SESSIONLESS_METHODS.has(method)) return JSON.stringify({ id, error: storageProblem });
   try {
     const handler = handlers[method];
     if (!handler) throw new Error(`Unknown method ${method}`);

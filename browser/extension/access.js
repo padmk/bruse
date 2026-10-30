@@ -1,9 +1,9 @@
 // Which tabs an agent session may reach. In the default mode, "agent tabs", a session reaches the tabs it
 // opened (and those its pages opened from its input) plus the tabs the user shares in the toolbar popup;
 // every other tab stays hidden: agents do not see its title or address, cannot bind, read, drive, close
-// or move it. A window is the session's only when the session may reach every tab in it; the session sees
-// only windows with a tab it may reach, and changes, focuses, activates tabs in or moves tabs into only
-// its own windows. In "all tabs" mode, which the user chooses in the popup, sessions reach every tab, as
+// or move it. A window is the session's only when the session owns every tab in it: sharing a tab lets
+// agents use that tab, not its window. The session sees only windows with a tab it may reach, and
+// changes, focuses, activates tabs in or moves tabs into only its own windows. In "all tabs" mode, which the user chooses in the popup, sessions reach every tab, as
 // before. The mode and the shares live in extension storage, which only the extension's pages and
 // service worker can use, not its content scripts (see service-worker.js); agents cannot open those
 // pages (see guard.js) or run JavaScript in its content scripts (see cdp.js).
@@ -113,12 +113,14 @@ export async function requireAccess(sessionId, tabId) {
   if (!(await mayAccess(sessionId, tabId))) throw notSharedError(tabId);
 }
 
-// Whether the window is the session's: it has tabs, and the session may reach every one of them. Agent
-// tabs open in the user's windows, so a window with an agent tab is not the session's for that alone.
+// Whether the window is the session's: it has tabs, and the session owns every one of them. Agent tabs
+// open in the user's windows, so a window with an agent tab is not the session's for that alone; nor is
+// a window with a shared tab, which the user shared alone.
 async function ownsWindow(sessionId, windowId) {
+  if (!sessionId) return false;
   const tabs = await chrome.tabs.query({ windowId });
   if (!tabs.length) return false;
-  for (const tab of tabs) if (!(await mayAccess(sessionId, tab.id))) return false;
+  for (const tab of tabs) if ((await tabOwner(tab.id)) !== sessionId) return false;
   return true;
 }
 
@@ -126,7 +128,7 @@ export async function requireOwnWindow(sessionId, windowId) {
   if (!Number.isInteger(windowId) || windowId < 0) throw new Error(`Name the window by its ID, not ${JSON.stringify(windowId)}`);
   if (!(await ownsWindow(sessionId, windowId))) {
     throw new Error(
-      `Window ${windowId} holds tabs that are not this session's and not shared by the user. Agents may change, focus, switch tabs in and move tabs into only windows whose every tab is theirs or shared; open your own window with management.windows.create.`,
+      `Window ${windowId} holds tabs that are not this session's. Agents may change, focus, switch tabs in and move tabs into only windows whose every tab they opened; a tab the user shares does not share its window. Open your own window with management.windows.create.`,
     );
   }
 }
