@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.18.4
+
+- **Doctor and setup report a browser that cannot protect the extension's storage:** when the extension could not keep its storage from content scripts and so refuses agent requests, `bruse doctor` reports it as a failed check and `bruse setup` stops with it, both saying to update the browser, instead of reporting that everything is ready.
+- **Setup decides on fresh state:** setup checks the extension's state (paused, storage problem) once more right before it reports that Bruse is ready, so a pause switched on while setup reloaded the extension is not missed.
+- **A pause during a session's end keeps its tabs:** the extension reads the pause switch from storage each time instead of from a copy that changes a moment after the click, and checks it again right before it closes a session's tabs; a session whose end was under way when you paused keeps its tabs until you resume.
+
 ## 0.18.3
 
 - **Pause keeps everything still:** while agents are paused, a session that ends (its server sends `session.end`, or it drops off the hub's report) closes none of its tabs; they close when you resume, unless the session came back meanwhile. `extension.reload` is refused while paused, because a reload ends your tab shares; `bruse setup` stops and asks you to resume agents, also when the extension needs no reload. Pausing ends download waits in progress, also one whose request was still being checked. Agent tabs that the browser restores after a restart are no longer tied to a session and stay as your tabs.
