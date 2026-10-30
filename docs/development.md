@@ -185,8 +185,9 @@ successful DOM hit tests, rather than a delayed button effect. Stale compositor 
 browser mechanism; compositor internals were not instrumented.
 
 Element-targeted cross-origin clicks probe delivery with trusted mouse movement before pressing.
-Only moves are retried, with fresh geometry and hit tests each time; failure to reach the document
-throws without pressing. The same path serves locator and numbered clicks, including forced clicks.
+Only moves are retried, with fresh geometry and hit tests each time; after 3 seconds without a
+confirmed move the click goes ahead, because a page's own listeners can hide delivered moves. The same
+path serves locator and numbered clicks; forced clicks skip the probe.
 Ten repetitions with the fix passed all 100 tests under the same container load. The existing
 cross-origin test also checks that both click styles increment a counter exactly once.
 

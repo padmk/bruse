@@ -248,7 +248,7 @@ export class Locator {
   async click({ button = "left", modifiers = [], timeoutMs = DEFAULT_TIMEOUT_MS, clickCount = 1, force = false } = {}) {
     const deadline = Date.now() + timeoutMs;
     const { id, sessionId } = await this.resolveOne({ timeoutMs });
-    const point = await this.tab.nodePoint(id, sessionId, { hitTest: true, force, timeoutMs: Math.max(0, deadline - Date.now()) });
+    const point = await this.tab.nodePoint(id, sessionId, { hitTest: true, force, key: modifiers.join("+"), timeoutMs: Math.max(0, deadline - Date.now()) });
     await clickAt(this.tab.cdpSender(), point, { mouseButton: button, clickCount, key: modifiers.join("+") });
     await this.tab.afterInput({ mayNavigate: true });
   }
