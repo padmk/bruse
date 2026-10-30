@@ -79,6 +79,26 @@ test("a session that ends while paused keeps its tabs until the user resumes", a
   await until(async () => !(await present(url)), { message: "the ended session's tab to close after resume" });
 });
 
+test("a session ended for its absence while paused that reconnects before the resume keeps its tabs", async (t) => {
+  const url = `${site.origin}/?absent-then-back`;
+  const first = await hubClient(env.port, env.stateDir);
+  await first.call("tabs.create", { url });
+  await setPaused(true);
+  t.after(() => setPaused(false));
+  first.close();
+  // The end for its absence lands in the moment the pause starts (the extension read the pause state
+  // just before); this records it the way that end does.
+  await env.inPopup(`chrome.storage.local.get("agentState").then(({ agentState }) => chrome.storage.local.set({
+    agentState: { ...agentState, pausedEnds: [...(agentState.pausedEnds ?? []), ${JSON.stringify(first.sessionId)}], absentEnds: [${JSON.stringify(first.sessionId)}] },
+  }))`);
+  const back = await hubClient(env.port, env.stateDir, { sessionId: first.sessionId });
+  t.after(() => back.close());
+  await sleep(1_000);
+  await setPaused(false);
+  await sleep(1_500);
+  assert.equal(await present(url), true, "the reconnected session's tab stays open after resume");
+});
+
 test("pausing ends a download wait in progress", async (t) => {
   const client = await hubClient(env.port, env.stateDir);
   t.after(() => client.close());

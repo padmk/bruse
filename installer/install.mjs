@@ -195,11 +195,14 @@ async function waitForExtension(callBrowser) {
   }
 }
 
+const pausedMessage = (info, consequence) =>
+  `Agents are paused in ${info.name}, ${consequence}. Resume agents from the ${product} icon in the browser toolbar and run setup again.`;
+
 // The reloaded extension reconnects within moments; it reports its version from then on.
 // A paused extension refuses the reload, which would end the user's tab shares.
 async function reloadExtension(callBrowser, connected, build) {
   step("Updating the extension");
-  if (connected.paused) fail(`Agents are paused in ${connected.name}, so the extension cannot be updated. Resume agents from the ${product} icon in the browser toolbar and run setup again.`);
+  if (connected.paused) fail(pausedMessage(connected, "so the extension cannot be updated"));
   await callBrowser("extension.reload").catch(() => {});
   const deadline = Date.now() + RELOAD_WAIT_MS;
   await new Promise((resolve) => setTimeout(resolve, 1_000));
@@ -252,15 +255,18 @@ export async function setup({ clients } = {}) {
     if (!isNotConnected(error)) fail(portTaken(error));
     return null;
   });
+  let info = connected;
   if (fromStore(connected)) checkStoreExtension(connected, build);
   else if (connected) await reloadExtension(callBrowser, connected, build);
   else {
     openExtensionsPage();
-    const info = await waitForExtension(callBrowser);
+    info = await waitForExtension(callBrowser);
     // An extension enabled from another folder, or an older copy, connects too; it must run this version.
     if (fromStore(info)) checkStoreExtension(info, build);
     else if (!runsThisCode(info, build)) await reloadExtension(callBrowser, info, build);
   }
+  // A paused extension refuses every agent request, so setup is not done until the user resumes.
+  if (info.paused) fail(pausedMessage(info, "so agents cannot use it"));
   if (!registered) fail(`${product} is installed, but registering the MCP server failed for an agent CLI (see above).`);
   step(`${product} is ready. Start a new agent session to use it.`);
 }

@@ -245,7 +245,7 @@ async function groupAgentTabsNow(tabIds, sessionId) {
   const state = await load();
   if (endedSessions.has(sessionId) && (await isPaused())) {
     for (const tabId of tabIds) state.tabs[tabId] = { sessionId, mark: null };
-    if (!state.pausedEnds.includes(sessionId)) state.pausedEnds.push(sessionId);
+    notePausedEnd(state, sessionId);
     await save(state);
     throw new Error(tabIds.length === 1 ? "The agent session ended while its tab was being created; the tab closes when the user resumes agents" : "The agent session ended while its tabs were being created; the tabs close when the user resumes agents");
   }
@@ -313,13 +313,14 @@ async function endSessionNow(sessionId) {
   const state = await load();
   if (await isPaused()) {
     const owns = Object.values(state.tabs).some((entry) => entry.sessionId === sessionId);
-    if (owns && !state.pausedEnds.includes(sessionId)) {
-      state.pausedEnds.push(sessionId);
+    if (owns) {
+      notePausedEnd(state, sessionId);
       await save(state);
     }
     return { closed: 0 };
   }
   state.pausedEnds = state.pausedEnds.filter((id) => id !== sessionId);
+  state.absentEnds = state.absentEnds.filter((id) => id !== sessionId);
   const toClose = [];
   const kept = [];
   for (const [tabId, entry] of Object.entries(state.tabs)) {
@@ -347,6 +348,14 @@ async function endSessionNow(sessionId) {
     if (strays.length) await chrome.tabs.ungroup(strays).catch(() => {});
   }
   return { closed: toClose.length };
+}
+
+// Notes in `state` that the session ended while agents are paused. An end for the session's absence
+// (reaped) is undone if the session is reported live again before the user resumes; its own end is not.
+function notePausedEnd(state, sessionId) {
+  if (!state.pausedEnds.includes(sessionId)) state.pausedEnds.push(sessionId);
+  const others = state.absentEnds.filter((id) => id !== sessionId);
+  state.absentEnds = reaped.has(sessionId) ? [...others, sessionId] : others;
 }
 
 // Sessions the connected hub reports as live (its own and its clients'), or null while no authenticated
@@ -379,7 +388,15 @@ export function setLiveSessions(sessionIds) {
 async function endAbsentSessions() {
   const current = live;
   if (!current) return;
-  const owners = new Set(Object.values((await load()).tabs).map((entry) => entry.sessionId).filter(Boolean));
+  const state = await load();
+  // A session ended for its absence while paused that is live again keeps its tabs after the resume.
+  const returned = state.absentEnds.filter((id) => current.ids.has(id));
+  if (returned.length) {
+    state.pausedEnds = state.pausedEnds.filter((id) => !returned.includes(id));
+    state.absentEnds = state.absentEnds.filter((id) => !returned.includes(id));
+    await save(state);
+  }
+  const owners = new Set(Object.values(state.tabs).map((entry) => entry.sessionId).filter(Boolean));
   const now = Date.now();
   const paused = await isPaused();
   for (const id of current.absentSince.keys()) if (!owners.has(id) || current.ids.has(id)) current.absentSince.delete(id);

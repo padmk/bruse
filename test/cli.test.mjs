@@ -50,6 +50,23 @@ after(async () => {
   await browser?.close();
   copy?.remove();
 });
+// Evaluates `expression` (awaiting a promise) in a new tab at `url` of the test browser.
+async function inPage(url, expression) {
+  const { cdp } = browser;
+  const { targetId } = await cdp.send("Target.createTarget", { url });
+  const { sessionId } = await cdp.send("Target.attachToTarget", { targetId, flatten: true });
+  try {
+    await until(async () => (await cdp.send("Runtime.evaluate", { expression: "document.readyState === 'complete' && typeof chrome.management", returnByValue: true }, sessionId)).result.value === "object", { message: `${url} to load` });
+    const { result, exceptionDetails } = await cdp.send("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true }, sessionId);
+    if (exceptionDetails) throw new Error(exceptionDetails.exception?.description ?? exceptionDetails.text);
+    return result.value;
+  } finally {
+    await cdp.send("Target.closeTarget", { targetId });
+  }
+}
+const setPaused = (paused) => inPage(`chrome-extension://${browser.extensionId}/popup.html`, `chrome.storage.local.set({ paused: ${paused} })`);
+const setEnabled = (enabled) => inPage("chrome://extensions", `chrome.management.setEnabled(${JSON.stringify(browser.extensionId)}, ${enabled})`);
+
 test("version prints the manifest version", async () => {
   const result = await run("version").done;
   assert.equal(result.code, 0);
@@ -75,6 +92,17 @@ test("setup, reload, doctor and uninstall", { timeout: 180_000 }, async () => {
   assert.doesNotMatch(second.output, /meant for agents you trust/);
   assert.match(second.output, /is ready/);
   assert.equal(readFileSync(secretPath, "utf8"), secret);
+  // An extension that connects only while setup waits, already running this build, while paused.
+  await setPaused(true);
+  await setEnabled(false);
+  const paused = run("setup");
+  await until(() => paused.output().includes("Waiting for the extension to connect"), { timeoutMs: 60_000, message: "setup to wait" });
+  await setEnabled(true);
+  const stopped = await paused.done;
+  assert.notEqual(stopped.code, 0, stopped.output);
+  assert.match(stopped.output, /Agents are paused in .*Resume agents from the .* icon in the browser toolbar and run setup again/);
+  assert.doesNotMatch(stopped.output, /is ready/);
+  await setPaused(false);
   const doctor = await run("doctor").done;
   assert.equal(doctor.code, 0, doctor.output);
   assert.match(doctor.output, /Installed in/);
