@@ -1,10 +1,11 @@
 // The stored record of agent sessions' tabs, { tabs: { [tabId]: { sessionId, mark } }, windowGroups,
-// pausedEnds: [session ids that ended while agents were paused, whose tabs close on resume] }.
+// pausedEnds: [session ids that ended while agents were paused, whose tabs close on resume],
+// absentEnds: [those of pausedEnds that ended for their absence from the hub's reports] }.
 // sessions.js keeps it; this module only reads and writes it, without listeners, so the popup can use it.
 
 export async function loadAgentState() {
   const { agentState } = await chrome.storage.local.get("agentState");
-  return { tabs: agentState?.tabs ?? {}, windowGroups: agentState?.windowGroups ?? {}, pausedEnds: agentState?.pausedEnds ?? [] };
+  return { tabs: agentState?.tabs ?? {}, windowGroups: agentState?.windowGroups ?? {}, pausedEnds: agentState?.pausedEnds ?? [], absentEnds: agentState?.absentEnds ?? [] };
 }
 
 export function saveAgentState(state) {

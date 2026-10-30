@@ -9,7 +9,7 @@ import { EXTENSION_WORK, cdp, onCdpEvent, sinceAgentInput } from "./cdp.js";
 import { ALL_TABS, accessMode, sharedTabs, wasSharedWhenClosed } from "./access.js";
 import { tabOwner } from "./agent-state.js";
 import { agentOpenerChain, onTabOpened, rememberedOwner } from "./sessions.js";
-import { PAUSED_ERROR, onPausedChange } from "./pause.js";
+import { PAUSED_ERROR, isPaused, onPausedChange } from "./pause.js";
 import { AGENT_INPUT_WINDOW_MS } from "./shared.js";
 
 const MAX_REMEMBERED = 200;
@@ -350,5 +350,7 @@ export function waitForDownload(tabId, timeoutMs, caller) {
     };
     waiter.supersede = () => waiter.fail(new Error("A newer wait for a download on this tab replaced this one"));
     waiters.add(waiter);
+    // The user may have paused while the request was checked; pausing later ends the wait (above).
+    isPaused().then((paused) => paused && waiter.fail(new Error(PAUSED_ERROR)));
   });
 }
