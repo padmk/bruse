@@ -33,7 +33,9 @@ No independent security audit of Bruse has been published.
 
 Pairing uses native messaging. Setup registers a host whose `allowed_origins` contains only the ID
 pinned by the extension's manifest key. The browser starts the host over pipes; it reads or creates the
-user's private `extension-secret`, which the extension uses for mutual HMAC authentication. No secret
+user's private `extension-secret`, which the extension uses for mutual HMAC authentication. Setup
+creates the file too, so a hub of an older version that is still running does not accept a secret
+offered on its port. No secret
 is accepted or sent over the hub port. A process of another account that takes the port first cannot
 obtain the secret or have browser requests executed. Existing secrets remain valid across upgrades.
 

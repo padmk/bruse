@@ -11,24 +11,31 @@ import { PAIRING_HOST } from "../browser/extension/shared.js";
 
 // User data directories of the Chromium browsers that load the extension. A directory is written even
 // when that browser is not installed: on macOS Brave looks for hosts in Google/Chrome, not in its own.
+// Chrome for Testing keeps its data in Google/Chrome for Testing, and Chrome's documentation names
+// Google/ChromeForTesting for its hosts.
 export function browserDataDirs({ home = homedir(), os = platform(), config = process.env.XDG_CONFIG_HOME || join(home, ".config") } = {}) {
   if (os === "darwin") {
     const support = join(home, "Library", "Application Support");
-    return ["BraveSoftware/Brave-Browser", "Google/Chrome", "Google/Chrome Beta", "Google/Chrome Canary", "Google/Chrome for Testing", "Chromium", "Microsoft Edge", "Vivaldi"].map((dir) => join(support, dir));
+    return ["BraveSoftware/Brave-Browser", "Google/Chrome", "Google/Chrome Beta", "Google/Chrome Canary", "Google/Chrome for Testing", "Google/ChromeForTesting", "Chromium", "Microsoft Edge", "Vivaldi"].map((dir) => join(support, dir));
   }
-  return ["BraveSoftware/Brave-Browser", "google-chrome", "google-chrome-beta", "chromium", "microsoft-edge", "vivaldi"].map((dir) => join(config, dir));
+  return ["BraveSoftware/Brave-Browser", "google-chrome", "google-chrome-beta", "google-chrome-for-testing", "chromium", "microsoft-edge", "vivaldi"].map((dir) => join(config, dir));
 }
 
 export const hostManifestPath = (dataDir) => join(dataDir, "NativeMessagingHosts", `${PAIRING_HOST}.json`);
 
 const shellQuote = (value) => `'${String(value).replace(/'/g, `'\\''`)}'`;
 
-// Writes the launcher (by default next to the host) and a manifest into every given browser data
-// directory. The launcher pins the state directory that this setup resolved (or `stateDir`),
-// because the browser starts the host without the user's shell environment (XDG_DATA_HOME), and the hub
-// must read the same secret. Returns the manifests written.
+// Creates the pairing secret if there is none, so that a hub of an older version still running finds a
+// pairing and refuses secrets offered on its port. Then writes the launcher (by default next to the host)
+// and a manifest into every given browser data directory. The launcher pins the state directory that
+// this setup resolved (or `stateDir`), because the browser starts the host without the user's shell
+// environment (XDG_DATA_HOME), and the hub must read the same secret. A directory that cannot be written
+// does not stop the others. Returns the directories `written` and those `failed`, each with its `path`
+// and `reason`; throws when the secret or the launcher cannot be written.
 export async function installPairingHost({ browserDir, node, dataDirs = browserDataDirs(), stateDir, launcher = join(browserDir, "native-host", "pairing-host") }) {
   const { EXTENSION_ORIGINS, STATE_DIR } = await import(join(browserDir, "mcp", "config.mjs"));
+  const { ensureExtensionSecret } = await import(join(browserDir, "native-host", "secret.mjs"));
+  ensureExtensionSecret(stateDir ?? STATE_DIR);
   const env = `BROWSER_CONTROL_STATE_DIR=${shellQuote(stateDir ?? STATE_DIR)}`;
   writeFileSync(launcher, `#!/bin/sh\n# node: ${JSON.stringify(node)}\n${env} exec ${shellQuote(node)} ${shellQuote(join(browserDir, "native-host", "pairing.mjs"))}\n`);
   chmodSync(launcher, 0o755);
@@ -40,13 +47,18 @@ export async function installPairingHost({ browserDir, node, dataDirs = browserD
     allowed_origins: [...EXTENSION_ORIGINS].map((origin) => `${origin}/`),
   };
   const written = [];
+  const failed = [];
   for (const dataDir of dataDirs) {
     const path = hostManifestPath(dataDir);
-    mkdirSync(join(dataDir, "NativeMessagingHosts"), { recursive: true });
-    writeFileSync(path, `${JSON.stringify(manifest, null, 2)}\n`);
-    written.push(path);
+    try {
+      mkdirSync(join(dataDir, "NativeMessagingHosts"), { recursive: true });
+      writeFileSync(path, `${JSON.stringify(manifest, null, 2)}\n`);
+      written.push(dataDir);
+    } catch (error) {
+      failed.push({ path, reason: error.message });
+    }
   }
-  return written;
+  return { written, failed };
 }
 
 // Manifests that point at this launcher, by browser data directory.

@@ -6,7 +6,7 @@ import http from "node:http";
 import { join } from "node:path";
 import { test } from "node:test";
 import { browserCopy, freePort, launchBrowser, offerPairing, startSession, until } from "./harness.mjs";
-import { installPairingHost, pairingHostProblems } from "../installer/native-host.mjs";
+import { hostManifestPath, installPairingHost, pairingHostProblems } from "../installer/native-host.mjs";
 
 function nativeSecret(copy, stateDir) {
   return new Promise((resolve, reject) => {
@@ -34,8 +34,10 @@ test("native host preserves existing pairings and registers only the pinned exte
     assert.equal(await nativeSecret(copy, stateDir), secret);
     assert.equal(statSync(join(stateDir, "extension-secret")).mode & 0o777, 0o600);
     const dataDirs = [join(copy.dir, "browser-profile")];
-    const [path] = await installPairingHost({ browserDir: copy.browserDir, stateDir, node: process.execPath, dataDirs });
-    const manifest = JSON.parse(readFileSync(path, "utf8"));
+    const { written } = await installPairingHost({ browserDir: copy.browserDir, stateDir, node: process.execPath, dataDirs });
+    assert.deepEqual(written, dataDirs);
+    assert.equal(await nativeSecret(copy, stateDir), secret);
+    const manifest = JSON.parse(readFileSync(hostManifestPath(dataDirs[0]), "utf8"));
     const { EXTENSION_ORIGINS } = await import(join(copy.browserDir, "mcp", "config.mjs"));
     assert.deepEqual(manifest.allowed_origins, [...EXTENSION_ORIGINS].map((origin) => `${origin}/`));
     assert.deepEqual(pairingHostProblems(copy.browserDir, dataDirs), []);
@@ -79,6 +81,38 @@ test("a port squatter never receives the native secret or authenticates to a fre
   }
 });
 
+
+test("a flood of challenges on one connection gets one answer", { timeout: 60_000 }, async () => {
+  const port = await freePort();
+  const copy = browserCopy(port);
+  const stateDir = join(copy.dir, "state");
+  const { acceptUpgrade } = await import(join(copy.browserDir, "mcp", "websocket.mjs"));
+  const server = http.createServer();
+  const peers = [];
+  const answers = new Map();
+  server.on("upgrade", (req, socket) => {
+    const peer = acceptUpgrade(req, socket);
+    peers.push(peer);
+    answers.set(peer, 0);
+    peer.on("message", () => answers.set(peer, answers.get(peer) + 1));
+    for (let i = 0; i < 20; i++) peer.send(JSON.stringify({ type: "challenge", nonce: "a".repeat(64) }));
+  });
+  server.listen(port, "127.0.0.1");
+  await once(server, "listening");
+  let browser;
+  try {
+    browser = await launchBrowser(copy.extensionDir, { pairing: { browserDir: copy.browserDir, stateDir } });
+    await until(() => [...answers.values()].some((count) => count > 0));
+    // Time for the native hosts of further answers to start and reply.
+    await new Promise((resolve) => setTimeout(resolve, 3_000));
+    assert.ok([...answers.values()].every((count) => count <= 1), JSON.stringify([...answers.values()]));
+  } finally {
+    await browser?.close();
+    for (const peer of peers) peer.close();
+    await new Promise((resolve) => server.close(resolve));
+    copy.remove();
+  }
+});
 
 test("an older unpaired extension cannot plant a secret in a new hub", { timeout: 30_000 }, async () => {
   const port = await freePort();

@@ -164,8 +164,8 @@ The full API is in [browser/mcp/cua/docs.mjs](browser/mcp/cua/docs.mjs).
     not its window. Agents do not see windows and tab groups without a tab of theirs or a shared tab.
     They cannot resize, focus or close your windows, move tabs into them or into groups holding tabs
     they cannot use, or make a tab the active one in them, so they do not switch the tab you are
-    looking at. Your tab strip stays yours: agents cannot pin, move or group a tab you shared, and
-    sharing does not put it in a group.
+    looking at. Your tab strip stays yours: agents cannot pin, move, group, close or discard a tab
+    you shared, and sharing does not put it in a group.
   - Tabs an agent opens through the browser's management functions (a new window, a duplicated tab)
     are its own, like the tabs it opens directly, and close when its session ends.
 
