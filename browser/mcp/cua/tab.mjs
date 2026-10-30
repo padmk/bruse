@@ -394,12 +394,16 @@ export class Tab {
     await this.focusTarget(elementIndex, { requireFocus: true });
     const cdp = this.cdpSender();
     const mimeType = format === "html" ? "text/html" : "text/plain";
-    const { result } = await cdp("Runtime.evaluate", { expression: "document.activeElement", returnByValue: false });
+    const objectGroup = `paste-${Math.random().toString(36).slice(2)}`;
+    const { result } = await cdp("Runtime.evaluate", { expression: "document.activeElement", returnByValue: false, objectGroup });
     let handled = false;
     if (result.objectId) {
-      const { node } = await cdp("DOM.describeNode", { objectId: result.objectId });
-      cdp("Runtime.releaseObject", { objectId: result.objectId }).catch(() => {});
-      handled = await callOn(cdp, node.backendNodeId, DISPATCH_PASTE, [mimeType, text]);
+      try {
+        const { node } = await cdp("DOM.describeNode", { objectId: result.objectId });
+        handled = await callOn(cdp, node.backendNodeId, DISPATCH_PASTE, [mimeType, text]);
+      } finally {
+        cdp("Runtime.releaseObjectGroup", { objectGroup }).catch(() => {});
+      }
     }
     if (!handled) {
       if (format === "html") await this.evaluateInPage(`document.execCommand("insertHTML", false, ${JSON.stringify(text)})`);

@@ -148,9 +148,12 @@ export class Locator {
     const objectGroup = `locator-${Math.random().toString(36).slice(2)}`;
     try {
       const result = await this.runEngine(scope, steps, "(elements) => elements", null, { returnByValue: false, objectGroup });
-      const { result: properties } = await cdp("Runtime.getProperties", { objectId: result.objectId, ownProperties: true });
-      const elements = properties.filter((p) => /^\d+$/.test(p.name) && p.value?.objectId).sort((a, b) => Number(a.name) - Number(b.name));
-      return Promise.all(elements.map(async (element) => (await cdp("DOM.describeNode", { objectId: element.value.objectId })).node.backendNodeId));
+      const { result: nodes, exceptionDetails } = await cdp("Runtime.callFunctionOn", {
+        objectId: result.objectId, objectGroup, functionDeclaration: "function () { return this; }",
+        serializationOptions: { serialization: "deep", additionalParameters: { maxNodeDepth: 0 } },
+      });
+      if (exceptionDetails) throw pageException(exceptionDetails);
+      return nodes.deepSerializedValue.value.map((node) => node.value.backendNodeId);
     } finally {
       cdp("Runtime.releaseObjectGroup", { objectGroup }).catch(() => {});
     }

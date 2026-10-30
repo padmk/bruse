@@ -447,6 +447,7 @@ export async function cdp(tabId, method, params, sessionId, timeoutMs, caller) {
 // Commands that can name their context by its unique ID instead of the numeric one given.
 const UNIQUE_CONTEXT_OF = { "Runtime.evaluate": "contextId", "Runtime.callFunctionOn": "executionContextId" };
 // A remote object handle is "<isolate>.<context id>.<object id>"; the context is the one the object lives in.
+const ZERO_ISOLATE_HANDLE = /^-?0+\./;
 const OBJECT_HANDLE = /^-?\d+\.(-?\d+)\.-?\d+$/;
 
 // The remote object handles a command uses: top-level `objectId` and keys such as `prototypeObjectId`,
@@ -484,7 +485,24 @@ function requirePageContext(session, method, params = {}, sessionId) {
   const numeric = ["contextId", "executionContextId", "executionContextName"].some((key) => sent[key] !== undefined);
   const contextKnown = sent.uniqueContextId === undefined || uniqueId(sent.uniqueContextId) !== undefined;
   const handlesKnown = objectHandles(method, sent).every((handle) => typeof handle === "string" && uniqueId(OBJECT_HANDLE.exec(handle)?.[1]) !== undefined);
-  if (!numeric && contextKnown && handlesKnown) return sent;
+  if (!numeric && contextKnown && handlesKnown) {
+    if (method === "Runtime.callFunctionOn") {
+      const handles = objectHandles(method, sent);
+      const context = sent.objectId ? uniqueId(OBJECT_HANDLE.exec(sent.objectId)?.[1]) : sent.uniqueContextId;
+      if (handles.length && !context) throw new Error("Object arguments require an explicit page context");
+      if (sent.objectId) {
+        const { objectId, functionDeclaration, arguments: args = [], ...rest } = sent;
+        return { ...rest, uniqueContextId: context,
+          functionDeclaration: `function (receiver, ...args) { return (${functionDeclaration}).apply(receiver, args); }`,
+          arguments: [{ objectId }, ...args] };
+      }
+      return sent;
+    }
+    if (method.startsWith("Runtime.") && objectHandles(method, sent).some((handle) => ZERO_ISOLATE_HANDLE.test(handle))) {
+      throw new Error(`${method} cannot safely use a zero-isolate object handle; use Runtime.callFunctionOn with a page context instead`);
+    }
+    return sent;
+  }
   throw new Error(
     "Agents may run JavaScript only in the page's own contexts, not in isolated worlds such as extensions' content scripts, " +
       "and use only objects from those contexts; leave out the context parameter to use the page's main context, or name " +
@@ -498,6 +516,27 @@ async function sendChecked(tabId, session, method, params, sessionId, timeoutMs,
   // which asks the gate again.
   if (sessions.get(tabId) !== session) throw new Error("Debugger is not attached to the tab");
   params = requirePageContext(session, method, params, sessionId);
+  // DOM commands have no unique context selector. Resolve the handle inside its pinned world first;
+  // backend node IDs identify DOM nodes, not JavaScript objects in another world's object table.
+  if (method.startsWith("DOM.") && typeof params?.objectId === "string" && ZERO_ISOLATE_HANDLE.test(params.objectId)) {
+    const objectGroup = `node-conversion-${crypto.randomUUID()}`;
+    const pinned = requirePageContext(session, "Runtime.callFunctionOn", {
+      objectId: params.objectId, objectGroup, functionDeclaration: "function () { return this; }",
+      serializationOptions: { serialization: "deep", additionalParameters: { maxNodeDepth: 0 } },
+    }, sessionId);
+    const { result, exceptionDetails } = await rawSend(tabId, "Runtime.callFunctionOn", pinned, sessionId, timeoutMs)
+      .finally(() => rawSend(tabId, "Runtime.releaseObjectGroup", { objectGroup }, sessionId).catch(() => {}));
+    const node = result?.deepSerializedValue;
+    if (exceptionDetails || node?.type !== "node" || !node.value?.backendNodeId) throw new Error("The object is not a page DOM node");
+    const { objectId, ...rest } = params;
+    await requireDebugAccess(tabId, caller);
+    if (sessions.get(tabId) !== session) throw new Error("Debugger is not attached to the tab");
+    if (method === "DOM.requestNode") {
+      const { nodeIds } = await rawSend(tabId, "DOM.pushNodesByBackendIdsToFrontend", { backendNodeIds: [node.value.backendNodeId] }, sessionId, timeoutMs);
+      return { nodeId: nodeIds[0] };
+    }
+    params = { ...rest, backendNodeId: node.value.backendNodeId };
+  }
   if (session.dialog && !DIALOG_SAFE_METHODS.has(method) && !method.startsWith("Input.")) {
     throw new Error(`A JavaScript ${session.dialog.type} dialog is open on this tab ("${session.dialog.message}"); handle it with getJsDialog() first`);
   }

@@ -117,6 +117,7 @@ test("raw commands use only objects of the page's own contexts", async () => {
 
   // Handles are "<isolate>.<context>.<object>", so ones for the extension's world can be made up.
   const [isolate] = page.objectId.split(".");
+  console.log(`chrome.debugger remote object isolate: ${isolate}`);
   const functionDeclaration = "function () { return globalThis.chrome?.runtime?.id ?? null; }";
   for (let id = 1; id <= 20; id++) {
     const objectId = `${isolate}.${world.id}.${id}`;
@@ -129,8 +130,23 @@ test("raw commands use only objects of the page's own contexts", async () => {
   // The page's own objects stay usable.
   const title = await send("Runtime.callFunctionOn", { objectId: page.objectId, functionDeclaration: "function () { return this.title; }", returnByValue: true });
   assert.equal(title.result.value, "Login");
-  const { result: properties } = await send("Runtime.getProperties", { objectId: page.objectId, ownProperties: true });
-  assert.ok(properties.some((property) => property.name === "location"));
+  if (isolate === "0") {
+    for (const prefix of ["0", "-0", "00"]) {
+      const objectId = page.objectId.replace(/^0/, prefix);
+      await assert.rejects(send("Runtime.getProperties", { objectId, ownProperties: true }), /cannot safely use a zero-isolate/);
+    }
+    await assert.rejects(send("Runtime.awaitPromise", { promiseObjectId: page.objectId }), /cannot safely use a zero-isolate/);
+    await assert.rejects(send("Runtime.queryObjects", { prototypeObjectId: page.objectId }), /cannot safely use a zero-isolate/);
+  } else {
+    const { result: properties } = await send("Runtime.getProperties", { objectId: page.objectId, ownProperties: true });
+    assert.ok(properties.some((property) => property.name === "location"));
+  }
+  const { node } = await send("DOM.describeNode", { objectId: page.objectId });
+  assert.equal(node.nodeName, "#document");
+  const context = (await contextsOf(`${site.origin}/#objects`)).find((context) => context.auxData?.isDefault && context.origin === site.origin);
+  const fromArgument = await send("Runtime.callFunctionOn", { uniqueContextId: context.uniqueId,
+    functionDeclaration: "function (doc) { return doc.title; }", arguments: [{ objectId: page.objectId }], returnByValue: true });
+  assert.equal(fromArgument.result.value, "Login");
   // Values passed to a function are page data, even when they look like a handle.
   const data = await send("Runtime.callFunctionOn", { objectId: page.objectId, functionDeclaration: "function (x) { return x.objectId; }", arguments: [{ value: { objectId: "x" } }], returnByValue: true });
   assert.equal(data.result.value, "x");
@@ -186,4 +202,38 @@ test("the extension's script world in a page gets no storage and no hub requests
   assert.equal(reply, null, "the service worker did not answer the content script");
   // The message did not disturb the hub's authenticated connection.
   await until(async () => (await client.call("browser.info").catch(() => null))?.id === extensionId, { message: "the hub to answer" });
+});
+
+
+test("a handle command queued across a process navigation keeps its unique context", async () => {
+  const tabId = await tabWithExtensionWorld("queued");
+  const send = (method, params) => client.call("cdp", { tabId, method, params });
+  const { result: object } = await send("Runtime.evaluate", { expression: "document" });
+  const { cdp } = env.browser;
+  const { targetInfos } = await cdp.send("Target.getTargets");
+  const worker = targetInfos.find((target) => target.type === "service_worker" && target.url.startsWith(`chrome-extension://${extensionId}/`));
+  const { sessionId } = await cdp.send("Target.attachToTarget", { targetId: worker.targetId, flatten: true });
+  const evaluate = async (expression) => (await cdp.send("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true }, sessionId)).result.value;
+  await evaluate(`(() => {
+    const original = chrome.debugger.sendCommand;
+    globalThis.heldHandle = { original, release: null, params: null };
+    chrome.debugger.sendCommand = (target, method, params, callback) => {
+      if (method !== "Runtime.callFunctionOn") return original.call(chrome.debugger, target, method, params, callback);
+      heldHandle.params = params;
+      heldHandle.release = () => original.call(chrome.debugger, target, method, params, callback);
+    };
+  })()`);
+  const pending = send("Runtime.callFunctionOn", { objectId: object.objectId, functionDeclaration: "function () { return this.title; }", returnByValue: true }).then((value) => value, (error) => error);
+  try {
+    const params = await until(() => evaluate("heldHandle.params"));
+    assert.equal(params.objectId, undefined);
+    assert.equal(typeof params.uniqueContextId, "string");
+    assert.equal(params.arguments[0].objectId, object.objectId);
+    await client.call("tabs.navigate", { tabId, url: frameSite.origin });
+    await evaluate("chrome.debugger.sendCommand = heldHandle.original; heldHandle.release(); true");
+    assert.match(String((await pending).message), /uniqueContextId|context/i);
+  } finally {
+    await evaluate("chrome.debugger.sendCommand = heldHandle.original; true");
+    await cdp.send("Target.detachFromTarget", { sessionId });
+  }
 });
