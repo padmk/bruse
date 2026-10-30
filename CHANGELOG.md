@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **Setup names an agent session that holds the port:** after an uninstall, an earlier session's server keeps the hub port without a token setup can check; setup now says to restart those sessions instead of pointing at an unknown program.
+
 ## 0.18.6
 
 - **Clearer first install:** setup lists the exact clicks for loading the extension, and in a terminal on macOS puts the folder's path on the clipboard for the Load unpacked dialog. The agent instructions work from a Homebrew install as well as from a package, and let an agent with a desktop control tool do the clicks with the user's permission. The README has a prompt for asking an agent to install Bruse.
