@@ -17,6 +17,7 @@ before(async () => {
     "/": `<!doctype html><title>Login</title>
     <div id="shadow-host"><template shadowrootmode="open"><label>Password <input type="password"></label></template></div>
     <iframe src="${frameSite.origin}/"></iframe>`,
+    "/frame": `<!doctype html><title>Frames</title><iframe srcdoc="<title>Inner</title>"></iframe>`,
   });
   env = await startEnvironment();
   await env.browser.cdp.send("Extensions.loadUnpacked", { path: fixture });
@@ -34,8 +35,9 @@ after(async () => {
 });
 
 // An agent tab with the extension's own script world in it, as removing another extension's frame makes.
-async function tabWithExtensionWorld() {
-  const { id: tabId } = await client.call("tabs.create", { url: `${site.origin}/#plain` });
+// Each test gives its tab its own address, by which contextsOf finds it.
+async function tabWithExtensionWorld(hash) {
+  const { id: tabId } = await client.call("tabs.create", { url: `${site.origin}/#${hash}` });
   await client.call("page.state", { tabId });
   await env.inPopup(`chrome.scripting.executeScript({ target: { tabId: ${tabId} }, func: () => true })`);
   return tabId;
@@ -75,7 +77,7 @@ test("raw commands do not reach the extension's script world in a page", async (
 });
 
 test("raw commands that name a context run only in the page's own contexts", async () => {
-  const tabId = await tabWithExtensionWorld();
+  const tabId = await tabWithExtensionWorld("plain");
   const contexts = await contextsOf(`${site.origin}/#plain`);
   const world = contexts.find((context) => context.origin === `chrome-extension://${extensionId}`);
   const page = contexts.find((context) => context.auxData?.isDefault && context.auxData?.frameId && context.origin === site.origin);
@@ -98,8 +100,61 @@ test("raw commands that name a context run only in the page's own contexts", asy
   assert.equal((await send("Runtime.evaluate", { expression: "document.title", returnByValue: true })).result.value, "Login");
 });
 
+test("raw commands use only objects of the page's own contexts", async () => {
+  const tabId = await tabWithExtensionWorld("objects");
+  // An object the extension's world logs gets a handle in that world.
+  await inExtensionWorld(tabId, "() => { console.log(document); return true; }");
+  const world = (await contextsOf(`${site.origin}/#objects`)).find((context) => context.origin === `chrome-extension://${extensionId}`);
+  const send = (method, params) => client.call("cdp", { tabId, method, params });
+  const refused = /only in the page's own contexts/;
+  const { result: page } = await send("Runtime.evaluate", { expression: "document" });
+
+  // Handles are "<isolate>.<context>.<object>", so ones for the extension's world can be made up.
+  const [isolate] = page.objectId.split(".");
+  const functionDeclaration = "function () { return globalThis.chrome?.runtime?.id ?? null; }";
+  for (let id = 1; id <= 20; id++) {
+    const objectId = `${isolate}.${world.id}.${id}`;
+    await assert.rejects(send("Runtime.callFunctionOn", { objectId, functionDeclaration, returnByValue: true }), refused);
+    await assert.rejects(send("Runtime.getProperties", { objectId, ownProperties: true }), refused);
+    await assert.rejects(send("Runtime.callFunctionOn", { objectId: page.objectId, functionDeclaration: "function (x) { return x; }", arguments: [{ objectId }] }), refused);
+  }
+  await assert.rejects(send("Runtime.getProperties", { objectId: "document" }), refused);
+
+  // The page's own objects stay usable.
+  const title = await send("Runtime.callFunctionOn", { objectId: page.objectId, functionDeclaration: "function () { return this.title; }", returnByValue: true });
+  assert.equal(title.result.value, "Login");
+  const { result: properties } = await send("Runtime.getProperties", { objectId: page.objectId, ownProperties: true });
+  assert.ok(properties.some((property) => property.name === "location"));
+});
+
+test("raw commands cannot keep using a context that is gone", async () => {
+  const { id: tabId } = await client.call("tabs.create", { url: `${site.origin}/frame` });
+  await client.call("page.state", { tabId });
+  const send = (method, params) => client.call("cdp", { tabId, method, params });
+  // Without Runtime events the extension would not learn of contexts that end.
+  await assert.rejects(send("Runtime.disable", {}), /may not send Runtime.disable/);
+
+  const titleIn = (contextId) => send("Runtime.evaluate", { contextId, expression: "document.title", returnByValue: true }).then(({ result }) => result.value);
+  const contexts = (await contextsOf(`${site.origin}/frame`)).filter((context) => context.auxData?.isDefault);
+  let inner;
+  for (const context of contexts) if ((await titleIn(context.id)) === "Inner") inner = context;
+  assert.ok(inner, "the inner frame has a context");
+  await send("Runtime.evaluate", { expression: "document.querySelector('iframe').remove()" });
+  await assert.rejects(titleIn(inner.id), /only in the page's own contexts/);
+});
+
+test("raw bindings go only to a page context named for them", async () => {
+  const tabId = await tabWithExtensionWorld("bindings");
+  const page = (await contextsOf(`${site.origin}/#bindings`)).find((context) => context.auxData?.isDefault && context.origin === site.origin);
+  const send = (method, params) => client.call("cdp", { tabId, method, params });
+  await assert.rejects(send("Runtime.addBinding", { name: "probeBinding" }), /needs the executionContextId/);
+  await send("Runtime.addBinding", { name: "probeBinding", executionContextId: page.id });
+  assert.equal((await send("Runtime.evaluate", { expression: "typeof probeBinding", returnByValue: true })).result.value, "function");
+  assert.equal(await inExtensionWorld(tabId, "() => typeof probeBinding"), "undefined");
+});
+
 test("the extension's script world in a page gets no storage and no hub requests executed", async () => {
-  const tabId = await tabWithExtensionWorld();
+  const tabId = await tabWithExtensionWorld("storage");
   const storage = await inExtensionWorld(
     tabId,
     `async () => {
