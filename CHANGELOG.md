@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.18.6
+
+- **Clearer first install:** setup lists the exact clicks for loading the extension, and in a terminal on macOS puts the folder's path on the clipboard for the Load unpacked dialog. The agent instructions work from a Homebrew install as well as from a package, and let an agent with a desktop control tool do the clicks with the user's permission. The README has a prompt for asking an agent to install Bruse.
+- **No Chrome Web Store:** Bruse is distributed only through Homebrew, release zips and checkouts. The hub no longer accepts the store's extension ID, and the store's code paths and listing files are gone.
+
 ## 0.18.5
 
 - **Uninstall removes the extension:** `bruse uninstall` asks the connected extension to remove itself, and tells you to remove it on the extensions page only when it is not connected, is paused, or stayed.

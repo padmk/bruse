@@ -45,8 +45,7 @@ Click the Bruse icon in the toolbar and choose **Pause agents** (or **Cancel** o
 
 ## Limited Use
 
-The use of information received from the browser's extension APIs adheres to the Chrome Web Store User
-Data Policy, including the Limited Use requirements: the data is used only to provide Bruse's single
+Information received from the browser's extension APIs is used only to provide Bruse's single
 purpose, letting your own agents operate your browser, and is never sold, used for advertising or
 creditworthiness, or read by people.
 

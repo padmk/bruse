@@ -36,20 +36,12 @@ export function isUnresponsivePageError(message) {
   return /The page did not respond within /.test(message ?? "");
 }
 
-// Manifest fields that say how a copy is distributed, not what it runs: "key" pins the ID of the
-// unpacked extension and the store package leaves it out, and a browser that installs the store's
-// package may add its own key and "update_url" to the manifest it keeps.
-const DISTRIBUTION_FIELDS = ["key", "update_url"];
-
-// The manifest as the fingerprint sees it: without the distribution fields and with sorted keys, so the
-// unpacked folder, the store package (whose manifest is written again) and the copy a browser installed
-// from it agree, while any other change to the manifest, such as a permission or the version, counts.
+// The manifest as the fingerprint sees it: with sorted keys, so that rewriting the file changes nothing
+// while any change to its content, such as a permission or the version, counts.
 function canonicalManifest(text) {
-  const manifest = JSON.parse(text);
-  for (const field of DISTRIBUTION_FIELDS) delete manifest[field];
   const sorted = (value) =>
     Array.isArray(value) ? value.map(sorted) : value && typeof value === "object" ? Object.fromEntries(Object.keys(value).sort().map((key) => [key, sorted(value[key])])) : value;
-  return JSON.stringify(sorted(manifest));
+  return JSON.stringify(sorted(JSON.parse(text)));
 }
 
 // A fingerprint of the extension's code: SHA-256 over manifest.json (see canonicalManifest) and every

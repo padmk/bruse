@@ -2,7 +2,7 @@
 
 import { MANAGEMENT_METHODS } from "../../extension/shared.js";
 import { callBrowser, onBrowserEvent, sessionId } from "../browser-port.mjs";
-import { PRODUCT_NAME, STORE_EXTENSION_ID, VERSION } from "../config.mjs";
+import { PRODUCT_NAME, VERSION } from "../config.mjs";
 import { BROWSER_DOCUMENTATION } from "./docs.mjs";
 import { emitText } from "./output.mjs";
 import { Tab } from "./tab.mjs";
@@ -128,11 +128,7 @@ export function createCua() {
     // before it, pairs two versions; the agent can tell the user how to bring them together.
     if (version !== VERSION && !versionWarned) {
       versionWarned = true;
-      const remedy =
-        extensionId === STORE_EXTENSION_ID
-          ? "The browser updates the extension from the Chrome Web Store on its own; until then some calls may fail."
-          : "Ask the user to run `bruse setup` (or the installer again) and start a new agent session; until then some calls may fail.";
-      emitText(`Note: the ${PRODUCT_NAME} extension in the browser is ${version ? `version ${version}` : "an older version"}, but this MCP server is ${VERSION}. ${remedy}`);
+      emitText(`Note: the ${PRODUCT_NAME} extension in the browser is ${version ? `version ${version}` : "an older version"}, but this MCP server is ${VERSION}. Ask the user to run \`bruse setup\` (or the installer again) and start a new agent session; until then some calls may fail.`);
     }
     return { id: BROWSER_ID, name, family: name.toLowerCase(), type: "extension", hiddenTabs: access?.hiddenTabs ?? 0 };
   }
