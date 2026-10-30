@@ -5,7 +5,7 @@ import { ariaSnapshot } from "./aria-snapshot.mjs";
 import { squareToQuad } from "./geometry.mjs";
 import { AXTracker, fetchPageTree, findReplacement, simplifyTree } from "./ax-tree.mjs";
 import { createContentApi } from "./content.mjs";
-import { OFF_PAGE, PAGE_CODE_MS, callOn, clickAt, coveringElement, dragBetween, elementCenter, focusNode, isAttached, pageException, prepareClick, STALE_ELEMENT_MESSAGE } from "./elements.mjs";
+import { OFF_PAGE, PAGE_CODE_MS, callOn, clickAt, coveringElement, dragBetween, elementCenter, focusNode, isAttached, pageException, prepareClick, watchFramePointer, STALE_ELEMENT_MESSAGE } from "./elements.mjs";
 import { pressChord } from "./keys.mjs";
 import { Locator, functionSource, isRegExp } from "./locator.mjs";
 import { emitImage, emitText } from "./output.mjs";
@@ -215,15 +215,30 @@ export class Tab {
     const cdp = this.cdpSender(sessionId);
     await prepareClick(cdp, backendNodeId);
     const deadline = Date.now() + timeoutMs;
-    for (;;) {
-      const point = await elementCenter(cdp, backendNodeId);
-      const covering = hitTest && !force ? await this.coveringAt(backendNodeId, sessionId, point) : null;
-      if (!covering) return this.pagePoint(sessionId, point);
-      if (Date.now() > deadline) {
-        if (covering === OFF_PAGE) throw new Error("The element's visible part is outside the page area (scrolled away or transformed off screen); scroll it into view first, or pass { force: true } to click the point anyway");
-        throw new Error(`A click on the element would reach ${covering} instead: something covers the element or it does not take pointer events. Close or click what covers it first, or pass { force: true } to click the point anyway`);
+    const pointer = sessionId && hitTest && !force ? await watchFramePointer(cdp, backendNodeId) : null;
+    try {
+      for (;;) {
+        const point = await elementCenter(cdp, backendNodeId);
+        const covering = hitTest && !force ? await this.coveringAt(backendNodeId, sessionId, point) : null;
+        if (!covering) {
+          const pagePoint = await this.pagePoint(sessionId, point);
+          if (!pointer) return pagePoint;
+          await pointer.reset();
+          const [x, y] = pagePoint;
+          await this.cdpSender()("Input.dispatchMouseEvent", { type: "mouseMoved", x, y });
+          if (await pointer.received()) return pagePoint;
+          if (Date.now() > deadline) throw new Error("The frame did not receive pointer input; no mouse button was pressed. Retry after the frame is ready");
+          await sleep(100);
+          continue;
+        }
+        if (Date.now() > deadline) {
+          if (covering === OFF_PAGE) throw new Error("The element's visible part is outside the page area (scrolled away or transformed off screen); scroll it into view first, or pass { force: true } to click the point anyway");
+          throw new Error(`A click on the element would reach ${covering} instead: something covers the element or it does not take pointer events. Close or click what covers it first, or pass { force: true } to click the point anyway`);
+        }
+        await sleep(100);
       }
-      await sleep(100);
+    } finally {
+      await pointer?.dispose().catch(() => {});
     }
   }
 

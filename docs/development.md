@@ -172,3 +172,33 @@ releases it and checks that its old unique context fails. See SECURITY.md for th
   Window tests wait for chrome.tabs, and creation/end tests accept either ordering while checking cleanup.
   The original saved-pairing failure and the intermittent popup/download reports were not reproduced
   independently. File-concurrency limits do not guarantee passing tests on an overloaded host.
+
+### Cross-origin input investigation on 2026-10-30
+
+The actions file was repeated ten times in the Linux arm64 Playwright v1.64.1 container with Chrome
+for Testing 156.0.8078.4, two files at a time alongside four bounded CPU workers. Three repetitions
+failed only the cross-origin click assertion. Temporary capture listeners recorded pointerdown,
+pointerup and click on the parent document's iframe element at (65.64, 253.5), with no pointer events
+in the child. The child button's center mapped to that point: its rectangle was (8, 29, 95.28, 21),
+inside an iframe whose content started at (10, 214). This establishes incorrect input routing despite
+successful DOM hit tests, rather than a delayed button effect. Stale compositor routing is the inferred
+browser mechanism; compositor internals were not instrumented.
+
+Element-targeted cross-origin clicks probe delivery with trusted mouse movement before pressing.
+Only moves are retried, with fresh geometry and hit tests each time; failure to reach the document
+throws without pressing. The same path serves locator and numbered clicks, including forced clicks.
+Ten repetitions with the fix passed all 100 tests under the same container load. The existing
+cross-origin test also checks that both click styles increment a counter exactly once.
+
+Ten macOS cold-start probes with sixteen bounded CPU workers all authenticated successfully, taking
+435 to 981 ms from the first MCP browser call. The locally selected Chrome for Testing was
+153.0.8010.12. A separate ten-file actions repetition had six failing files: five initial 30-second
+cell timeouts and one later Runtime timeout, followed by dependent assertions. Its sixteen CPU
+workers expired after four minutes, so later repetitions did not retain the same artificial load.
+These are not reproductions of the reported initial extension-connection error. Reconnect backoff,
+challenge handling and native-host startup remain unproven causes; no authentication changes were made.
+The post-fix loaded macOS full suite passed 94/103 with no skipped tests. Its nine failures were in
+orphan cleanup, password-manager handling, debugger reattachment, pause, replacement and sessions;
+the reported errors were cell or Runtime timeouts and dependent assertions, with no initial
+extension-connection error. The gate script passed. Those timeouts remain unresolved, so this is
+not a clean full-suite verification.
