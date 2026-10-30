@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, cpSync, existsSync, readFileSync, mkdirSync, readdirSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { after, before, test } from "node:test";
@@ -160,10 +160,18 @@ test("file clients preserve configuration and reject comments", { timeout: 180_0
     const value = JSON.parse(readFileSync(path));
     assert.equal(value.other, 42);
     assert.equal(value[key].existing.command, "other");
-    assert.equal(value[key].bruse.args[0], join(installed, "browser", "mcp", "server.mjs"));
+    assert.equal(value[key].bruse.args.at(-1), join(installed, "browser", "mcp", "server.mjs"));
   }
   // The clients that document a type field get it.
   const entry = (label) => JSON.parse(readFileSync(files.find(([name]) => name === label)[1]))[files.find(([name]) => name === label)[2]].bruse;
+  const registered = entry("VS Code");
+  assert.equal(registered.command, "/usr/bin/env");
+  assert.equal(registered.args[0], `BROWSER_CONTROL_STATE_DIR=${join(installed, "state")}`);
+  const changedEnvironment = spawnSync(registered.command, [...registered.args.slice(0, -1), "--input-type=module", "-e",
+    `import { STATE_DIR } from ${JSON.stringify(join(installed, "browser", "mcp", "config.mjs"))}; console.log(STATE_DIR);`],
+    { env: { ...environment, XDG_DATA_HOME: join(home, "different-data") }, encoding: "utf8" });
+  assert.equal(changedEnvironment.status, 0, changedEnvironment.stderr);
+  assert.equal(changedEnvironment.stdout.trim(), join(installed, "state"));
   assert.equal(entry("VS Code").type, "stdio");
   assert.equal(entry("GitHub Copilot CLI").type, "local");
   assert.deepEqual(entry("GitHub Copilot CLI").tools, ["*"]);
@@ -173,7 +181,7 @@ test("file clients preserve configuration and reject comments", { timeout: 180_0
   await until(() => retry.output().includes("Gemini CLI: added"), { timeoutMs: 60_000 });
   retry.child.kill("SIGTERM");
   await retry.done;
-  assert.equal(JSON.parse(readFileSync(malformed)).mcpServers.bruse.args[0], join(installed, "browser", "mcp", "server.mjs"));
+  assert.equal(JSON.parse(readFileSync(malformed)).mcpServers.bruse.args.at(-1), join(installed, "browser", "mcp", "server.mjs"));
   const doctor = await run("doctor").done;
   for (const [name] of files) assert.ok(doctor.output.includes(`${name}: registered`), doctor.output);
   writeFileSync(malformed, "{ // comment\n}\n");

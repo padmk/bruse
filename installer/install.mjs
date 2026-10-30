@@ -118,7 +118,8 @@ async function chooseClients(clients, requested) {
 
 // Returns whether every chosen client took the registration.
 async function registerServer(requested) {
-  const command = [nodePath(), serverPath];
+  const { STATE_DIR } = await import("../browser/mcp/config.mjs");
+  const command = ["/usr/bin/env", `BROWSER_CONTROL_STATE_DIR=${STATE_DIR}`, nodePath(), serverPath];
   const found = agentClients();
   const clients = await chooseClients(found, requested);
   step("Registering the MCP server");
