@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.20.0
 
 - Pin Runtime object receiver calls to unique page contexts while preserving object groups and callable semantics. Convert zero-isolate node handles for supported DOM, Accessibility and Overlay commands through a pinned call with dialog handling, and refuse unsafe consumers including `DOM.getFileInfo`. Locators enumerate nodes through deep serialization so they work with Chrome 158's zero-isolate handles.
 - Wait for a cross-origin frame to receive pointer movement before pressing a mouse button. Only moves are retried. If no movement is seen within 3 seconds the click goes ahead, because a page can stop these events from being observed.
