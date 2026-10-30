@@ -32,7 +32,7 @@ ${Object.entries(MANAGEMENT_METHODS)
   .join("\n")}
 In the default access mode, management sees only the tabs of this session and the tabs the user shared, and only
 windows and groups that hold one. It changes, focuses, activates tabs in or moves tabs into only windows whose every
-tab is this session's or shared. Tabs that windows.create and tabs.duplicate open are this session's, like those of
+tab this session opened; a shared tab does not make its window this session's. Tabs that windows.create and tabs.duplicate open are this session's, like those of
 cua.createBrowserTab, and close when it ends; windows.create opens an unfocused window unless focused is set.
 Change only what the user asked for, confirm before deleting bookmarks or closing user tabs, and report what changed.`;
 

@@ -143,10 +143,11 @@ The full API is in [browser/mcp/cua/docs.mjs](browser/mcp/cua/docs.mjs).
   - Your other tabs, and the tabs of other agent sessions, are hidden: agents do not see their titles
     or addresses (only how many there are), and cannot read, drive, close or move them.
   - Agent tabs open in the background in your window, in the collapsed grey "Bruse" tab group. A window
-    counts as the agent's only when every tab in it is the agent's or shared. Agents do not see
-    windows and tab groups without a tab of theirs or a shared tab. They cannot resize, focus or close
-    your windows, move tabs into them or into groups holding tabs they cannot use, or make a tab the
-    active one in them, so they do not switch the tab you are looking at.
+    counts as the agent's only when the agent opened every tab in it: sharing a tab shares that tab,
+    not its window. Agents do not see windows and tab groups without a tab of theirs or a shared tab.
+    They cannot resize, focus or close your windows, move tabs into them or into groups holding tabs
+    they cannot use, or make a tab the active one in them, so they do not switch the tab you are
+    looking at.
   - Tabs an agent opens through the browser's management functions (a new window, a duplicated tab)
     are its own, like the tabs it opens directly, and close when its session ends.
 

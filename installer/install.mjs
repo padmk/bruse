@@ -30,8 +30,9 @@ const BROWSERS = [
 
 // Copies next to the target first, so a failed copy leaves the previous installation working. The
 // previous copy is set aside and put back when the new one cannot take its place; a process killed
-// between the two renames still leaves no copy at the installed path. `rename` lets tests make a rename fail.
-export function installFiles({ rename = renameSync } = {}) {
+// between the two renames still leaves no copy at the installed path. `rename` and `trash` let tests make a
+// rename or the move to the Trash fail.
+export function installFiles({ rename = renameSync, trash = moveToTrash } = {}) {
   step(`Installing ${product} ${manifest.version}`);
   if (source === installed) {
     note(`Already running from ${installRoot}`);
@@ -57,7 +58,12 @@ export function installFiles({ rename = renameSync } = {}) {
       }
       fail(`Could not install the new copy (${error.message}); the previous installation in ${installed} is unchanged.`);
     }
-    moveToTrash(previous);
+    // The new copy is in place, so a previous copy left behind is only clutter.
+    try {
+      trash(previous);
+    } catch (error) {
+      note(`(Could not move the previous installation to the Trash: ${error.message}. It is left in ${previous} and can be removed.)`);
+    }
   } else {
     rename(staged, installed);
   }
