@@ -32,7 +32,7 @@ MCP server (hub) ◀──WebSocket 127.0.0.1:47615──▶ extension ──chr
   package's `AGENTS.md` with a `CLAUDE.md` that imports it), `clients.mjs` (the agent clients beyond
   Claude Code and Codex) and `package.mjs` (builds the zip package, with every other installer module).
 - `browser/native-host/pairing.mjs`: one framed native request, retrieving or creating the private
-  pairing secret. `installer/native-host.mjs` writes browser manifests and a launcher in the stable
+  pairing secret through `secret.mjs`, which setup also calls. `installer/native-host.mjs` writes browser manifests and a launcher in the stable
   installed copy, using the same stable Node path as MCP registration. The extension manifest key
   pins `dcebpfjehgpkddgcdaipjemnndbdpmpc`, the ID used in `allowed_origins`. Native host manifests live outside versioned Homebrew paths.
 - `browser/mcp/`: MCP stdio server, no dependencies.
@@ -114,11 +114,16 @@ Only HMAC proofs travel on the extension WebSocket. The native host reuses `exte
 paired older extensions and older hubs retain their handshake. Unpaired older extensions cannot pair
 with a newer hub and must be updated. A saved extension secret remains a fallback when setup has not
 yet installed the native host. Reinstalls obtain the host's secret without reset approval. The legacy
-`pair` message, reset approval command and pairing-offer error codes are removed.
+`pair` message, reset approval command and pairing-offer error codes are removed. Setup creates the
+secret before it reloads the extension, because a still-running 0.18 hub stores a `pair` secret from any
+local process while no secret file exists.
 
-Setup registers hosts for the five supported browsers, including ones installed later. On macOS these
+Setup registers hosts for the five supported browsers and Chrome for Testing, including ones installed
+later. A directory that cannot be written gets a line in the output; setup fails when none could be
+written or the written hosts would not start. On macOS these
 live under `~/Library/Application Support/<browser>/NativeMessagingHosts`; on Linux under the browser's
-XDG config directory. Uninstall moves manifests belonging to this installation to the Trash. Doctor
+XDG config directory. Uninstall moves manifests belonging to this installation to the Trash once the
+installation itself has moved. Doctor
 checks manifests, allowed origins, the launcher, Node executable and host module; repair with `bruse setup`.
 
 Adding `nativeMessaging` and reloading an existing unpacked extension stayed enabled in Chrome for

@@ -109,7 +109,8 @@ interface PlaywrightAPI {             // locators: getByRole/getByText/getByLabe
 - Agent tabs open in the background inside the agent tab group, which all agent sessions share. This
   session's tabs, and tabs they open (popups, even when bound with \`getTab\`), close when the session
   ends unless marked with \`markDeliverable()\` or \`markHandoff()\`; marked tabs then leave the group.
-  Other tabs bound with \`getTab\` belong to the user and stay.
+  Other tabs bound with \`getTab\` belong to the user and stay. By default a tab the user shared can be used,
+  reloaded and navigated, but not closed or discarded.
 - A JavaScript dialog blocks the page; handle it with \`getJsDialog()\`. Notifications about dialogs and new
   tabs opened by the page are appended to the tool result.
 

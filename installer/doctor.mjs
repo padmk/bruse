@@ -67,7 +67,7 @@ export async function doctor() {
     bad(`The installation is damaged: the code in ${browserDir} cannot be read in full. Reinstall ${product}, then run \`bruse setup\`.`);
     return finish();
   }
-  if (existsSync(EXTENSION_SECRET_PATH)) ok("Paired with an extension");
+  if (existsSync(EXTENSION_SECRET_PATH)) ok("Native pairing secret exists");
   else bad("No native pairing secret yet; run `bruse setup` and load the extension.");
   try {
     const info = await callBrowser("browser.info");

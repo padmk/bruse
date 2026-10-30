@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { chmodSync, cpSync, existsSync, readFileSync, mkdirSync, readdirSync, renameSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, readFileSync, mkdirSync, readdirSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { after, before, test } from "node:test";
 import { browserCopy, freePort, launchBrowser, until } from "./harness.mjs";
@@ -81,6 +81,9 @@ test("setup, reload, doctor and uninstall", { timeout: 180_000 }, async () => {
   assert.match(setup.output(), /meant for agents you trust/);
   assert.ok(setup.output().indexOf("meant for agents you trust") < setup.output().indexOf("Registering the MCP server"), setup.output());
   assert.ok(setup.output().includes(join(installed, "browser", "mcp", "server.mjs")));
+  // The secret exists before any extension connects, so an older hub still running accepts no offer.
+  assert.equal(statSync(join(installed, "state", "extension-secret")).mode & 0o777, 0o600);
+  assert.equal(statSync(join(installed, "state")).mode & 0o777, 0o700);
   browser = await launchBrowser(join(installed, "browser", "extension"), { pairing: { browserDir: join(installed, "browser"), stateDir: join(installed, "state") } });
   const first = await setup.done;
   assert.equal(first.code, 0, first.output);
@@ -107,7 +110,7 @@ test("setup, reload, doctor and uninstall", { timeout: 180_000 }, async () => {
   const doctor = await run("doctor").done;
   assert.equal(doctor.code, 0, doctor.output);
   assert.match(doctor.output, /Installed in/);
-  assert.match(doctor.output, /Paired with an extension/);
+  assert.match(doctor.output, /Native pairing secret exists/);
   assert.match(doctor.output, /Connected to/);
   assert.match(doctor.output, /No supported agent client found/);
   assert.match(doctor.output, /Everything looks right/);
@@ -244,6 +247,42 @@ exec /bin/mv "$path" '${trash}/'
   assert.equal(existsSync(elsewhere), false);
   assert.ok(existsSync(join(trash, "custom-state")));
   assert.ok(existsSync(state));
+});
+test("setup goes on without a browser directory it cannot write", { timeout: 120_000 }, async () => {
+  const plain = environment;
+  const appDir = process.platform === "darwin" ? join("Library", "Application Support") : ".config";
+  const blockedDir = process.platform === "darwin" ? "Vivaldi" : "vivaldi";
+  const hostFile = join("NativeMessagingHosts", "org.bruse.pairing.json");
+  try {
+    // One directory blocked: the others are written, and setup goes on.
+    const oneBlocked = join(home, "one-blocked");
+    mkdirSync(join(oneBlocked, appDir), { recursive: true });
+    writeFileSync(join(oneBlocked, appDir, blockedDir), "");
+    environment = { ...plain, HOME: oneBlocked };
+    const partial = run("setup");
+    await until(() => partial.output().includes("Registering the MCP server"), { timeoutMs: 60_000 });
+    partial.child.kill("SIGTERM");
+    const partialResult = await partial.done;
+    assert.match(partialResult.output, new RegExp(`Could not register the native pairing host at .*${blockedDir}.*ENOTDIR`));
+    assert.ok(existsSync(join(oneBlocked, appDir, process.platform === "darwin" ? "Chromium" : "chromium", hostFile)));
+    // Every directory blocked: setup stops at once.
+    const allBlocked = join(home, "all-blocked");
+    mkdirSync(allBlocked);
+    writeFileSync(join(allBlocked, appDir.split("/")[0]), "");
+    environment = { ...plain, HOME: allBlocked };
+    const none = await run("setup").done;
+    assert.equal(none.code, 1, none.output);
+    assert.match(none.output, /No browser directory could take the native pairing host/);
+    assert.doesNotMatch(none.output, /Waiting for the extension|at async/);
+    // A launcher that cannot start: setup stops instead of waiting for an extension that cannot pair.
+    environment = { ...plain, HOME: join(home, "bad-node"), INSTALL_NODE: "/nonexistent/node" };
+    const badNode = await run("setup").done;
+    assert.equal(badNode.code, 1, badNode.output);
+    assert.match(badNode.output, /native pairing host would not start.*\/nonexistent\/node/);
+    assert.doesNotMatch(badNode.output, /Waiting for the extension/);
+  } finally {
+    environment = plain;
+  }
 });
 test("unknown command prints usage and exits 2", async () => {
   const result = await run("unknown").done;

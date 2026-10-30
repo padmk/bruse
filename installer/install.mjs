@@ -3,7 +3,7 @@
 // step (Load unpacked), and waits until the extension connects and pairs. An extension that is already
 // connected is reloaded and must come back with this version.
 
-import { installPairingHost } from "./native-host.mjs";
+import { installPairingHost, pairingHostProblems } from "./native-host.mjs";
 import { spawnSync } from "node:child_process";
 import { createInterface } from "node:readline/promises";
 import { cpSync, existsSync, mkdirSync, renameSync } from "node:fs";
@@ -156,6 +156,19 @@ function openExtensionsPage() {
   if (browser) showPage(browser.app, page);
 }
 
+// Registers the pairing host. Setup goes on without a browser directory it cannot write, which may belong
+// to a browser that is not installed, but not when no extension could pair.
+async function registerPairingHost() {
+  const { written, failed } = await installPairingHost({ browserDir: installed, node: nodePath() }).catch((error) => fail(`Could not set up the native pairing host: ${error.message}`));
+  for (const { path, reason } of failed) note(`Could not register the native pairing host at ${path}: ${reason}`);
+  if (!written.length) fail("No browser directory could take the native pairing host (see above), so the extension could not pair. Fix these directories and run setup again.");
+  const [problem] = pairingHostProblems(installed, written);
+  if (problem) fail(`The native pairing host would not start, so the extension could not pair: ${problem}`);
+}
+
+// An extension of a version before native pairing that never paired cannot connect, and setup cannot reload it.
+const RELOAD_HINT = "If the extension is already loaded, click Reload on it on the extensions page.";
+
 // Wait for the native-paired extension to authenticate.
 async function waitForExtension(callBrowser) {
   step("Waiting for the extension to connect");
@@ -169,10 +182,10 @@ async function waitForExtension(callBrowser) {
     } catch (error) {
       if (error.code === HUB_VERSION_MISMATCH) fail(error.message);
       const waited = Date.now() - started;
-      if (waited > PAIR_WAIT_MS) fail(`The extension did not connect within ${PAIR_WAIT_MS / 60_000} minutes. ${error.message}`);
+      if (waited > PAIR_WAIT_MS) fail(`The extension did not connect within ${PAIR_WAIT_MS / 60_000} minutes. ${error.message} ${RELOAD_HINT}`);
       if (waited > PAIR_HINT_MS && !hinted) {
         hinted = true;
-        note(`Still waiting. ${error.message}`);
+        note(`Still waiting. ${error.message} ${RELOAD_HINT}`);
       }
       await new Promise((resolve) => setTimeout(resolve, 1_000));
     }
@@ -238,7 +251,7 @@ export async function setup({ clients } = {}) {
   requireNode();
   const firstInstall = !existsSync(installed);
   installFiles();
-  await installPairingHost({ browserDir: installed, node: nodePath() });
+  await registerPairingHost();
   if (firstInstall) trustNotice();
   const build = await import(join(installed, "extension", "shared.js"))
     .then(({ extensionBuild }) => extensionBuild((file) => readFile(join(extensionDir, file), "utf8")))

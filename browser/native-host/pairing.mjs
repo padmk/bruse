@@ -6,21 +6,7 @@
 // It answers one request, { type: "secret" }, with { secret }, creating the secret on first use. The
 // hub reads the same file to check the extension and to prove itself to it.
 
-import { randomBytes } from "node:crypto";
-import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { EXTENSION_SECRET_PATH, STATE_DIR } from "../mcp/config.mjs";
-
-function secret() {
-  mkdirSync(STATE_DIR, { recursive: true, mode: 0o700 });
-  chmodSync(STATE_DIR, 0o700);
-  try {
-    writeFileSync(EXTENSION_SECRET_PATH, randomBytes(32).toString("hex"), { mode: 0o600, flag: "wx" });
-  } catch (error) {
-    if (error.code !== "EEXIST") throw error;
-  }
-  chmodSync(EXTENSION_SECRET_PATH, 0o600);
-  return readFileSync(EXTENSION_SECRET_PATH, "utf8").trim();
-}
+import { ensureExtensionSecret } from "./secret.mjs";
 
 // A native message is JSON preceded by its length as a 32-bit integer in native byte order, which is
 // little-endian on every platform the browsers support.
@@ -44,7 +30,7 @@ process.stdin.on("data", (chunk) => {
     request = JSON.parse(input.subarray(4, 4 + input.readUInt32LE(0)).toString());
   } catch {}
   try {
-    reply(request?.type === "secret" ? { secret: secret() } : { error: "Unknown request" });
+    reply(request?.type === "secret" ? { secret: ensureExtensionSecret() } : { error: "Unknown request" });
   } catch (error) {
     reply({ error: error.message });
   }

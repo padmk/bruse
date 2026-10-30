@@ -119,11 +119,26 @@ test("a shared tab does not make its window the session's", async () => {
   await assert.rejects(s.js(`await m.tabs.group({ tabIds: [${shared.id}] });`), layout);
   await assert.rejects(s.js(`await m.tabs.ungroup(${shared.id});`), layout);
   await assert.rejects(s.js(`await m.windows.create({ tabId: ${shared.id} });`), layout);
+  // Nor may an agent end the tab, whichever way it asks; using it stays allowed.
+  await s.js(`const bound = await cua.getTab(${JSON.stringify(String(shared.id))}, { emit: false });`);
+  await assert.rejects(s.js(`await bound.close();`), layout);
+  await assert.rejects(s.js(`await m.tabs.remove(${shared.id});`), layout);
+  await assert.rejects(s.js(`await m.tabs.remove([${own.tabId}, ${shared.id}]);`), layout);
+  await assert.rejects(s.js(`await m.tabs.discard(${shared.id});`), layout);
+  await assert.rejects(s.js(`await bound.cdpSender()("Page.close");`), layout);
+  await assert.rejects(s.js(`await bound.cdpSender()("Page.crash");`), layout);
+  await s.js(`await bound.reload();`);
+  await s.js(`await bound.goto(${JSON.stringify(url("/page?window-shared"))});`);
   await s.js(`await m.tabs.update(${own.tabId}, { pinned: true });`);
   assert.ok((await json(s, "await m.windows.getAll()")).some((window) => window.id === shared.windowId), "the window stays visible");
   await s.js(`await m.windows.update(${own.id}, { width: 700 });`);
   await s.js(`await m.tabs.update(${own.tabId}, { active: true });`);
   assert.equal(await present(url("/page?window-shared")), true);
+  // The session's own tabs still close, by any of these.
+  await s.js(`await own.close();`);
+  await waitPage(url("/page?window-shared-own"), false);
+  await s.js(`await m.tabs.remove(${own.tabId});`);
+  await waitPage(url("/page?window-shared-window"), false);
   await env.share(shared.id, false);
   await s.close();
 });

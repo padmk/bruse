@@ -29,14 +29,6 @@ export async function uninstall() {
   // server, so the files stay until it is gone.
   if (failed) fail("Removing the MCP server failed for an agent CLI (see above); the installed files were kept.");
   const left = [];
-  for (const host of installedPairingHosts(installed)) {
-    try {
-      note(`Moving ${host.path} to the Trash`);
-      moveToTrash(host.path);
-    } catch (error) {
-      fail(`Could not remove ${host.path}: ${error.message}. The installed files were kept; retry bruse uninstall.`);
-    }
-  }
   for (const path of [installRoot, STATE_DIR]) {
     if (!existsSync(path)) continue;
     // Moving the rest would leave an installation that remains without its pairing.
@@ -50,6 +42,20 @@ export async function uninstall() {
     } catch (error) {
       left.push(path);
       note(`Could not move ${path} to the Trash: ${error.message}`);
+    }
+  }
+  // A kept installation still needs its hosts to pair. They only name the launcher's path, so they are
+  // found after the installation has gone.
+  if (left.includes(installRoot)) note("Kept the native pairing hosts with the installation; run `bruse uninstall` again once it is gone.");
+  else {
+    for (const host of installedPairingHosts(installed)) {
+      try {
+        moveToTrash(host.path);
+        note(`Moved ${host.path} to the Trash`);
+      } catch (error) {
+        left.push(host.path);
+        note(`Could not move ${host.path} to the Trash: ${error.message}`);
+      }
     }
   }
   step("To finish");

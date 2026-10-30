@@ -74,6 +74,9 @@ function browserName() {
 // The fingerprint of the code this extension runs (see shared.js), computed once per worker start.
 const build = extensionBuild((file) => fetch(chrome.runtime.getURL(file)).then((response) => response.text())).catch(() => ({ hash: null }));
 
+// Raw DevTools commands that end a tab's page, which only a tab's owner may do (see requireOwnTab).
+const TAB_ENDING_CDP = new Set(["Page.close", "Page.crash"]);
+
 // Each handler gets the request's parameters and `session`, the agent session the hub says the request
 // comes from. Tab methods check access first (see access.js).
 const handlers = {
@@ -131,7 +134,8 @@ const handlers = {
 
   "tabs.waitForLoad": async ({ tabId, timeoutMs }) => ({ loaded: await waitForLoad(tabId, timeoutMs) }),
 
-  "tabs.close": async ({ tabId }) => {
+  "tabs.close": async ({ tabId }, session) => {
+    await requireOwnTab(session, tabId);
     await detach(tabId);
     await chrome.tabs.remove(tabId);
     return null;
@@ -142,7 +146,8 @@ const handlers = {
   "tabs.agent": async (_, session) => Object.fromEntries(Object.entries(await agentTabs()).filter(([, entry]) => entry.sessionId === session)),
   "session.end": (_, session) => endSession(session),
 
-  cdp: ({ tabId, method, params, sessionId, timeoutMs }, session) => {
+  cdp: async ({ tabId, method, params, sessionId, timeoutMs }, session) => {
+    if (TAB_ENDING_CDP.has(method)) await requireOwnTab(session, tabId);
     if (isPressInput(method, params)) noteAgentInput(tabId, session);
     return cdp(tabId, method, params, sessionId, timeoutMs, { session });
   },
@@ -251,7 +256,7 @@ async function checkManagementAccess(session, namespace, method, args) {
   };
   const [first, second] = args;
   if (namespace === "tabs" && TAB_ARGUMENTS[method]) await requireTabs(tabIdsOf(method, args));
-  if (namespace === "tabs" && (["move", "group", "ungroup"].includes(method) || (method === "update" && second?.pinned !== undefined))) await requireOwnTabs(tabIdsOf(method, args));
+  if (namespace === "tabs" && (["move", "group", "ungroup", "remove", "discard"].includes(method) || (method === "update" && second?.pinned !== undefined))) await requireOwnTabs(tabIdsOf(method, args));
   // Activating or highlighting a tab switches what the user sees in its window, and so can unhighlighting
   // the active tab, which activates another highlighted one.
   if (namespace === "tabs" && method === "update" && ["active", "highlighted", "selected"].some((key) => second?.[key] !== undefined)) await requireOwnWindow(session, (await chrome.tabs.get(first)).windowId);
@@ -355,7 +360,7 @@ const SESSIONLESS_METHODS = new Set(["browser.info", "extension.reload"]);
 const PAUSE_EXEMPT = new Set(["browser.info", "session.end"]);
 
 // Native messaging supplies the secret locally. Only HMAC proofs cross the hub port.
-const unverifiedHub = (gen) => ({ gen, verified: false, expectedHubMac: null });
+const unverifiedHub = (gen) => ({ gen, verified: false, challenged: false, expectedHubMac: null });
 let hub = unverifiedHub(0);
 
 // A new connection, or none: its hub has yet to authenticate and to report the live sessions.
@@ -418,7 +423,12 @@ async function handle(gen, text) {
   }
   if (!message || typeof message !== "object") return null;
   if (gen !== hub.gen) resetHub(gen);
-  if (message.type === "challenge") return JSON.stringify(await answerChallenge(String(message.nonce)));
+  if (message.type === "challenge") {
+    // Each answer starts the native host, so whatever holds the port gets one per connection.
+    if (hub.challenged) return null;
+    hub.challenged = true;
+    return JSON.stringify(await answerChallenge(String(message.nonce)));
+  }
   if (message.type === "auth-ok") {
     hub.verified = Boolean(hub.expectedHubMac) && message.mac === hub.expectedHubMac;
     return null;
