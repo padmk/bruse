@@ -122,7 +122,7 @@ XDG config directory. Uninstall moves manifests belonging to this installation t
 checks manifests, allowed origins, the launcher, Node executable and host module; repair with `bruse setup`.
 
 Adding `nativeMessaging` and reloading an existing unpacked extension stayed enabled in Chrome for
-Testing 153.0.8010.12 on macOS. The pairing tests cover this update path. Other browser builds may
+Testing 153.0.8010.12 and in Brave 156 on macOS. The pairing tests cover this update path. Other browser builds may
 require enabling the extension again. Chrome's general permission-update warning rules are documented
 [here](https://developer.chrome.com/docs/extensions/develop/concepts/permission-warnings).
 The [Chromium security FAQ](https://chromium.googlesource.com/chromium/src/+/main/extensions/docs/security_faq.md)

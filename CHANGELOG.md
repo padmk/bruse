@@ -1,9 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.19.0
 
-- Pair through a native messaging host for Brave, Chrome, Edge, Chromium and Vivaldi. Secrets never cross the hub port, including first use. Setup writes manifests and a stable launcher; uninstall removes them and doctor reports repairs.
-- Preserve existing pairings and HMAC compatibility. Reinstalled extensions retrieve the existing secret automatically. Remove port-based first pairing, reset approval and pairing-offer errors. Older unpaired extensions must update.
+- **Pairing through a native host:** the extension now gets its secret from a native messaging host that the browser starts only for this extension, so no secret crosses the hub port, even on first use. A program that took the port first gets nothing and cannot drive the extension. Setup registers the host for Brave, Chrome, Edge, Chromium and Vivaldi, uninstall removes it, and doctor says how to repair it.
+- **No pairing reset:** a reinstalled extension gets the existing secret by itself, so the reset question in setup and the errors about pairing offers are gone.
+- **Update:** run `bruse setup`. Existing pairings keep working. An older extension that never paired must be updated.
 
 ## 0.18.9
 
