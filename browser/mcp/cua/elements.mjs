@@ -135,6 +135,43 @@ export async function prepareClick(cdp, backendNodeId) {
   });
 }
 
+// DOM hit testing can see an out-of-process document before the browser routes pointer input to it.
+// Probe with moves only: retrying a press could perform a page action twice.
+export async function watchFramePointer(cdp, backendNodeId) {
+  const objectGroup = `pointer-${Math.random().toString(36).slice(2)}`;
+  const { object } = await cdp("DOM.resolveNode", { backendNodeId, objectGroup });
+  try {
+    const { result, exceptionDetails } = await cdp("Runtime.callFunctionOn", {
+      objectId: object.objectId, objectGroup,
+      functionDeclaration: `function () {
+        const doc = this.ownerDocument;
+        const state = { received: false };
+        const listener = event => { if (event.isTrusted) state.received = true; };
+        doc.addEventListener('mousemove', listener, true);
+        state.dispose = () => doc.removeEventListener('mousemove', listener, true);
+        return state;
+      }`,
+    });
+    if (exceptionDetails) throw pageException(exceptionDetails);
+    const call = async (functionDeclaration) => {
+      const reply = await cdp("Runtime.callFunctionOn", { objectId: result.objectId, functionDeclaration, returnByValue: true });
+      if (reply.exceptionDetails) throw pageException(reply.exceptionDetails);
+      return reply.result.value;
+    };
+    return {
+      reset: () => call("function () { this.received = false; }"),
+      received: () => call("function () { return this.received; }"),
+      async dispose() {
+        try { await call("function () { this.dispose(); }"); }
+        finally { await cdp("Runtime.releaseObjectGroup", { objectGroup }); }
+      },
+    };
+  } catch (error) {
+    await cdp("Runtime.releaseObjectGroup", { objectGroup }).catch(() => {});
+    throw error;
+  }
+}
+
 // What the hit test reports when no element is at the click point.
 export const OFF_PAGE = "off-page";
 

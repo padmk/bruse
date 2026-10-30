@@ -10,7 +10,7 @@ const number = (tree, name) => {
   return Number(line.match(/\d+/)[0]);
 };
 before(async () => {
-  frame = await startSite({ "/": "<label>Frame input <input></label><button onclick=\"this.textContent='Frame clicked'\">Frame button</button>" }, "localhost");
+  frame = await startSite({ "/": "<label>Frame input <input></label><button onclick=\"this.dataset.clicks=String(Number(this.dataset.clicks||0)+1);this.textContent='Frame clicked'\">Frame button</button>" }, "localhost");
   site = await startSite({
     "/": `<!doctype html><title>Actions</title>
     <button onclick="this.textContent='Changed'">Change</button><p>Unchanged marker</p>
@@ -87,6 +87,10 @@ test("cross-origin frame appears in AX tree and accepts both action styles", asy
   );
   assert.equal(await json(`tab.playwright.frameLocator('iframe').getByLabel('Frame input').evaluate(el => el.value)`), "inside");
   assert.equal(await json(`tab.playwright.frameLocator('iframe').getByRole('button',{name:'Frame clicked'}).count()`), 1);
+  assert.equal(await json(`tab.playwright.frameLocator('iframe').getByRole('button').getAttribute('data-clicks')`), "1");
+  const clicked = await session.js("await tab.getAXState({disableDiffing:true});");
+  await session.js(`await tab.click(${number(clicked, "button Frame clicked")});`);
+  assert.equal(await json(`tab.playwright.frameLocator('iframe').getByRole('button').getAttribute('data-clicks')`), "2");
 });
 
 test("confirm notification and acceptance", async () => {
