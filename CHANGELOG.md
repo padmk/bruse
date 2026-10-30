@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.19.0
+
+- **Pairing through a native host:** the extension now gets its secret from a native messaging host that the browser starts only for this extension, so no secret crosses the hub port, even on first use. A program that took the port first gets nothing and cannot drive the extension. Setup registers the host for Brave, Chrome, Edge, Chromium and Vivaldi, uninstall removes it, and doctor says how to repair it.
+- **No pairing reset:** a reinstalled extension gets the existing secret by itself, so the reset question in setup and the errors about pairing offers are gone.
+- **Shared tabs stay open:** agents cannot close or discard a tab you shared, also not through raw DevTools commands. They can still use, reload and navigate it. Agents still close their own tabs, and tabs still close when a session ends. In "all tabs" mode nothing changes.
+- **Setup survives a browser folder it cannot write:** it names each folder that failed and goes on, and stops with a clear message only when no folder could be written, or when the host would not start (for example a wrong Node path), instead of waiting 10 minutes for an extension that cannot pair.
+- **Setup closes the gap while an older hub still runs:** it creates the pairing secret when it registers the host, so a 0.18 hub of an agent session started earlier no longer accepts a secret from another local program. An existing secret is kept. Doctor now says "Native pairing secret exists", which does not mean an extension has connected.
+- **A program holding the hub port cannot start many hosts:** the extension answers one challenge per connection, so a flood of challenges no longer starts a Node process for each.
+- **Uninstall keeps the hosts with a kept installation:** hosts are removed only after the installed folder has moved, and one that cannot be removed is listed with the other paths left in place, without stopping the uninstall.
+- **Help for an older extension:** while waiting, setup says to click Reload on an extension that is already loaded, because setup cannot reload one that never paired.
+- **Chrome for Testing:** setup and uninstall also cover `Google/ChromeForTesting` on macOS and `google-chrome-for-testing` on Linux, the locations in Chrome's documentation.
+- **Linux Trash:** uninstall on Linux no longer collides with an earlier entry in the Trash, because each entry gets a unique name.
+- **Update:** run `bruse setup`. Existing pairings keep working. An older extension that never paired must be updated.
+
 ## 0.18.0
 
 - **Measured on public websites:** six tasks on Wikipedia, GitHub, the Python documentation, a paginated shop and TodoMVC, 8 runs per tool: Bruse's median run took 48 to 68 % less time and 38 to 74 % less money than Claude in Chrome, all 96 runs passing, in Brave on the code before the last fixes to replaced elements and tab shares (see `bench/README.md`). The `existing-tab` task now expects both tools to keep a tab the user did not share private.
