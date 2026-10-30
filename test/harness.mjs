@@ -135,6 +135,8 @@ export async function launchBrowser(extensionDir, { pairing } = {}) {
     "--remote-debugging-port=0",
     `--user-data-dir=${profile}`,
     "--no-first-run",
+    // Keeps a run with a temporary HOME from opening the "Keychain Not Found" dialog.
+    "--use-mock-keychain",
     "--no-default-browser-check",
     "--disable-features=DialMediaRouteProvider",
     ...(platform() === "linux" ? ["--no-sandbox"] : []),
