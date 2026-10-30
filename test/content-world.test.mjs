@@ -92,7 +92,13 @@ test("raw commands that name a context run only in the page's own contexts", asy
   await assert.rejects(send("Runtime.callFunctionOn", { executionContextId: world.id, functionDeclaration, returnByValue: true }), refused);
   const { root } = await send("DOM.getDocument", {});
   await assert.rejects(send("DOM.resolveNode", { nodeId: root.nodeId, executionContextId: world.id }), refused);
-  await assert.rejects(send("Runtime.addBinding", { name: "probe", executionContextName: "anything" }), refused);
+
+  // Only commands that also take a unique ID take the numeric ID of a page context, as they are sent by that.
+  await assert.rejects(send("DOM.resolveNode", { nodeId: root.nodeId, executionContextId: page.id }), refused);
+  await assert.rejects(send("Runtime.compileScript", { expression: "1", sourceURL: "", persistScript: false, executionContextId: page.id }), refused);
+  await assert.rejects(send("Runtime.globalLexicalScopeNames", { executionContextId: page.id }), refused);
+  const title = await send("Runtime.callFunctionOn", { executionContextId: page.id, functionDeclaration: "function () { return document.title; }", returnByValue: true });
+  assert.equal(title.result.value, "Login");
 
   // The page's own context stays usable, by name and by default.
   assert.equal((await send("Runtime.evaluate", { contextId: page.id, expression: "document.title", returnByValue: true })).result.value, "Login");
@@ -125,6 +131,9 @@ test("raw commands use only objects of the page's own contexts", async () => {
   assert.equal(title.result.value, "Login");
   const { result: properties } = await send("Runtime.getProperties", { objectId: page.objectId, ownProperties: true });
   assert.ok(properties.some((property) => property.name === "location"));
+  // Values passed to a function are page data, even when they look like a handle.
+  const data = await send("Runtime.callFunctionOn", { objectId: page.objectId, functionDeclaration: "function (x) { return x.objectId; }", arguments: [{ value: { objectId: "x" } }], returnByValue: true });
+  assert.equal(data.result.value, "x");
 });
 
 test("raw commands cannot keep using a context that is gone", async () => {
@@ -143,14 +152,15 @@ test("raw commands cannot keep using a context that is gone", async () => {
   await assert.rejects(titleIn(inner.id), /only in the page's own contexts/);
 });
 
-test("raw bindings go only to a page context named for them", async () => {
+test("agents cannot add raw bindings", async () => {
   const tabId = await tabWithExtensionWorld("bindings");
   const page = (await contextsOf(`${site.origin}/#bindings`)).find((context) => context.auxData?.isDefault && context.origin === site.origin);
   const send = (method, params) => client.call("cdp", { tabId, method, params });
-  await assert.rejects(send("Runtime.addBinding", { name: "probeBinding" }), /needs the executionContextId/);
-  await send("Runtime.addBinding", { name: "probeBinding", executionContextId: page.id });
-  assert.equal((await send("Runtime.evaluate", { expression: "typeof probeBinding", returnByValue: true })).result.value, "function");
-  assert.equal(await inExtensionWorld(tabId, "() => typeof probeBinding"), "undefined");
+  const refused = /may not send Runtime.addBinding/;
+  await assert.rejects(send("Runtime.addBinding", { name: "probeBinding" }), refused);
+  await assert.rejects(send("Runtime.addBinding", { name: "probeBinding", executionContextId: page.id }), refused);
+  await assert.rejects(send("Runtime.addBinding", { name: "probeBinding", executionContextName: "anything" }), refused);
+  assert.equal((await send("Runtime.evaluate", { expression: "typeof probeBinding", returnByValue: true })).result.value, "undefined");
 });
 
 test("the extension's script world in a page gets no storage and no hub requests executed", async () => {
