@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.18.8
+
+- **Uninstall no longer removes the extension by itself:** no browser dialog can be shown for a request from the background, and a silent removal would be open to any agent, so `extension.uninstall` is gone. `bruse uninstall` opens the extensions page and says to remove the extension there.
+- **Uninstall reports what it could not move:** a failed move to the Trash names the path that is left and exits with an error.
+- **Setup reports a refused pairing instead of waiting:** when a new extension offers to pair though a pairing exists, setup asks in a terminal whether to reset it, and without a terminal stops and says the user must decide. An extension left over from an uninstall gets a message to remove it, load it again and run setup. The hub accepts nothing it refused before.
+- **A damaged installation stops setup:** when the extension's code fingerprint cannot be computed, setup stops and `bruse doctor` reports a problem, instead of accepting any connected extension of the same version.
+- **Agent instructions limit what an agent clicks:** only Developer mode and Load unpacked on the extensions page, only the printed path, stop at any unexpected window, and never answer the pairing question for the user.
+- **Chrome Web Store copy:** the README says to remove a 0.17.0 copy from the store before loading the unpacked one.
+
 ## 0.18.7
 
 - **Agent clients sorted by name:** setup and doctor list them alphabetically, so Claude Code and Claude Desktop are next to each other.

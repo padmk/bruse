@@ -45,7 +45,9 @@ bruse setup
 
 Or download a release zip, unpack it and double-click **Install Bruse.command**. You can also open an
 agent in the unpacked folder and ask it to install Bruse; the package's `AGENTS.md` tells it how. From
-a checkout of this repository, run `node bin/bruse.mjs setup`.
+a checkout of this repository, run `node bin/bruse.mjs setup`. A copy of Bruse from the Chrome Web Store
+(0.17.0, public briefly on 2026-10-30) no longer works with the current server; remove it before you load
+the unpacked one.
 
 Or ask an agent you trust, with no download first:
 
@@ -101,15 +103,15 @@ doctor` tells you when the browser still runs older extension code.
 | `bruse setup` | Install or update, register the MCP server with the clients you pick and wait for the extension |
 | `bruse setup --clients claude-code,codex` | The same, with the named clients and without asking (names as `bruse doctor` shows them) |
 | `bruse doctor` | Check Node.js, the installed copy, the registrations, pairing and the browser connection |
-| `bruse uninstall` | Remove the registrations, the connected extension, the installed copy and the pairing state |
+| `bruse uninstall` | Remove the registrations, the installed copy and the pairing state, and open the extensions page for removing the extension |
 | `bruse version` | Print the version |
 
 From a checkout or the unpacked zip, run them as `node bin/bruse.mjs <command>`. To update, run `bruse setup` again with
 the new version; it reloads the extension in the browser. Agent sessions started before the update
 keep working; while one of them holds the hub, setup and newer sessions say that the versions differ,
 and restarting the older sessions fixes it. To uninstall, run `bruse uninstall` and, after a Homebrew install,
-`brew uninstall bruse`. The command removes the extension when it is connected and not paused; otherwise it
-tells you to remove it on the browser's extensions page. Agent sessions
+`brew uninstall bruse`. On macOS the command opens the browser's extensions page; remove the extension
+there before you install again, because a copy left behind cannot pair. Agent sessions
 started before the uninstall keep the removed server until they end.
 
 ## Usage
@@ -217,8 +219,9 @@ The full API is in [browser/mcp/cua/docs.mjs](browser/mcp/cua/docs.mjs).
   extension, and stops otherwise; the remaining window is a program that pairs as the extension while
   setup waits, or an extension loaded without setup while no hub runs. Pairing through the browser's
   native messaging would close it; it is the intended fix and not built into a release yet. After
-  reinstalling the extension, move `extension-secret` to the Trash so that the new extension can pair;
-  it connects again within a second.
+  reinstalling the extension, run `bruse setup` in a terminal: it asks before it moves `extension-secret`
+  to the Trash, and the new extension then pairs within a second. Answer yes only if you just loaded the
+  extension yourself.
 
 - **No independent audit yet.** No external security audit of Bruse has been published. The changes
   are reviewed by models and covered by end-to-end tests, which do not replace one.

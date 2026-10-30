@@ -32,6 +32,33 @@ export function installedVersion() {
   }
 }
 
+// Chromium browsers in the order they are offered; the first installed one gets its extensions page opened.
+const BROWSERS = [
+  { name: "Brave", app: "Brave Browser", page: "brave://extensions" },
+  { name: "Chrome", app: "Google Chrome", page: "chrome://extensions" },
+  { name: "Edge", app: "Microsoft Edge", page: "edge://extensions" },
+  { name: "Chromium", app: "Chromium", page: "chrome://extensions" },
+  { name: "Vivaldi", app: "Vivaldi", page: "vivaldi://extensions" },
+];
+
+// The first supported browser on this Mac, whose extensions page setup and uninstall open.
+export function installedBrowser() {
+  if (platform() !== "darwin") return null;
+  return BROWSERS.find((b) => existsSync(`/Applications/${b.app}.app`) || existsSync(join(homedir(), "Applications", `${b.app}.app`))) ?? null;
+}
+
+// Browsers ignore internal pages passed by `open`, but accept them from AppleScript. The first run asks
+// the user to let the terminal control the browser.
+export function showPage(app, page) {
+  const script = `tell application ${JSON.stringify(app)}
+    activate
+    if (count of windows) = 0 then make new window
+    make new tab at end of tabs of front window with properties {URL:${JSON.stringify(page)}}
+  end tell`;
+  const result = spawnSync("osascript", ["-e", script], { encoding: "utf8", timeout: 60_000 });
+  if (result.status !== 0) note(`(Could not open ${page} automatically; open it in ${app}.)`);
+}
+
 export const step = (text) => console.log(`\n\x1b[1m${text}\x1b[0m`);
 export const note = (text) => console.log(`  ${text}`);
 

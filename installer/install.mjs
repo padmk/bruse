@@ -7,26 +7,17 @@ import { spawnSync } from "node:child_process";
 import { createInterface } from "node:readline/promises";
 import { cpSync, existsSync, mkdirSync, renameSync } from "node:fs";
 import { readFile } from "node:fs/promises";
-import { homedir, platform } from "node:os";
+import { platform } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { HUB_VERSION_MISMATCH, PORT } from "../browser/mcp/config.mjs";
-import { agentClients, clientId, extensionDir, fail, failureReason, installRoot, installed, manifest, note, onPath, problemMessage, product, requireNode, serverPath, source, step, moveToTrash } from "./lib.mjs";
+import { EXTENSION_SECRET_PATH, HUB_VERSION_MISMATCH, PAIRING_NEW_EXTENSION, PAIRING_STALE_SECRET, PORT } from "../browser/mcp/config.mjs";
+import { agentClients, clientId, installedBrowser, showPage, extensionDir, fail, failureReason, installRoot, installed, manifest, note, onPath, problemMessage, product, requireNode, serverPath, source, step, moveToTrash } from "./lib.mjs";
 
 const PAIR_WAIT_MS = 10 * 60_000;
 const PAIR_HINT_MS = 45_000;
 const RELOAD_WAIT_MS = 30_000;
 // Homebrew installs leave SECURITY.md out, so the notice links to this version's copy in the repository.
 const SECURITY_URL = `${manifest.homepage_url}/blob/v${manifest.version}/SECURITY.md`;
-
-// Chromium browsers in the order they are offered; the first installed one gets its extensions page opened.
-const BROWSERS = [
-  { name: "Brave", app: "Brave Browser", page: "brave://extensions" },
-  { name: "Chrome", app: "Google Chrome", page: "chrome://extensions" },
-  { name: "Edge", app: "Microsoft Edge", page: "edge://extensions" },
-  { name: "Chromium", app: "Chromium", page: "chrome://extensions" },
-  { name: "Vivaldi", app: "Vivaldi", page: "vivaldi://extensions" },
-];
 
 // Copies next to the target first, so a failed copy leaves the previous installation working. The
 // previous copy is set aside and put back when the new one cannot take its place; a process killed
@@ -149,7 +140,7 @@ async function registerServer(requested) {
 
 function openExtensionsPage() {
   step("Load the extension (once)");
-  const browser = platform() === "darwin" ? BROWSERS.find((b) => existsSync(`/Applications/${b.app}.app`) || existsSync(join(homedir(), "Applications", `${b.app}.app`))) : null;
+  const browser = installedBrowser();
   const page = browser?.page ?? "chrome://extensions";
   // Agents and scripts read the path below; only someone at the terminal expects the clipboard to change.
   const copied = platform() === "darwin" && process.stdout.isTTY && spawnSync("pbcopy", { input: extensionDir }).status === 0;
@@ -164,16 +155,29 @@ function openExtensionsPage() {
   if (browser) showPage(browser.app, page);
 }
 
-// Browsers ignore internal pages passed by `open`, but accept them from AppleScript. The first run asks
-// the user to let the terminal control the browser.
-function showPage(app, page) {
-  const script = `tell application ${JSON.stringify(app)}
-    activate
-    if (count of windows) = 0 then make new window
-    make new tab at end of tabs of front window with properties {URL:${JSON.stringify(page)}}
-  end tell`;
-  const result = spawnSync("osascript", ["-e", script], { encoding: "utf8", timeout: 60_000 });
-  if (result.status !== 0) note(`(Could not open ${page} automatically; open it in ${app}.)`);
+// A new extension offers to pair though a pairing exists. A local process can pose as the extension, so
+// only the answer of the person at the terminal resets the pairing.
+async function resetPairingIfUserAgrees(callBrowser) {
+  if (!process.stdin.isTTY) fail(`A new extension wants to pair, but ${product} is paired with another one. The user must decide whether to reset the pairing: run \`bruse setup\` in a terminal and answer its question.`);
+  const prompt = createInterface({ input: process.stdin, output: process.stdout });
+  const answer = await new Promise((resolve) => {
+    prompt.question(`  A new extension wants to pair, but ${product} is paired with another one. Answer yes only if you just loaded it yourself. Reset the pairing? [y/N] `).then(resolve, () => resolve(""));
+    prompt.once("close", () => resolve(""));
+  });
+  prompt.close();
+  if (!/^y(es)?$/i.test(answer.trim())) fail(`The pairing was not reset. If you did not load that extension, find out what did. To pair it, run \`bruse setup\` again and answer yes.`);
+  // The paired extension may have connected while the question was open, which ends the need to reset.
+  const current = await callBrowser("browser.info").then(() => null, (error) => error.code);
+  if (current !== PAIRING_NEW_EXTENSION) {
+    note("The new extension no longer asks to pair, so the pairing stays.");
+    return;
+  }
+  try {
+    if (existsSync(EXTENSION_SECRET_PATH)) moveToTrash(EXTENSION_SECRET_PATH);
+  } catch (error) {
+    fail(`Could not move ${EXTENSION_SECRET_PATH} to the Trash: ${error.message}`);
+  }
+  note("Pairing reset; waiting for the extension to pair again.");
 }
 
 // The first connection pairs the extension with this machine's hub; see "Security" in the README.
@@ -188,6 +192,11 @@ async function waitForExtension(callBrowser) {
       return info;
     } catch (error) {
       if (error.code === HUB_VERSION_MISMATCH) fail(error.message);
+      if (error.code === PAIRING_STALE_SECRET) fail(`The extension in the browser holds a pairing from an earlier installation, so it cannot pair. Remove it on the browser's extensions page, load it again from ${extensionDir}, and run setup again.`);
+      if (error.code === PAIRING_NEW_EXTENSION) {
+        await resetPairingIfUserAgrees(callBrowser);
+        continue;
+      }
       const waited = Date.now() - started;
       if (waited > PAIR_WAIT_MS) fail(`The extension did not connect within ${PAIR_WAIT_MS / 60_000} minutes. ${error.message}`);
       if (waited > PAIR_HINT_MS && !hinted) {
@@ -252,15 +261,17 @@ function portTaken(error) {
 
 // The version stays the same between releases, so the extension must also report this copy's code
 // fingerprint (`build`, see shared.js) to count as updated.
-const runsThisCode = (info, build) => info?.version === manifest.version && (!build || info.build === build);
+const runsThisCode = (info, build) => info?.version === manifest.version && Boolean(build) && info.build === build;
 
 export async function setup({ clients } = {}) {
   requireNode();
   const firstInstall = !existsSync(installed);
   installFiles();
   if (firstInstall) trustNotice();
-  const { extensionBuild } = await import(join(installed, "extension", "shared.js"));
-  const build = await extensionBuild((file) => readFile(join(extensionDir, file), "utf8")).then(({ hash }) => hash, () => null);
+  const build = await import(join(installed, "extension", "shared.js"))
+    .then(({ extensionBuild }) => extensionBuild((file) => readFile(join(extensionDir, file), "utf8")))
+    .then(({ hash }) => hash, () => null);
+  if (!build) fail(`The installation is damaged: the code in ${extensionDir} cannot be read in full. Reinstall ${product} from Homebrew or a new release zip, then run setup again.`);
   const registered = await registerServer(clients);
   const { callBrowser, isNotConnected } = await import(join(installed, "mcp", "browser-link.mjs"));
   // A hub of an older version, run by an agent session started before the update, cannot be reached.

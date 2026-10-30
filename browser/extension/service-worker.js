@@ -173,12 +173,6 @@ const handlers = {
     setTimeout(() => chrome.runtime.reload(), 100);
     return null;
   },
-
-  // Removes the extension for `bruse uninstall`, after the reply is on its way.
-  "extension.uninstall": () => {
-    setTimeout(() => chrome.management.uninstallSelf({ showConfirmDialog: false }), 100);
-    return null;
-  },
 };
 
 // Methods that need the tab's loaded page, which a tab the browser discarded to free memory no longer
@@ -349,11 +343,11 @@ chrome.tabs.onRemoved.addListener((tabId) => endShareOfClosedTab(tabId));
 
 // A hub of a version before tab ownership sends requests without the session they come from.
 const OUTDATED_HUB = `The ${chrome.runtime.getManifest().name} MCP server that relays this request is older than the browser extension and does not say which agent session it comes from. Ask the user to run \`bruse setup\` and start new agent sessions.`;
-const SESSIONLESS_METHODS = new Set(["browser.info", "extension.reload", "extension.uninstall"]);
+const SESSIONLESS_METHODS = new Set(["browser.info", "extension.reload"]);
 
 // Requests that still run while the user has paused agents: browser.info only reads the state, and
 // session.end closes no tab while paused (sessions.js closes the session's tabs when the user resumes).
-// extension.reload and extension.uninstall are refused, because they would end the user's tab shares.
+// extension.reload is refused, because a reload would end the user's tab shares.
 const PAUSE_EXEMPT = new Set(["browser.info", "session.end"]);
 
 // Hub authentication. On first use the extension pairs with the hub by sending it a random secret,

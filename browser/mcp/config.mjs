@@ -22,6 +22,11 @@ export const TOKEN_PATH = join(STATE_DIR, "hub-token");
 // Code of the error a server gets when the hub on the port runs another version, which it cannot talk to.
 export const HUB_VERSION_MISMATCH = "HUB_VERSION_MISMATCH";
 
+// Codes of the error a server gets while the hub keeps refusing an extension: a new one offers to pair
+// though a pairing exists, or one authenticates with an old secret though no pairing exists.
+export const PAIRING_NEW_EXTENSION = "PAIRING_NEW_EXTENSION";
+export const PAIRING_STALE_SECRET = "PAIRING_STALE_SECRET";
+
 // Secret the extension paired with on first connection; hub and extension prove it to each other.
 export const EXTENSION_SECRET_PATH = join(STATE_DIR, "extension-secret");
 

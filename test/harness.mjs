@@ -304,7 +304,7 @@ export async function hubClient(port, stateDir, { sessionId = randomUUID() } = {
     call: (method, params = {}) =>
       new Promise((resolve, reject) => {
         const id = nextId++;
-        pending.set(id, (reply) => (reply.error ? reject(new Error(reply.error)) : resolve(reply.result)));
+        pending.set(id, (reply) => (reply.error ? reject(Object.assign(new Error(reply.error), { code: reply.code })) : resolve(reply.result)));
         socket.send(JSON.stringify({ id, method, params }));
       }),
     close: () => socket.close(),

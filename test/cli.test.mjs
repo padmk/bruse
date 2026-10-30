@@ -64,6 +64,21 @@ async function inPage(url, expression) {
     await cdp.send("Target.closeTarget", { targetId });
   }
 }
+// Runs setup as at a terminal, where setup tells by stdin's isTTY, and gives `answer` to its question;
+// returns the output.
+async function inTerminal(answer) {
+  const child = spawn(process.execPath, ["--import", "data:text/javascript,process.stdin.isTTY=true", cli, "setup"], { env: environment, stdio: ["pipe", "pipe", "pipe"] });
+  let output = "";
+  child.stdout.on("data", (chunk) => (output += chunk));
+  child.stderr.on("data", (chunk) => (output += chunk));
+  const done = new Promise((resolve) => child.on("close", resolve));
+  children.set(child, done);
+  await until(() => output.includes("Reset the pairing?"), { timeoutMs: 60_000, message: "setup to ask" });
+  child.stdin.write(`${answer}\n`);
+  await done;
+  children.delete(child);
+  return output;
+}
 const setPaused = (paused) => inPage(`chrome-extension://${browser.extensionId}/popup.html`, `chrome.storage.local.set({ paused: ${paused} })`);
 const setEnabled = (enabled) => inPage("chrome://extensions", `chrome.management.setEnabled(${JSON.stringify(browser.extensionId)}, ${enabled})`);
 
@@ -113,8 +128,38 @@ test("setup, reload, doctor and uninstall", { timeout: 180_000 }, async () => {
   const uninstall = await run("uninstall").done;
   assert.equal(uninstall.code, 0, uninstall.output);
   assert.equal(existsSync(installed), false);
-  assert.match(uninstall.output, /Removed the extension from/);
-  assert.doesNotMatch(uninstall.output, /extensions page/);
+  assert.match(uninstall.output, /Remove the .* extension on the extensions page of your browser.* before you install again/);
+});
+test("setup reports a leftover extension and asks before it resets a pairing", { timeout: 300_000 }, async () => {
+  const secretPath = join(installed, "state", "extension-secret");
+  // The extension the uninstall left in the browser still holds the old secret.
+  const leftover = await run("setup").done;
+  assert.notEqual(leftover.code, 0, leftover.output);
+  assert.match(leftover.output, /holds a pairing from an earlier installation.*Remove it on the browser's extensions page, load it again/);
+  assert.equal(existsSync(secretPath), false);
+  const reinstall = async () => {
+    await browser.cdp.send("Extensions.uninstall", { id: browser.extensionId });
+    await browser.cdp.send("Extensions.loadUnpacked", { path: join(installed, "browser", "extension") });
+  };
+  // Doing what the message says pairs again.
+  await reinstall();
+  const paired = await run("setup").done;
+  assert.equal(paired.code, 0, paired.output);
+  const secret = readFileSync(secretPath, "utf8");
+  // Removed and loaded again by hand: without a terminal nobody can agree to a reset.
+  await reinstall();
+  const refused = await run("setup").done;
+  assert.notEqual(refused.code, 0, refused.output);
+  assert.match(refused.output, /A new extension wants to pair.*The user must decide.*bruse setup. in a terminal/);
+  assert.equal(readFileSync(secretPath, "utf8"), secret);
+  // At a terminal, only yes resets it, and the extension then pairs by itself.
+  const declined = await inTerminal("n");
+  assert.match(declined, /Reset the pairing\? \[y\/N\]/);
+  assert.match(declined, /The pairing was not reset/);
+  assert.equal(readFileSync(secretPath, "utf8"), secret);
+  const accepted = await inTerminal("y");
+  assert.match(accepted, /is ready/);
+  assert.notEqual(readFileSync(secretPath, "utf8"), secret);
 });
 test("file clients preserve configuration and reject comments", { timeout: 180_000 }, async () => {
   const app = process.platform === "darwin" ? join(home, "Library", "Application Support") : join(home, ".config");
