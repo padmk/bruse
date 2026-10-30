@@ -78,7 +78,7 @@ same value.
 
 ## Tests
 
-`npm test` runs the unit tests and the end-to-end tests. The end-to-end tests load a copy of the
+`npm test` runs the unit tests and the end-to-end tests, with at most four files at once so browser startup does not saturate the host. The end-to-end tests load a copy of the
 extension into headless Chrome for Testing and drive it through MCP sessions, the way an agent does.
 Each test file uses its own hub port, state directory, native host manifest and browser profile, so the tests never reach an
 installed Bruse or the browser it is connected to. They look for Chromium in Playwright's cache
@@ -132,3 +132,43 @@ require enabling the extension again. Chrome's general permission-update warning
 [here](https://developer.chrome.com/docs/extensions/develop/concepts/permission-warnings).
 The [Chromium security FAQ](https://chromium.googlesource.com/chromium/src/+/main/extensions/docs/security_faq.md)
 explains why an unpacked extension's key is not proof of publisher identity.
+
+## Inspector compatibility
+
+V8 commit [205922abe6](https://chromium.googlesource.com/v8/v8/+/205922abe6)
+uses isolate ID zero for untrusted inspector sessions. It is present in
+[V8 15.8](https://chromium.googlesource.com/v8/v8/+/refs/branch-heads/15.8/src/inspector/injected-script.cc)
+but absent from the inspected
+[15.7 branch head](https://chromium.googlesource.com/v8/v8/+/refs/branch-heads/15.7/src/inspector/injected-script.cc).
+Chrome's [8127 branch DEPS](https://chromium.googlesource.com/chromium/src/+/refs/branch-heads/8127/DEPS)
+pins V8 b17064889ef49a632dd09bead566cf50887886bf, whose session implementation includes this change;
+[chrome/VERSION](https://chromium.googlesource.com/chromium/src/+/refs/branch-heads/8127/chrome/VERSION)
+identifies it as milestone 158.
+[Chromiumdash's milestone 158 schedule](https://chromiumdash.appspot.com/fetch_milestone_schedule?mstone=158)
+queried on 2026-10-30 gives early stable 2026-11-04 and stable 2026-11-17. These are scheduled dates,
+not confirmation of a completed rollout; backports to other milestones were not established.
+
+Chrome for Testing 158.0.8127.2 on macOS reports zero-isolate handles through `chrome.debugger`.
+The content-world test holds a receiver command after validation, navigates across processes, then
+releases it and checks that its old unique context fails. See SECURITY.md for the raw handle API limits.
+
+### Verification on 2026-10-30
+
+- macOS: two runs of actions, isolation, native pairing, sessions and downloads passed 42/42 each.
+  One full suite passed 103/103 after bounding file concurrency; a later loaded repeat passed 91/103,
+  with initial extension-connection failures and subsequent dependent assertions. The gate script passed.
+- Chrome for Testing 158.0.8127.2: actions, content-world and smoke passed 18/18; the final content-world
+  regressions passed 7/7, including zero-isolate handles and the queued cross-process receiver command.
+- Linux arm64, disposable Playwright v1.64.1 container, Chrome for Testing 156.0.8078.4: the six affected
+  files passed 49/49 once. Repeated runs exposed the creation/end test ordering assumption and a
+  cross-origin click that sometimes had no effect. Waiting for the effect did not repair the click;
+  the cause remains unresolved. Popup ownership and blank-attachment checks passed in these runs.
+- A shared tab was closed by an agent's evaluated `window.close()`; the API ownership guards and
+  Browser/Target refusals passed. This script-closure limitation is documented in SECURITY.md.
+- Installed Chrome 156.0.8078.74 loaded the extension in a temporary profile, but isolated native-host
+  probes did not establish an end-to-end connection. Edge and Vivaldi were absent from both Applications
+  folders. Their native discovery and connection remain unverified; the user's Brave was not used.
+- The saved-pairing test checks the reloaded build rather than accepting a pre-reload connection.
+  Window tests wait for chrome.tabs, and creation/end tests accept either ordering while checking cleanup.
+  The original saved-pairing failure and the intermittent popup/download reports were not reproduced
+  independently. File-concurrency limits do not guarantee passing tests on an overloaded host.

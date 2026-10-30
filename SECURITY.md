@@ -44,3 +44,21 @@ manifest key, and programs running as the user can invoke the host directly or r
 are outside the threat model above. Native messaging does not protect a compromised user account.
 Older extensions without an existing pairing must be updated; port-based first pairing and reset
 approval are removed. See [Security in the README](README.md#security-and-privacy).
+
+## Shared tabs and page scripts
+
+The tab and management APIs refuse to close or discard a shared tab, and raw `Page.close` and
+`Page.crash` require ownership. Browser and Target domain commands are refused altogether.
+Reloading and navigating shared tabs are allowed. Page JavaScript can call `window.close()` when
+Chromium permits it, including code evaluated by an agent or triggered through page input. Sharing
+allows that JavaScript, so it does not guarantee that the tab stays open. Replacing `window.close`
+in the page would not enforce such a guarantee across frames and navigations.
+
+## Inspector object handles
+
+Runtime receiver calls are sent with the tracked unique page context, with the receiver passed as an
+argument. A command queued across a renderer change therefore cannot resolve its receiver in a new
+extension world whose numeric context ID happens to match. For zero-isolate handles, Runtime commands
+without a unique context selector are refused. DOM object handles are converted to backend node IDs
+through a pinned Runtime call before the DOM command is sent. Locators enumerate nodes through pinned
+deep serialization rather than `Runtime.getProperties`.

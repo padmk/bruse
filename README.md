@@ -65,7 +65,8 @@ Setup:
   the accounts signed in to your browser profile) and links to [SECURITY.md](SECURITY.md);
 - lists the agent clients it finds (Claude Code, Codex, Cursor, VS Code and Insiders, GitHub Copilot CLI,
   Gemini CLI, Claude Desktop, Devin Desktop, Windsurf) and registers the MCP server as `bruse` with the
-  ones you pick; Enter picks all of them. `bruse setup --clients claude-code,codex` picks without
+  ones you pick; Enter picks all of them. The registration pins the pairing state directory, even if
+  the client starts with a different `XDG_DATA_HOME`. `bruse setup --clients claude-code,codex` picks without
   asking. Run without a terminal (by an agent or a script) and without `--clients`, setup updates the
   clients that already have the server and, on a first install, stops and lists the clients to choose
   from. It uses the client's own `mcp add` command where there is one; otherwise it edits the client's
@@ -165,7 +166,10 @@ The full API is in [browser/mcp/cua/docs.mjs](browser/mcp/cua/docs.mjs).
     They cannot resize, focus or close your windows, move tabs into them or into groups holding tabs
     they cannot use, or make a tab the active one in them, so they do not switch the tab you are
     looking at. Your tab strip stays yours: agents cannot pin, move, group, close or discard a tab
-    you shared, and sharing does not put it in a group.
+    you shared through the tab and management APIs, and sharing does not put it in a group.
+    Page scripts can still close a shared tab with `window.close()` when the browser allows it, including
+    scripts an agent evaluates or triggers by clicking. Sharing permits page JavaScript; it cannot guarantee
+    that the tab stays open.
   - Tabs an agent opens through the browser's management functions (a new window, a duplicated tab)
     are its own, like the tabs it opens directly, and close when its session ends.
 
@@ -199,7 +203,10 @@ The full API is in [browser/mcp/cua/docs.mjs](browser/mcp/cua/docs.mjs).
   domains that act on the page in the tab (`Accessibility`, `Animation`, `CSS`, `DOM`, `DOMSnapshot`,
   `Emulation`, `Input`, `Log`, `Network`, `Overlay`, `Page`, `Performance`, `Runtime`), without the
   cookie and cache commands and `Page.addScriptToEvaluateOnNewDocument`, and run JavaScript only in the
-  page's own contexts, never in the isolated worlds where extensions' content scripts run. A frame's
+  page's own contexts, never in the isolated worlds where extensions' content scripts run. On browsers with zero-isolate
+  handles, raw Runtime object commands without a unique context selector (including `getProperties`,
+  `awaitPromise`, `queryObjects` and `releaseObject`) are refused; use `Runtime.callFunctionOn` instead.
+  Locators remain supported. A frame's
   session works only with the tab it belongs to.
 - **Who can drive it.** The hub accepts peer MCP servers only when they prove that they read the token
   in `~/.local/share/bruse/state/hub-token` (mode 0600), so web pages and other users cannot drive it.

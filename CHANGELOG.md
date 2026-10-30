@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Pin Runtime object receiver calls to unique page contexts, convert zero-isolate DOM handles to backend node IDs through a pinned call, and refuse Runtime handle commands that cannot name a unique context. Locators enumerate nodes through deep serialization so they work with Chrome 158's zero-isolate handles.
+- Pin the pairing state directory in MCP registrations so a client's different `XDG_DATA_HOME` does not select another state directory. Run setup again to update registrations.
+- Clarify that page scripts, including agent evaluations and clicks, can close a shared tab with `window.close()` when the browser permits it. Browser and Target commands remain refused.
+- Wait for chrome.tabs when checking window ownership and for the updated extension fingerprint after a permission reload. Cap the test suite at four concurrent files to avoid starting every browser at once.
+- Bound test CDP requests and reject them on connection close so a missing reply cannot leave a test body waiting forever. Test browser cleanup moves temporary directories to Trash and browser launches disable macOS app cloning.
+
 ## 0.19.1
 
 - **Shared tabs stay open:** agents cannot close or discard a tab you shared, also not through raw DevTools commands. They can still use, reload and navigate it. Agents still close their own tabs, and tabs still close when a session ends. In "all tabs" mode nothing changes.
