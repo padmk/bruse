@@ -190,8 +190,10 @@ async function waitForExtension(callBrowser) {
 }
 
 // The reloaded extension reconnects within moments; it reports its version from then on.
+// A paused extension refuses the reload, which would end the user's tab shares.
 async function reloadExtension(callBrowser, connected, build) {
   step("Updating the extension");
+  if (connected.paused) fail(`Agents are paused in ${connected.name}, so the extension cannot be updated. Resume agents from the ${product} icon in the browser toolbar and run setup again.`);
   await callBrowser("extension.reload").catch(() => {});
   const deadline = Date.now() + RELOAD_WAIT_MS;
   await new Promise((resolve) => setTimeout(resolve, 1_000));

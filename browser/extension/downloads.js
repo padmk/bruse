@@ -9,6 +9,7 @@ import { EXTENSION_WORK, cdp, onCdpEvent, sinceAgentInput } from "./cdp.js";
 import { ALL_TABS, accessMode, sharedTabs, wasSharedWhenClosed } from "./access.js";
 import { tabOwner } from "./agent-state.js";
 import { agentOpenerChain, onTabOpened, rememberedOwner } from "./sessions.js";
+import { PAUSED_ERROR, onPausedChange } from "./pause.js";
 import { AGENT_INPUT_WINDOW_MS } from "./shared.js";
 
 const MAX_REMEMBERED = 200;
@@ -228,6 +229,11 @@ chrome.storage.onChanged.addListener((changes, area) => {
     const stopped = new Set((changes.sharedTabs.oldValue ?? []).filter((tabId) => !now.has(tabId) && !wasSharedWhenClosed(tabId)));
     revoke((grant) => grant.proof === "share" && stopped.has(grant.source));
   }
+});
+
+// Pausing ends every wait, so no file reaches an agent after the user paused.
+onPausedChange((paused) => {
+  if (paused) for (const waiter of [...waiters]) waiter.fail(new Error(PAUSED_ERROR));
 });
 
 const pairedAt = new Map(); // download id -> when a report paired it

@@ -326,8 +326,10 @@ chrome.tabs.onRemoved.addListener((tabId) => endShareOfClosedTab(tabId));
 const OUTDATED_HUB = `The ${chrome.runtime.getManifest().name} MCP server that relays this request is older than the browser extension and does not say which agent session it comes from. Ask the user to run \`bruse setup\` and start new agent sessions.`;
 const SESSIONLESS_METHODS = new Set(["browser.info", "extension.reload"]);
 
-// Requests that still run while the user has paused agents: none of them acts on a page.
-const PAUSE_EXEMPT = new Set(["browser.info", "extension.reload", "session.end"]);
+// Requests that still run while the user has paused agents: browser.info only reads the state, and
+// session.end closes no tab while paused (sessions.js closes the session's tabs when the user resumes).
+// extension.reload is refused, because a reload would end the user's tab shares.
+const PAUSE_EXEMPT = new Set(["browser.info", "session.end"]);
 
 // Hub authentication. On first use the extension pairs with the hub by sending it a random secret,
 // which the hub stores; later connections prove knowledge of that secret in both directions with

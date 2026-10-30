@@ -127,7 +127,8 @@ The full API is in [browser/mcp/cua/docs.mjs](browser/mcp/cua/docs.mjs).
   in a separate browser profile without important sign-ins.
 - **You can stop it at any moment.** Click the Bruse icon in the toolbar and **Pause agents** (or
   **Cancel** on the browser's "started debugging" bar): the extension detaches from every tab at once
-  and refuses agent requests until you resume. Agent tabs stay open, so you can look at what was done.
+  and refuses agent requests until you resume. Agent tabs stay open, so you can look at what was done;
+  those of sessions that ended during the pause close when you resume.
 - **Page content goes to your model provider.** What the agent reads from a tab (accessibility trees,
   screenshots, page text) is returned to the agent and so reaches the provider of the model it runs on.
   The server and the extension themselves talk only over `127.0.0.1`; code the agent runs in the `js`
