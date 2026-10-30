@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.18.3
+
+- **Pause keeps everything still:** while agents are paused, a session that ends (its server sends `session.end`, or it drops off the hub's report) closes none of its tabs; they close when you resume, unless the session came back meanwhile. `extension.reload` is refused while paused, because a reload ends your tab shares; `bruse setup` stops and asks you to resume agents, also when the extension needs no reload. Pausing ends download waits in progress, also one whose request was still being checked. Agent tabs that the browser restores after a restart are no longer tied to a session and stay as your tabs.
+- **Sharing a tab is not sharing its window:** changing, closing or focusing a window, moving tabs or groups into it and switching its active tab need every tab in the window to be the session's own; a window whose tabs you shared stays visible to the agent but is not its to change.
+- **Storage protection fails closed:** if the browser does not let the extension keep its storage from content scripts, agent requests fail with a message to update the browser, and `browser.info` reports the problem.
+- **Duplicating keeps your tab choice:** after `tabs.duplicate` the previously active tab comes back only while the duplicate is still the active one, so a tab you switched to meanwhile stays in front.
+- **Setup tolerates a failed clean-up:** when the previous installation cannot be moved to the Trash after a successful update, setup names the leftover folder instead of failing.
+
 ## 0.18.2
 
 - **Fixed, raw DevTools commands reached extensions' script worlds:** when the extension removed another extension's frame from a page, it ran its own script there in an isolated world with the extension's storage and messaging, and an agent's raw `Runtime` commands could name that world, or another extension's content-script world, by context ID or object handle. Raw commands now run JavaScript and use objects only in the page's own contexts: a numeric context ID of `Runtime.evaluate` or `Runtime.callFunctionOn` is sent as that context's unique ID (which a new renderer process does not reuse), other numeric context IDs, `executionContextName`, `Runtime.addBinding` and `Runtime.disable` are refused, and object handles must belong to a page context. The extension's storage is open only to its own pages, and its service worker and offscreen document take messages only from each other.
