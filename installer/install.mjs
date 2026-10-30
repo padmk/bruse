@@ -10,7 +10,7 @@ import { readFile } from "node:fs/promises";
 import { platform } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { EXTENSION_SECRET_PATH, HUB_VERSION_MISMATCH, PAIRING_NEW_EXTENSION, PAIRING_STALE_SECRET, PORT } from "../browser/mcp/config.mjs";
+import { HUB_VERSION_MISMATCH, PAIRING_NEW_EXTENSION, PAIRING_SEVERAL_OFFERS, PAIRING_STALE_SECRET, PORT } from "../browser/mcp/config.mjs";
 import { agentClients, clientId, installedBrowser, showPage, extensionDir, fail, failureReason, installRoot, installed, manifest, note, onPath, problemMessage, product, requireNode, serverPath, source, step, moveToTrash } from "./lib.mjs";
 
 const PAIR_WAIT_MS = 10 * 60_000;
@@ -156,12 +156,13 @@ function openExtensionsPage() {
 }
 
 // A new extension offers to pair though a pairing exists. A local process can pose as the extension, so
-// only the answer of the person at the terminal resets the pairing.
-async function resetPairingIfUserAgrees(callBrowser) {
+// only the answer of the person at the terminal resets the pairing, and the hub then takes only the one
+// secret on offer.
+async function resetPairingIfUserAgrees(callBrowser, approvePairingReset) {
   if (!process.stdin.isTTY) fail(`A new extension wants to pair, but ${product} is paired with another one. The user must decide whether to reset the pairing: run \`bruse setup\` in a terminal and answer its question.`);
   const prompt = createInterface({ input: process.stdin, output: process.stdout });
   const answer = await new Promise((resolve) => {
-    prompt.question(`  A new extension wants to pair, but ${product} is paired with another one. Answer yes only if you just loaded it yourself. Reset the pairing? [y/N] `).then(resolve, () => resolve(""));
+    prompt.question(`  A new extension wants to pair, but ${product} is paired with another one. Another program on this computer could have caused this question. Answer yes only if you just loaded the extension yourself and nobody else uses this computer's accounts. Reset the pairing? [y/N] `).then(resolve, () => resolve(""));
     prompt.once("close", () => resolve(""));
   });
   prompt.close();
@@ -172,16 +173,24 @@ async function resetPairingIfUserAgrees(callBrowser) {
     note("The new extension no longer asks to pair, so the pairing stays.");
     return;
   }
+  const { moved } = await approvePairingReset().catch((error) => {
+    if (error.code === PAIRING_SEVERAL_OFFERS) fail(`Two programs are trying to pair with ${product}, so nothing tells which one is your extension. The pairing was kept. Find out what the other one is before you run setup again.`);
+    fail(`Could not reset the pairing: ${error.message}. If agent sessions started before an update are running, restart them, then run setup again.`);
+  });
+  if (!moved) {
+    note("The new extension no longer asks to pair, so the pairing stays.");
+    return;
+  }
   try {
-    if (existsSync(EXTENSION_SECRET_PATH)) moveToTrash(EXTENSION_SECRET_PATH);
+    moveToTrash(moved);
   } catch (error) {
-    fail(`Could not move ${EXTENSION_SECRET_PATH} to the Trash: ${error.message}`);
+    note(`(Could not move the old secret to the Trash: ${error.message}. It is left in ${moved} and can be removed.)`);
   }
   note("Pairing reset; waiting for the extension to pair again.");
 }
 
 // The first connection pairs the extension with this machine's hub; see "Security" in the README.
-async function waitForExtension(callBrowser) {
+async function waitForExtension(callBrowser, approvePairingReset) {
   step("Waiting for the extension to connect");
   const started = Date.now();
   let hinted = false;
@@ -194,7 +203,7 @@ async function waitForExtension(callBrowser) {
       if (error.code === HUB_VERSION_MISMATCH) fail(error.message);
       if (error.code === PAIRING_STALE_SECRET) fail(`The extension in the browser holds a pairing from an earlier installation, so it cannot pair. Remove it on the browser's extensions page, load it again from ${extensionDir}, and run setup again.`);
       if (error.code === PAIRING_NEW_EXTENSION) {
-        await resetPairingIfUserAgrees(callBrowser);
+        await resetPairingIfUserAgrees(callBrowser, approvePairingReset);
         continue;
       }
       const waited = Date.now() - started;
@@ -273,7 +282,7 @@ export async function setup({ clients } = {}) {
     .then(({ hash }) => hash, () => null);
   if (!build) fail(`The installation is damaged: the code in ${extensionDir} cannot be read in full. Reinstall ${product} from Homebrew or a new release zip, then run setup again.`);
   const registered = await registerServer(clients);
-  const { callBrowser, isNotConnected } = await import(join(installed, "mcp", "browser-link.mjs"));
+  const { approvePairingReset, callBrowser, isNotConnected } = await import(join(installed, "mcp", "browser-link.mjs"));
   // A hub of an older version, run by an agent session started before the update, cannot be reached.
   // Before the extension is loaded, a hub that proved the hub token must hold the port (this process
   // or an agent session): an extension without a pairing secret gives it to whatever answers there.
@@ -285,7 +294,7 @@ export async function setup({ clients } = {}) {
   if (connected) await reloadExtension(callBrowser, connected, build);
   else {
     openExtensionsPage();
-    const info = await waitForExtension(callBrowser);
+    const info = await waitForExtension(callBrowser, approvePairingReset);
     // An extension enabled from another folder, or an older copy, connects too; it must run this version.
     if (!runsThisCode(info, build)) await reloadExtension(callBrowser, info, build);
   }

@@ -26,7 +26,10 @@ switch (command) {
     process.exit(0);
   }
   case "doctor": {
-    const { doctor } = await import("../installer/doctor.mjs");
+    const { doctor } = await import("../installer/doctor.mjs").catch((error) => {
+      console.error(`The files of this bruse command are damaged (${error.message}). Reinstall Bruse, then run \`bruse setup\`.`);
+      process.exit(1);
+    });
     process.exit((await doctor()) ? 0 : 1);
   }
   case "uninstall": {

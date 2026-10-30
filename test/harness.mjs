@@ -209,7 +209,7 @@ export async function launchBrowser(extensionDir) {
 export async function startSession(serverPath, { stateDir, env = {} } = {}) {
   const child = spawn(process.execPath, [serverPath], {
     stdio: ["pipe", "pipe", "pipe"],
-    env: { ...process.env, BROWSER_CONTROL_STATE_DIR: stateDir, ...env },
+    env: { ...process.env, BROWSER_CONTROL_STATE_DIR: stateDir, BRUSE_NO_FOCUS_GUARD: "1", ...env },
   });
   let stderr = "";
   child.stderr.setEncoding("utf8").on("data", (chunk) => (stderr = (stderr + chunk).slice(-8000)));
@@ -307,8 +307,65 @@ export async function hubClient(port, stateDir, { sessionId = randomUUID() } = {
         pending.set(id, (reply) => (reply.error ? reject(Object.assign(new Error(reply.error), { code: reply.code })) : resolve(reply.result)));
         socket.send(JSON.stringify({ id, method, params }));
       }),
+    // Asks the hub to approve the one secret on offer, the way setup does after the user's yes.
+    approvePairingReset: () =>
+      new Promise((resolve, reject) => {
+        const id = nextId++;
+        pending.set(id, (reply) => (reply.error ? reject(Object.assign(new Error(reply.error), { code: reply.code })) : resolve(reply.result)));
+        socket.send(JSON.stringify({ id, type: "approve-pairing-reset" }));
+      }),
     close: () => socket.close(),
   };
+}
+
+// One masked WebSocket text frame with `value` as JSON, the way a client sends it.
+export function sendFrame(socket, value) {
+  const payload = Buffer.from(JSON.stringify(value));
+  if (payload.length >= 65536) throw new Error("frame too long");
+  const mask = randomBytes(4);
+  const offset = payload.length < 126 ? 2 : 4;
+  const frame = Buffer.alloc(offset + 4 + payload.length);
+  frame[0] = 0x81;
+  frame[1] = 0x80 | (offset === 2 ? payload.length : 126);
+  if (offset === 4) frame.writeUInt16BE(payload.length, 2);
+  mask.copy(frame, offset);
+  for (let i = 0; i < payload.length; i++) frame[offset + 4 + i] = payload[i] ^ mask[i % 4];
+  socket.write(frame);
+}
+
+// Offers `secret` to the hub as a program posing as the extension would: with its Origin, once. Resolves
+// with whether the hub accepted, and leaves no connection open.
+export function offerPairing(port, extensionId, secret) {
+  return new Promise((resolve, reject) => {
+    const headers = { Connection: "Upgrade", Upgrade: "websocket", "Sec-WebSocket-Version": "13", "Sec-WebSocket-Key": randomBytes(16).toString("base64"), Origin: `chrome-extension://${extensionId}` };
+    const req = http.request({ host: "127.0.0.1", port, path: "/extension", headers });
+    req.on("upgrade", (_response, socket, head) => {
+      let data = head;
+      let sent = false;
+      const onData = () => {
+        if (data.includes("auth-ok")) {
+          socket.destroy();
+          resolve(true);
+        } else if (!sent && data.includes("challenge")) {
+          sent = true;
+          sendFrame(socket, { type: "pair", secret, nonce: "x" });
+        }
+      };
+      socket.on("data", (chunk) => {
+        data = Buffer.concat([data, chunk]);
+        onData();
+      });
+      socket.on("close", () => resolve(false));
+      socket.on("error", () => {});
+      onData();
+    });
+    req.on("response", (response) => {
+      response.resume();
+      reject(new Error(`extension upgrade rejected: ${response.statusCode}`));
+    });
+    req.on("error", reject);
+    req.end();
+  });
 }
 
 // A local site serving `routes` ({ "/path": html string or (req, res) => void }) on 127.0.0.1 or localhost.

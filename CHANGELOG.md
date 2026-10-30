@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.18.9
+
+- **Shared tabs keep their place:** agents cannot pin, unpin, move or group a tab you shared, or a group holding one; sharing lets them use the tab, not rearrange your tab strip.
+- **A pairing reset accepts one secret:** after a yes in setup, the hub moves the stored secret and accepts only the secret that was on offer. When two programs offer different secrets, setup stops, keeps the pairing and says to find out what the other one is. The question now says that another program could have caused it.
+- **Partial uninstall keeps the pairing:** when the installed folder cannot be moved to the Trash, the pairing state inside it stays too. A state directory elsewhere is still moved.
+- **Doctor on a damaged installation:** a missing or broken extension or server file gives one problem line and a non-zero exit, without a crash and without a "Connected" check.
+- **Uninstall wording:** the note says to remove the extension in the browser it was loaded in, because the page it opens is that of the first browser installed.
+
 ## 0.18.8
 
 - **Uninstall no longer removes the extension by itself:** no browser dialog can be shown for a request from the background, and a silent removal would be open to any agent, so `extension.uninstall` is gone. `bruse uninstall` opens the extensions page and says to remove the extension there.

@@ -8,7 +8,8 @@ import { AGENT_INPUT_WINDOW_MS, isPressInput } from "../extension/shared.js";
 
 const CHECK_DELAYS_MS = [20, 50, 80, 120, 180, 260, 400, 700, 1_000, 1_500];
 const FRONT_CACHE_MS = 500;
-const enabled = process.platform === "darwin";
+// The test suite runs without it: its browsers stay in the background, so any browser in front is the user's.
+const enabled = process.platform === "darwin" && !process.env.BRUSE_NO_FOCUS_GUARD;
 
 function run(command, args) {
   return new Promise((resolve) => execFile(command, args, { timeout: 2_000 }, (error, stdout) => resolve(error ? "" : stdout)));
