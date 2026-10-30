@@ -2,7 +2,7 @@
 // lifecycle, agent tab groups, raw CDP commands, browser management, history and downloads. Page
 // logic lives in the MCP server.
 
-import { ALL_TABS, accessMode, anyoneMayAccess, audienceOf, bothAudiences, endShareOfClosedTab, mayAccess, requireAccess, requireOwnWindow, seesWindow, visibleTabs } from "./access.js";
+import { ALL_TABS, accessMode, anyoneMayAccess, audienceOf, bothAudiences, endShareOfClosedTab, mayAccess, requireAccess, requireOwnTab, requireOwnWindow, seesWindow, visibleTabs } from "./access.js";
 import { EXTENSION_WORK, attachedTabIds, cdp, consoleLogs, detach, networkRequests, onCdpEvent, setDebugGate, tabState } from "./cdp.js";
 import { waitForDownload } from "./downloads.js";
 import { PAUSED_ERROR, isPaused } from "./pause.js";
@@ -240,6 +240,9 @@ async function checkManagementAccess(session, namespace, method, args) {
   const requireTabs = async (tabs) => {
     for (const tabId of tabs) await requireAccess(session, tabId);
   };
+  const requireOwnTabs = async (tabs) => {
+    for (const tabId of tabs) await requireOwnTab(session, tabId);
+  };
   const groupTabs = async (groupId) => (await chrome.tabs.query({ groupId })).map((tab) => tab.id);
   // Tabs that leave their window for `windowId` move into it, which must be the session's.
   const requireMoveInto = async (tabIds, windowId) => {
@@ -248,6 +251,7 @@ async function checkManagementAccess(session, namespace, method, args) {
   };
   const [first, second] = args;
   if (namespace === "tabs" && TAB_ARGUMENTS[method]) await requireTabs(tabIdsOf(method, args));
+  if (namespace === "tabs" && (["move", "group", "ungroup"].includes(method) || (method === "update" && second?.pinned !== undefined))) await requireOwnTabs(tabIdsOf(method, args));
   // Activating or highlighting a tab switches what the user sees in its window, and so can unhighlighting
   // the active tab, which activates another highlighted one.
   if (namespace === "tabs" && method === "update" && ["active", "highlighted", "selected"].some((key) => second?.[key] !== undefined)) await requireOwnWindow(session, (await chrome.tabs.get(first)).windowId);
@@ -255,16 +259,16 @@ async function checkManagementAccess(session, namespace, method, args) {
   if (namespace === "tabs" && method === "group") {
     if (first.groupId !== undefined) {
       // Joining a group changes it, so the session must reach every tab in it.
-      await requireTabs(await groupTabs(first.groupId));
+      await requireOwnTabs(await groupTabs(first.groupId));
       await requireMoveInto(tabIdsOf(method, args), (await chrome.tabGroups.get(first.groupId)).windowId);
     } else {
       await requireMoveInto(tabIdsOf(method, args), first.createProperties.windowId);
     }
   }
   // A new window may take an existing tab, which moves it.
-  if (namespace === "windows" && method === "create" && first.tabId !== undefined) await requireTabs([first.tabId]);
+  if (namespace === "windows" && method === "create" && first.tabId !== undefined) await requireOwnTabs([first.tabId]);
   if (namespace === "windows" && (method === "update" || method === "remove")) await requireOwnWindow(session, first);
-  if (namespace === "tabGroups" && (method === "update" || method === "move")) await requireTabs(await groupTabs(first));
+  if (namespace === "tabGroups" && (method === "update" || method === "move")) await requireOwnTabs(await groupTabs(first));
   if (namespace === "tabGroups" && method === "move" && second?.windowId !== undefined && second.windowId !== (await chrome.tabGroups.get(first)).windowId) {
     await requireOwnWindow(session, second.windowId);
   }

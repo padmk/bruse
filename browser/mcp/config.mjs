@@ -27,6 +27,9 @@ export const HUB_VERSION_MISMATCH = "HUB_VERSION_MISMATCH";
 export const PAIRING_NEW_EXTENSION = "PAIRING_NEW_EXTENSION";
 export const PAIRING_STALE_SECRET = "PAIRING_STALE_SECRET";
 
+// Code of the error setup gets when it asks to reset the pairing while more than one secret is on offer.
+export const PAIRING_SEVERAL_OFFERS = "PAIRING_SEVERAL_OFFERS";
+
 // Secret the extension paired with on first connection; hub and extension prove it to each other.
 export const EXTENSION_SECRET_PATH = join(STATE_DIR, "extension-secret");
 

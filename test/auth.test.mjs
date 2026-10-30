@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { createHmac, randomBytes } from "node:crypto";
-import { readFileSync, renameSync, statSync } from "node:fs";
+import { existsSync, readFileSync, renameSync, statSync } from "node:fs";
 import http from "node:http";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
-import { hubClient, startEnvironment, until } from "./harness.mjs";
+import { hubClient, offerPairing, sendFrame, startEnvironment, until } from "./harness.mjs";
 
 let env;
 let hub;
@@ -32,20 +32,6 @@ function upgrade(path, origin, host) {
     req.on("error", reject);
     req.end();
   });
-}
-
-function sendFrame(socket, value) {
-  const payload = Buffer.from(JSON.stringify(value));
-  assert.ok(payload.length < 65536);
-  const mask = randomBytes(4);
-  const offset = payload.length < 126 ? 2 : 4;
-  const frame = Buffer.alloc(offset + 4 + payload.length);
-  frame[0] = 0x81;
-  frame[1] = 0x80 | (offset === 2 ? payload.length : 126);
-  if (offset === 4) frame.writeUInt16BE(payload.length, 2);
-  mask.copy(frame, offset);
-  for (let i = 0; i < payload.length; i++) frame[offset + 4 + i] = payload[i] ^ mask[i % 4];
-  socket.write(frame);
 }
 
 // A WebSocket connection that speaks frames directly: `messages` holds the hub's messages parsed,
@@ -252,6 +238,45 @@ test("reinstalled extension requires pairing reset", { timeout: 120_000 }, async
   renameSync(secretPath(), join(env.stateDir, "old-extension-secret"));
   await call(hub);
   assert.notEqual(readFileSync(secretPath(), "utf8"), oldSecret);
+});
+
+test("a pairing reset accepts only the one secret on offer", { timeout: 120_000 }, async () => {
+  const original = readFileSync(secretPath(), "utf8");
+  const offer = (secret) => offerPairing(env.port, env.browser.extensionId, secret);
+  const client = await hubClient(env.port, env.stateDir);
+  // While the paired extension is connected, nothing is on offer even if a forger asks.
+  assert.equal(await offer("f".repeat(64)), false);
+  assert.deepEqual(await client.approvePairingReset(), { moved: null });
+  await env.browser.cdp.send("Extensions.uninstall", { id: env.browser.extensionId });
+  // The failed call waits as long as an offer stays fresh, so the forger's has aged out by then.
+  await until(() => client.call("browser.info").then(() => false, () => true), { timeoutMs: 30_000, message: "the extension to go away" });
+  assert.deepEqual(await client.approvePairingReset(), { moved: null });
+  const real = "a".repeat(64);
+  const forged = "b".repeat(64);
+  // Two different secrets on offer: the reset is refused and the pairing stays.
+  assert.equal(await offer(real), false);
+  assert.equal(await offer(forged), false);
+  await assert.rejects(client.approvePairingReset(), (error) => error.code === "PAIRING_SEVERAL_OFFERS");
+  assert.equal(readFileSync(secretPath(), "utf8"), original);
+  // One secret on offer: only that one pairs. A request through the normal path never resets anything.
+  await new Promise((resolve) => setTimeout(resolve, 8_500));
+  assert.equal(await offer(real), false);
+  await assert.rejects(client.call("approve-pairing-reset"));
+  assert.equal(readFileSync(secretPath(), "utf8"), original);
+  assert.equal(await offer(real), false);
+  const { moved } = await client.approvePairingReset();
+  assert.equal(existsSync(secretPath()), false);
+  assert.equal(readFileSync(moved, "utf8"), original);
+  assert.equal(await offer(forged), false);
+  assert.equal(existsSync(secretPath()), false);
+  assert.equal(await offer(real), true);
+  assert.equal(readFileSync(secretPath(), "utf8"), real);
+  client.close();
+  // Back to the real extension, for the tests after this one.
+  await env.browser.cdp.send("Extensions.loadUnpacked", { path: env.copy.extensionDir });
+  renameSync(secretPath(), join(env.stateDir, "forged-extension-secret"));
+  await call(hub);
+  assert.notEqual(readFileSync(secretPath(), "utf8"), real);
 });
 
 test("another session takes over the hub without re-pairing", { timeout: 120_000 }, async () => {

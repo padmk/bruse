@@ -112,6 +112,14 @@ test("a shared tab does not make its window the session's", async () => {
   await assert.rejects(s.js(`await m.tabs.move(${own.tabId}, { windowId: ${shared.windowId}, index: -1 });`), /holds tabs that are not this session's/);
   await assert.rejects(s.js(`await m.tabs.group({ tabIds: [${own.tabId}], createProperties: { windowId: ${shared.windowId} } });`), /holds tabs that are not this session's/);
   await assert.rejects(s.js(`await m.tabs.update(${shared.id}, { active: true });`), /holds tabs that are not this session's/);
+  // A share leaves the tab's place in the tab strip to the user.
+  const layout = /its place in the tab strip stays the user's/;
+  await assert.rejects(s.js(`await m.tabs.update(${shared.id}, { pinned: true });`), layout);
+  await assert.rejects(s.js(`await m.tabs.move(${shared.id}, { index: 0 });`), layout);
+  await assert.rejects(s.js(`await m.tabs.group({ tabIds: [${shared.id}] });`), layout);
+  await assert.rejects(s.js(`await m.tabs.ungroup(${shared.id});`), layout);
+  await assert.rejects(s.js(`await m.windows.create({ tabId: ${shared.id} });`), layout);
+  await s.js(`await m.tabs.update(${own.tabId}, { pinned: true });`);
   assert.ok((await json(s, "await m.windows.getAll()")).some((window) => window.id === shared.windowId), "the window stays visible");
   await s.js(`await m.windows.update(${own.id}, { width: 700 });`);
   await s.js(`await m.tabs.update(${own.tabId}, { active: true });`);
@@ -172,16 +180,12 @@ test("tabs of a new window are the session's and close with it", async () => {
   await other.close();
 });
 
-test("a tab moved into a new window keeps its owner or share", async () => {
+test("a tab moved into a new window keeps its owner, and a shared tab stays where it is", async () => {
   const shared = await userTab(url("/page?moved-shared"));
   await env.share(shared.id);
   const s = await env.session();
   await s.js(`const m = await (await cua.getBrowser()).capabilities.get('management');`);
-  const sharedWindow = await json(s, `await m.windows.create({ tabId: ${shared.id} })`);
-  assert.deepEqual(
-    sharedWindow.tabs.map((tab) => tab.id),
-    [shared.id],
-  );
+  await assert.rejects(s.js(`await m.windows.create({ tabId: ${shared.id} });`), /its place in the tab strip stays the user's/);
   const { s: owner, ownTab } = await sessionWithTab(url("/page?moved-own"));
   const added = url("/page?moved-added");
   await owner.js(`await m.windows.create({ tabId: ${ownTab.id}, url: ${JSON.stringify(added)} });`);

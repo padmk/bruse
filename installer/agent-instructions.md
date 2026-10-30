@@ -74,6 +74,8 @@ Use a stable Node path such as `/opt/homebrew/bin/node`, not a versioned one.
   again, it has a new secret, while the old one is still stored. `bruse setup` then asks in a terminal
   whether to reset the pairing, and without a terminal it stops and says so. The user runs it and answers;
   you never answer that question for the user, and you do not touch `extension-secret` yourself.
+- **Setup says two programs are trying to pair.** It kept the pairing. Tell the user, who finds out what
+  the other program is; do not retry setup to get past it.
 - **Setup says the extension holds a pairing from an earlier installation.** An uninstall left the
   extension in the browser. The user removes it on the extensions page and loads it again; then run the
   installer again.

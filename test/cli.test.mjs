@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { cpSync, existsSync, readFileSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, readFileSync, mkdirSync, readdirSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { after, before, test } from "node:test";
-import { browserCopy, freePort, launchBrowser, until } from "./harness.mjs";
+import { browserCopy, freePort, launchBrowser, offerPairing, until } from "./harness.mjs";
 
-let copy, browser, home, installed, cli, environment;
+let copy, port, browser, home, installed, cli, environment;
 const children = new Map();
 function run(command, ...args) {
   const child = spawn(process.execPath, [cli, command, ...args], { env: environment, stdio: ["ignore", "pipe", "pipe"] });
@@ -23,7 +23,8 @@ function run(command, ...args) {
   return { child, done, output: () => output };
 }
 before(async () => {
-  copy = browserCopy(await freePort());
+  port = await freePort();
+  copy = browserCopy(port);
   for (const name of ["bin", "installer", "package.json"]) cpSync(new URL(`../${name}`, import.meta.url), join(copy.dir, name), { recursive: true });
   home = join(copy.dir, "home");
   installed = join(home, ".local", "share", "bruse");
@@ -75,7 +76,8 @@ async function inTerminal(answer) {
   children.set(child, done);
   await until(() => output.includes("Reset the pairing?"), { timeoutMs: 60_000, message: "setup to ask" });
   child.stdin.write(`${answer}\n`);
-  await done;
+  const code = await done;
+  output += `\nexit code ${code}`;
   children.delete(child);
   return output;
 }
@@ -128,7 +130,7 @@ test("setup, reload, doctor and uninstall", { timeout: 180_000 }, async () => {
   const uninstall = await run("uninstall").done;
   assert.equal(uninstall.code, 0, uninstall.output);
   assert.equal(existsSync(installed), false);
-  assert.match(uninstall.output, /Remove the .* extension on the extensions page of your browser.* before you install again/);
+  assert.match(uninstall.output, /Remove the .* extension on the extensions page of the browser you loaded it in.* before you install again/);
 });
 test("setup reports a leftover extension and asks before it resets a pairing", { timeout: 300_000 }, async () => {
   const secretPath = join(installed, "state", "extension-secret");
@@ -160,6 +162,21 @@ test("setup reports a leftover extension and asks before it resets a pairing", {
   const accepted = await inTerminal("y");
   assert.match(accepted, /is ready/);
   assert.notEqual(readFileSync(secretPath, "utf8"), secret);
+  // A second program offering another secret while the question is open stops the reset.
+  const kept = readFileSync(secretPath, "utf8");
+  await reinstall();
+  let forging = true;
+  const forger = (async () => {
+    while (forging) {
+      await offerPairing(port, browser.extensionId, "f".repeat(64)).catch(() => {});
+      await new Promise((resolve) => setTimeout(resolve, 300));
+    }
+  })();
+  const contested = await inTerminal("y").finally(() => (forging = false));
+  await forger;
+  assert.match(contested, /Two programs are trying to pair.*The pairing was kept.*Find out what the other one is/);
+  assert.match(contested, /exit code 1/);
+  assert.equal(readFileSync(secretPath, "utf8"), kept);
 });
 test("file clients preserve configuration and reject comments", { timeout: 180_000 }, async () => {
   const app = process.platform === "darwin" ? join(home, "Library", "Application Support") : join(home, ".config");
@@ -221,6 +238,63 @@ test("file clients preserve configuration and reject comments", { timeout: 180_0
     assert.equal(value[key].existing.command, "other");
     assert.equal(value[key].bruse, undefined);
   }
+});
+test("doctor reports a damaged installation", { timeout: 60_000 }, async () => {
+  cpSync(copy.browserDir, join(installed, "browser"), { recursive: true });
+  const removed = async (path) => {
+    renameSync(path, `${path}.away`);
+    const result = await run("doctor").done;
+    renameSync(`${path}.away`, path);
+    assert.equal(result.code, 1, result.output);
+    assert.match(result.output, /installation is damaged/);
+    assert.doesNotMatch(result.output, /Connected to|ERR_MODULE_NOT_FOUND|at async/);
+  };
+  await removed(join(installed, "browser", "extension", "popup.js"));
+  await removed(join(installed, "browser", "extension", "shared.js"));
+  await removed(join(installed, "browser", "mcp", "websocket.mjs"));
+  await removed(join(installed, "browser", "mcp", "server.mjs"));
+  await removed(join(installed, "browser", "extension", "manifest.json"));
+  // The command's own copy, which it needs before it can look at anything.
+  const own = join(copy.extensionDir, "shared.js");
+  renameSync(own, `${own}.away`);
+  const result = await run("doctor").done;
+  renameSync(`${own}.away`, own);
+  assert.equal(result.code, 1, result.output);
+  assert.match(result.output, /files of this bruse command are damaged/);
+  assert.doesNotMatch(result.output, /at async/);
+});
+test("an uninstall that cannot move the installation keeps the pairing state", { timeout: 60_000, skip: process.platform !== "darwin" }, async () => {
+  // Moves paths to a folder as the Finder would, except for the installation.
+  const bin = join(home, "fake-bin");
+  const trash = join(home, "fake-trash");
+  mkdirSync(bin, { recursive: true });
+  mkdirSync(trash, { recursive: true });
+  writeFileSync(join(bin, "osascript"), `#!/bin/sh
+case "$2" in *'${installed}"'*) exit 1 ;; esac
+path=$(printf '%s' "$2" | sed -E 's/.*POSIX file "(.*)" as alias.*/\\1/')
+exec /bin/mv "$path" '${trash}/'
+`);
+  chmodSync(join(bin, "osascript"), 0o755);
+  const plain = environment;
+  environment = { ...plain, PATH: `${bin}:${plain.PATH}` };
+  const state = join(installed, "state");
+  mkdirSync(state, { recursive: true });
+  writeFileSync(join(state, "extension-secret"), "s".repeat(64));
+  const inside = await run("uninstall").done;
+  assert.equal(inside.code, 1, inside.output);
+  assert.equal(readFileSync(join(state, "extension-secret"), "utf8"), "s".repeat(64));
+  assert.match(inside.output, /Kept .*state with the installation/);
+  assert.match(inside.output, /left in place.*bruse/);
+  // A state directory elsewhere still gets its own attempt.
+  const elsewhere = join(home, "custom-state");
+  mkdirSync(elsewhere);
+  environment = { ...environment, BROWSER_CONTROL_STATE_DIR: elsewhere };
+  const outside = await run("uninstall").done;
+  environment = plain;
+  assert.equal(outside.code, 1, outside.output);
+  assert.equal(existsSync(elsewhere), false);
+  assert.ok(existsSync(join(trash, "custom-state")));
+  assert.ok(existsSync(state));
 });
 test("unknown command prints usage and exits 2", async () => {
   const result = await run("unknown").done;

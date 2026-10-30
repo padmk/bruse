@@ -113,6 +113,12 @@ export async function requireAccess(sessionId, tabId) {
   if (!(await mayAccess(sessionId, tabId))) throw notSharedError(tabId);
 }
 
+// Pinning, moving and grouping change the user's tab strip, and a share covers using the tab, not that.
+export async function requireOwnTab(sessionId, tabId) {
+  await requireAccess(sessionId, tabId);
+  if ((await tabOwner(tabId)) !== sessionId) throw new Error(`Tab ${tabId} is shared with agents, so its place in the tab strip stays the user's: agents may not pin, move or group it.`);
+}
+
 // Whether the window is the session's: it has tabs, and the session owns every one of them. Agent tabs
 // open in the user's windows, so a window with an agent tab is not the session's for that alone; nor is
 // a window with a shared tab, which the user shared alone.

@@ -3,7 +3,7 @@
 // itself without asking, or with a dialog only after a click, and agents must not be able to do the former.
 
 import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve, sep } from "node:path";
 import { agentClients, fail, failureReason, installRoot, installed, installedBrowser, moveToTrash, note, product, showPage, source, step } from "./lib.mjs";
 
 export async function uninstall() {
@@ -30,6 +30,11 @@ export async function uninstall() {
   const left = [];
   for (const path of [installRoot, STATE_DIR]) {
     if (!existsSync(path)) continue;
+    // Moving the rest would leave an installation that remains without its pairing.
+    if (left.includes(installRoot) && `${resolve(path)}${sep}`.startsWith(`${installRoot}${sep}`)) {
+      note(`Kept ${path} with the installation it is in`);
+      continue;
+    }
     try {
       moveToTrash(path);
       note(`Moved ${path} to the Trash`);
@@ -40,7 +45,7 @@ export async function uninstall() {
   }
   step("To finish");
   const browser = installedBrowser();
-  note(`Remove the ${product} extension on the extensions page of your browser${browser ? ` (${browser.page})` : ""} before you install again; a copy left behind cannot pair.`);
+  note(`Remove the ${product} extension on the extensions page of the browser you loaded it in${browser ? ` (this opens ${browser.page})` : ""} before you install again; a copy left behind cannot pair.`);
   if (browser && !process.env.BRUSE_NO_OPEN) showPage(browser.app, browser.page);
   // The bruse command itself is a Homebrew package when it runs from Homebrew's Cellar.
   if (/\/Cellar\//.test(source)) note(`Run \`brew uninstall ${product.toLowerCase()}\` to remove the \`${product.toLowerCase()}\` command.`);
