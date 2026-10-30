@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **Setup and uninstall say why an agent CLI failed:** when a CLI crashes without printing anything, the message names the signal or exit status instead of showing empty parentheses.
+
 ## 0.18.4
 
 - **Doctor and setup report a browser that cannot protect the extension's storage:** when the extension could not keep its storage from content scripts and so refuses agent requests, `bruse doctor` reports it as a failed check and `bruse setup` stops with it, both saying to update the browser, instead of reporting that everything is ready.
