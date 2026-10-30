@@ -151,9 +151,11 @@ test("a saved pairing works without a host and an unpacked permission update sta
     session = await startSession(copy.serverPath, { stateDir });
     await session.js("await cua.getState()");
     writeFileSync(manifestPath, current);
-    await evaluate("chrome.runtime.reload()").catch(() => {});
+    // The page goes away with the reload, so this call may never get its answer.
+    evaluate("chrome.runtime.reload()").catch(() => {});
     await until(async () => {
-      try { await session.js("await cua.getState()"); return true; } catch { return false; }
+      const attempt = session.js("await cua.getState()").then(() => true, () => false);
+      return Promise.race([attempt, new Promise((resolve) => setTimeout(resolve, 5_000, false))]);
     });
     assert.equal(readFileSync(join(stateDir, "extension-secret"), "utf8").trim(), secret);
   } finally { await session?.close(); await browser?.close(); copy.remove(); }
