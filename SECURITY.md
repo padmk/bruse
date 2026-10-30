@@ -59,6 +59,18 @@ in the page would not enforce such a guarantee across frames and navigations.
 Runtime receiver calls are sent with the tracked unique page context, with the receiver passed as an
 argument. A command queued across a renderer change therefore cannot resolve its receiver in a new
 extension world whose numeric context ID happens to match. For zero-isolate handles, Runtime commands
-without a unique context selector are refused. DOM object handles are converted to backend node IDs
-through a pinned Runtime call before the DOM command is sent. Locators enumerate nodes through pinned
-deep serialization rather than `Runtime.getProperties`.
+without a unique context selector are refused. An explicit command contract table converts node
+handles for DOM, Accessibility and Overlay commands that accept backend node IDs through a pinned
+Runtime call. `DOM.requestNode` uses the same conversion followed by a frontend node lookup. Other
+zero-isolate handle consumers are refused, including `DOM.getFileInfo`: it requires a File object,
+which cannot be converted to a backend node ID. Bruse's upload and download features do not use it.
+Conversion checks for open dialogs before running JavaScript and reports dialogs opened during the
+pinned call through the same race as other commands. Locators enumerate nodes through pinned deep
+serialization rather than `Runtime.getProperties`.
+
+Receiver calls preserve implicit object-group inheritance by remembering groups of handles in protocol
+replies, scoped to their session and unique context. This uses local metadata rather than an extra
+protocol round trip; entries end with their object, group, context or session. The receiver wrapper
+uses `Reflect.apply` without a named receiver binding or the callable's own `apply` property. An arrow
+function declaration can still see the wrapper's `arguments`; removing that limit would require eval
+or an additional protocol call.
