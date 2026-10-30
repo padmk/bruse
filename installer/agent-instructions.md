@@ -31,7 +31,8 @@ Both parts are needed: the server cannot reach tabs, and the extension cannot ac
    bruse setup --clients <names the user chose, such as claude-code,codex>
    ```
 
-   It copies `browser/` to `~/.local/share/bruse/browser`, replacing an earlier version. It registers the
+   It copies `browser/` to `~/.local/share/bruse/browser`, replacing an earlier version, and registers
+   a native messaging host for each supported browser. It registers the
    MCP server as `bruse` with the agent clients the user picks (Claude Code, Codex, Cursor, VS Code and
    Insiders, GitHub Copilot CLI, Gemini CLI, Claude Desktop, Devin Desktop, Windsurf). Without a terminal
    it cannot ask, so ask the user which clients they want and pass them, for example
@@ -56,8 +57,9 @@ Both parts are needed: the server cannot reach tabs, and the extension cannot ac
 
    The first time, macOS may ask whether the terminal may control the browser; the user can allow it,
    or open the extensions page by hand (`brave://extensions`, `chrome://extensions`, `edge://extensions`).
-4. **Confirm.** The installer prints `Connected to <browser>` and `Bruse is ready`. That connection also
-   pairs the extension with this machine. If the extension was already connected (an update), the
+4. **Confirm.** The installer prints `Connected to <browser>` and `Bruse is ready`. The extension
+   retrieves its pairing secret through the native host, never through the hub port. If the extension
+   was already connected (an update), the
    installer reloads it instead and opens nothing.
 5. **Tell the user to start a new agent session.** MCP servers load at session start. In the new session,
    the `js` tool of the `bruse` server works; its first call returns the API documentation.
@@ -70,15 +72,11 @@ Use a stable Node path such as `/opt/homebrew/bin/node`, not a versioned one.
 
 ## Troubleshooting
 
-- **The extension does not connect after a reinstall.** If the user removed the extension and loaded it
-  again, it has a new secret, while the old one is still stored. `bruse setup` then asks in a terminal
-  whether to reset the pairing, and without a terminal it stops and says so. The user runs it and answers;
-  you never answer that question for the user, and you do not touch `extension-secret` yourself.
-- **Setup says two programs are trying to pair.** It kept the pairing. Tell the user, who finds out what
-  the other program is; do not retry setup to get past it.
-- **Setup says the extension holds a pairing from an earlier installation.** An uninstall left the
-  extension in the browser. The user removes it on the extensions page and loads it again; then run the
-  installer again.
+- **The extension does not connect.** Run `bruse doctor`, then `bruse setup` to repair the native
+  pairing host. Setup registers hosts for all supported browsers with a stable Node path. Reinstalling
+  the extension retrieves the existing secret automatically; no pairing reset is needed. An older
+  unpaired extension must be updated. If a permission change disabled it, the user enables it on the
+  extensions page and runs setup again.
 - **"Load unpacked" fails.** Check that the selected folder contains `manifest.json`.
 - **Developer mode warning.** Chromium shows a notice about developer-mode extensions. It is expected
   for extensions loaded this way.
@@ -87,8 +85,7 @@ Use a stable Node path such as `/opt/homebrew/bin/node`, not a versioned one.
 
 `bruse doctor` checks the installation, the registrations and the browser connection and
 says what to do about each problem. `bruse uninstall` removes the registrations, moves the installed copy and the
-pairing state to the Trash and opens the extensions page. The user removes the extension there, before
-installing again.
+pairing state to the Trash and opens the extensions page. The user removes the extension there to finish uninstalling.
 
 ## Rules
 

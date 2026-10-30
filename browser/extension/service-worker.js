@@ -9,7 +9,7 @@ import { PAUSED_ERROR, isPaused } from "./pause.js";
 import { agentTabs, createAgentTab, createAgentTabs, endSession, markTab, noteAgentInput, onTabOpened, openingSession, setLiveSessions } from "./sessions.js";
 import { checkRequest } from "./guard.js";
 import { fromExtensionPage } from "./sender.js";
-import { MANAGEMENT_METHODS, extensionBuild, isPressInput } from "./shared.js";
+import { PAIRING_HOST, MANAGEMENT_METHODS, extensionBuild, isPressInput } from "./shared.js";
 
 // Content scripts that this extension runs in pages (see cdp.js) get no access to its storage, which
 // holds the access setting, the shares and the hub secret. Session storage starts out this way. Agent
@@ -354,11 +354,8 @@ const SESSIONLESS_METHODS = new Set(["browser.info", "extension.reload"]);
 // extension.reload is refused, because a reload would end the user's tab shares.
 const PAUSE_EXEMPT = new Set(["browser.info", "session.end"]);
 
-// Hub authentication. On first use the extension pairs with the hub by sending it a random secret,
-// which the hub stores; later connections prove knowledge of that secret in both directions with
-// HMAC over fresh nonces, so neither a local process posing as the hub nor one posing as the extension
-// can take over. Requests are executed only on the authenticated connection.
-const unverifiedHub = (gen) => ({ gen, verified: false, expectedHubMac: null, pairing: null });
+// Native messaging supplies the secret locally. Only HMAC proofs cross the hub port.
+const unverifiedHub = (gen) => ({ gen, verified: false, expectedHubMac: null });
 let hub = unverifiedHub(0);
 
 // A new connection, or none: its hub has yet to authenticate and to report the live sessions.
@@ -381,20 +378,20 @@ async function hmac(secret, message) {
 }
 
 async function answerChallenge(nonce) {
-  const { hubSecret } = await chrome.storage.local.get("hubSecret");
-  const ownNonce = randomHex();
-  if (!hubSecret) {
-    // The secret becomes the paired one only when the hub proves it stored it (auth-ok). Until then the
-    // same pending secret is offered again, so a hub that refused it can still accept it later.
-    let { pendingHubSecret: secret } = await chrome.storage.local.get("pendingHubSecret");
-    if (!secret) {
-      secret = randomHex();
-      await chrome.storage.local.set({ pendingHubSecret: secret });
-    }
-    hub.expectedHubMac = await hmac(secret, `hub:${ownNonce}`);
-    hub.pairing = secret;
-    return { type: "pair", secret, nonce: ownNonce };
+  if (!/^[0-9a-f]{64}$/.test(nonce)) throw new Error("Invalid hub challenge");
+  // Always consult the host: a reinstall or a restored browser profile may retain a stale secret.
+  // An existing pairing can still connect before setup installs the host during an upgrade.
+  let { hubSecret } = await chrome.storage.local.get("hubSecret");
+  try {
+    const response = await chrome.runtime.sendNativeMessage(PAIRING_HOST, { type: "secret" });
+    if (!/^[0-9a-f]{64}$/.test(response?.secret)) throw new Error("Invalid native pairing response");
+    hubSecret = response.secret;
+    await chrome.storage.local.set({ hubSecret });
+    await chrome.storage.local.remove("pendingHubSecret");
+  } catch (error) {
+    if (!hubSecret) throw new Error(`Native pairing unavailable. Run bruse setup: ${error.message}`);
   }
+  const ownNonce = randomHex();
   hub.expectedHubMac = await hmac(hubSecret, `hub:${ownNonce}`);
   return { type: "auth", mac: await hmac(hubSecret, `extension:${nonce}`), nonce: ownNonce };
 }
@@ -424,11 +421,6 @@ async function handle(gen, text) {
   if (message.type === "challenge") return JSON.stringify(await answerChallenge(String(message.nonce)));
   if (message.type === "auth-ok") {
     hub.verified = Boolean(hub.expectedHubMac) && message.mac === hub.expectedHubMac;
-    if (hub.verified && hub.pairing) {
-      await chrome.storage.local.set({ hubSecret: hub.pairing });
-      await chrome.storage.local.remove("pendingHubSecret");
-      hub.pairing = null;
-    }
     return null;
   }
   const { id, method, params, session } = message;

@@ -3,6 +3,7 @@
 ## Layout
 
 ```text
+native host ──private pipes──▶ extension (pairing secret)
 MCP server (hub) ◀──WebSocket 127.0.0.1:47615──▶ extension ──chrome.debugger / chrome.tabs──▶ tabs
    ▲
    └── other MCP servers (one per agent session) connect to the hub as clients
@@ -30,6 +31,10 @@ MCP server (hub) ◀──WebSocket 127.0.0.1:47615──▶ extension ──chr
   which finds Node.js), `agent-instructions.md` (installation steps for an agent, shipped as the
   package's `AGENTS.md` with a `CLAUDE.md` that imports it), `clients.mjs` (the agent clients beyond
   Claude Code and Codex) and `package.mjs` (builds the zip package, with every other installer module).
+- `browser/native-host/pairing.mjs`: one framed native request, retrieving or creating the private
+  pairing secret. `installer/native-host.mjs` writes browser manifests and a launcher in the stable
+  installed copy, using the same stable Node path as MCP registration. The extension manifest key
+  pins `dcebpfjehgpkddgcdaipjemnndbdpmpc`, the ID used in `allowed_origins`. Native host manifests live outside versioned Homebrew paths.
 - `browser/mcp/`: MCP stdio server, no dependencies.
   - `server.mjs`: the `js` and `js_reset` tools. It runs the REPL in a worker thread (`repl-worker.mjs`)
     and replaces the worker whenever a call times out or the worker crashes, so nothing the call left running (an endless
@@ -75,7 +80,7 @@ same value.
 
 `npm test` runs the unit tests and the end-to-end tests. The end-to-end tests load a copy of the
 extension into headless Chrome for Testing and drive it through MCP sessions, the way an agent does.
-Each test file uses its own hub port, state directory and browser profile, so the tests never reach an
+Each test file uses its own hub port, state directory, native host manifest and browser profile, so the tests never reach an
 installed Bruse or the browser it is connected to. They look for Chromium in Playwright's cache
 (`npx playwright install chromium`) or take its executable from `BRUSE_TEST_CHROME`. `test/harness.mjs`
 starts the browser, sessions and local test sites, and `hubClient()` connects to the hub as a peer MCP
@@ -98,3 +103,23 @@ macOS, creates the GitHub release with the changelog section as notes, and rende
 step needs a `HOMEBREW_TAP_TOKEN` secret, with write access to the tap, in the repository's
 `release` environment; without it the step is skipped. Running the workflow by hand
 (`workflow_dispatch`) builds and checks everything without publishing.
+
+## Pairing compatibility
+
+Only HMAC proofs travel on the extension WebSocket. The native host reuses `extension-secret`, so
+paired older extensions and older hubs retain their handshake. Unpaired older extensions cannot pair
+with a newer hub and must be updated. A saved extension secret remains a fallback when setup has not
+yet installed the native host. Reinstalls obtain the host's secret without reset approval. The legacy
+`pair` message, reset approval command and pairing-offer error codes are removed.
+
+Setup registers hosts for the five supported browsers, including ones installed later. On macOS these
+live under `~/Library/Application Support/<browser>/NativeMessagingHosts`; on Linux under the browser's
+XDG config directory. Uninstall moves manifests belonging to this installation to the Trash. Doctor
+checks manifests, allowed origins, the launcher, Node executable and host module; repair with `bruse setup`.
+
+Adding `nativeMessaging` and reloading an existing unpacked extension stayed enabled in Chrome for
+Testing 153.0.8010.12 on macOS. The pairing tests cover this update path. Other browser builds may
+require enabling the extension again. Chrome's general permission-update warning rules are documented
+[here](https://developer.chrome.com/docs/extensions/develop/concepts/permission-warnings).
+The [Chromium security FAQ](https://chromium.googlesource.com/chromium/src/+/main/extensions/docs/security_faq.md)
+explains why an unpacked extension's key is not proof of publisher identity.

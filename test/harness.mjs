@@ -1,3 +1,4 @@
+import { installPairingHost } from "../installer/native-host.mjs";
 // What the end-to-end tests run against, kept apart from any Bruse installation on this machine: a copy of
 // browser/ whose hub listens on a free port, Chromium with that copy's extension in a temporary profile,
 // MCP servers (agent sessions) with their own state directory, and local test sites.
@@ -119,7 +120,7 @@ async function connectCdp(url) {
 
 // Headless Chromium with the extension from `extensionDir` loaded, in a fresh profile with Developer mode on
 // (without it Chromium disables an unpacked extension that reloads itself).
-export async function launchBrowser(extensionDir) {
+export async function launchBrowser(extensionDir, { pairing } = {}) {
   const executable = findChromium();
   if (!executable) throw new Error("No Chromium for tests found; install one with `npx playwright install chromium` or set BRUSE_TEST_CHROME");
   const profile = tempDir("profile");
@@ -127,6 +128,7 @@ export async function launchBrowser(extensionDir) {
   const downloads = join(profile, "Downloads");
   mkdirSync(join(profile, "Default"), { recursive: true });
   writeFileSync(join(profile, "Default", "Preferences"), JSON.stringify({ download: { default_directory: downloads, prompt_for_download: false } }));
+  if (pairing) await installPairingHost({ ...pairing, node: process.execPath, dataDirs: [profile], launcher: join(profile, "pairing-host") });
   const args = [
     "--headless=new",
     "--enable-unsafe-extension-debugging",
@@ -307,13 +309,6 @@ export async function hubClient(port, stateDir, { sessionId = randomUUID() } = {
         pending.set(id, (reply) => (reply.error ? reject(Object.assign(new Error(reply.error), { code: reply.code })) : resolve(reply.result)));
         socket.send(JSON.stringify({ id, method, params }));
       }),
-    // Asks the hub to approve the one secret on offer, the way setup does after the user's yes.
-    approvePairingReset: () =>
-      new Promise((resolve, reject) => {
-        const id = nextId++;
-        pending.set(id, (reply) => (reply.error ? reject(Object.assign(new Error(reply.error), { code: reply.code })) : resolve(reply.result)));
-        socket.send(JSON.stringify({ id, type: "approve-pairing-reset" }));
-      }),
     close: () => socket.close(),
   };
 }
@@ -387,7 +382,7 @@ export async function startEnvironment(options = {}) {
   const port = await freePort();
   const copy = browserCopy(port, options);
   const stateDir = tempDir("state");
-  const browser = await launchBrowser(copy.extensionDir);
+  const browser = await launchBrowser(copy.extensionDir, { pairing: { browserDir: copy.browserDir, stateDir } });
   const sessions = [];
   return {
     port,

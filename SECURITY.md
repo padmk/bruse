@@ -31,4 +31,14 @@ Tab isolation limits what an agent does through Bruse's browser API. It is not a
 
 No independent security audit of Bruse has been published.
 
-Pairing trusts the first connection: an extension without a pairing secret gives its new secret to whatever listens on the port, and a hub without `extension-secret` accepts the first extension that pairs. A local process, also of another account, that takes either side at that moment is a known limitation, not a new finding; `bruse setup` narrows it (it stops when the port is not held by a hub that knows the token), and pairing through native messaging, which would close it, is the intended fix and not released yet. A reset of an existing pairing, which only `bruse setup` asks about in a terminal, accepts only the one secret on offer when the user answers yes, and another secret offered during the same window stops the reset; a process that is alone in offering a secret still gets it approved, and a hub that exits after the reset forgets the approval and trusts the next first pairing. See [Security in the README](README.md#security-and-privacy).
+Pairing uses native messaging. Setup registers a host whose `allowed_origins` contains only the ID
+pinned by the extension's manifest key. The browser starts the host over pipes; it reads or creates the
+user's private `extension-secret`, which the extension uses for mutual HMAC authentication. No secret
+is accepted or sent over the hub port. A process of another account that takes the port first cannot
+obtain the secret or have browser requests executed. Existing secrets remain valid across upgrades.
+
+The host allow-list is not proof of publisher identity: another unpacked extension can copy a public
+manifest key, and programs running as the user can invoke the host directly or read the secret. These
+are outside the threat model above. Native messaging does not protect a compromised user account.
+Older extensions without an existing pairing must be updated; port-based first pairing and reset
+approval are removed. See [Security in the README](README.md#security-and-privacy).

@@ -3,10 +3,10 @@
 // session) connects to the hub as a client. When the hub exits, the remaining servers elect a new one.
 // Browser events are broadcast to every session; each session filters them by tab.
 
-import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import { createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import http from "node:http";
-import { EXTENSION_ORIGINS, EXTENSION_SECRET_PATH, HUB_VERSION_MISMATCH, PAIRING_NEW_EXTENSION, PAIRING_SEVERAL_OFFERS, PAIRING_STALE_SECRET, PORT, PRODUCT_NAME, STATE_DIR, TOKEN_PATH, VERSION } from "./config.mjs";
+import { EXTENSION_ORIGINS, EXTENSION_SECRET_PATH, HUB_VERSION_MISMATCH, PORT, PRODUCT_NAME, STATE_DIR, TOKEN_PATH, VERSION } from "./config.mjs";
 import { acceptUpgrade, rejectUpgrade } from "./websocket.mjs";
 
 const REQUEST_TIMEOUT_MS = 90_000;
@@ -15,19 +15,9 @@ const EXTENSION_WAIT_MS = 8_000;
 const AUTH_TIMEOUT_MS = 5_000;
 // Connections that have not authenticated yet, at most; more are refused until some finish.
 const MAX_UNAUTHENTICATED = 32;
-// Distinct secrets of refused pairings the hub remembers; flooding it still leaves several on offer.
-const MAX_PAIR_OFFERS = 8;
-// A client's message that asks the hub to approve the one secret on offer. It has its own message type,
-// so requests, which carry a method and go to the extension, cannot reach it.
-const APPROVE_PAIRING_RESET = "approve-pairing-reset";
 const KEEPALIVE_MS = 20_000;
 const NOT_CONNECTED_START = "The browser extension did not connect.";
 const NOT_CONNECTED = `${NOT_CONNECTED_START} Make sure the browser is running and the ${PRODUCT_NAME} extension is enabled, and run \`bruse doctor\`. If the extension was reinstalled, the user runs \`bruse setup\` in a terminal.`;
-const REFUSALS = {
-  [PAIRING_NEW_EXTENSION]: `${NOT_CONNECTED_START} A new extension offered to pair, but the hub is paired with another one. Only the user can reset the pairing, by running \`bruse setup\` in a terminal.`,
-  [PAIRING_STALE_SECRET]: `${NOT_CONNECTED_START} The extension in the browser holds a pairing from an earlier installation, and the hub has none. Remove it on the browser's extensions page, load it again and run \`bruse setup\`.`,
-};
-
 // How MCP servers authenticate to the hub and the hub to them (see connectClient). The hub announces it
 // in its challenge and on plain HTTP requests, so that servers of different versions can tell why they
 // cannot connect.
@@ -66,17 +56,6 @@ const HEX_MAC = /^[0-9a-f]{64}$/;
 // Constant-time comparison of two SHA-256 hex digests; anything else never matches.
 function sameHex(a, b) {
   return typeof a === "string" && typeof b === "string" && HEX_MAC.test(a) && HEX_MAC.test(b) && timingSafeEqual(Buffer.from(a), Buffer.from(b));
-}
-
-// Whether `secret` is the stored extension secret, compared in constant time.
-function sameSecret(secret) {
-  let stored;
-  try {
-    stored = readFileSync(EXTENSION_SECRET_PATH, "utf8").trim();
-  } catch {
-    return false;
-  }
-  return sameHex(hmac(stored, "pairing"), hmac(secret, "pairing"));
 }
 
 // Identifies this agent session to the extension, which groups and cleans up its tabs. It lives in the
@@ -164,12 +143,6 @@ export async function callBrowser(method, params = {}) {
   }
 }
 
-// Setup's reset of the pairing, once the user agreed: resolves with where the hub moved the stored secret,
-// or with null when no secret is on offer. Not a browser request, so the REPL's calls never reach it.
-export async function approvePairingReset() {
-  return (await link()).approvePairingReset();
-}
-
 // Closes this session's unmarked agent tabs; called when the MCP client goes away. A hub also lets
 // requests of other sessions finish before the process exits.
 export async function endSession() {
@@ -184,9 +157,6 @@ function becomeHub() {
   return new Promise((resolve, reject) => {
     const token = randomBytes(32).toString("hex");
     let extension = null;
-    let refusal = null; // the most recent refused pairing: { code, at }
-    const pairOffers = new Map(); // SHA-256 of a secret in a refused pairing -> when last refused, oldest first
-    let approvedOffer = null; // the SHA-256 the next pairing must have, after the user agreed to a reset
     const extensionWaiters = new Set();
     const clients = new Map(); // authenticated client connection -> its session id, once it said hello
     const pending = new Map(); // hub request id -> settle(reply)
@@ -211,7 +181,6 @@ function becomeHub() {
 
     function whenExtensionConnected() {
       if (extension) return Promise.resolve();
-      const started = Date.now();
       return new Promise((resolveWait, rejectWait) => {
         const waiter = () => {
           clearTimeout(timer);
@@ -220,8 +189,7 @@ function becomeHub() {
         };
         const timer = setTimeout(() => {
           extensionWaiters.delete(waiter);
-          // A refused extension retries twice a second, so an older refusal is from one that is gone.
-          rejectWait(refusal?.at >= started ? Object.assign(new Error(REFUSALS[refusal.code]), { code: refusal.code }) : new Error(NOT_CONNECTED));
+          rejectWait(new Error(NOT_CONNECTED));
         }, EXTENSION_WAIT_MS);
         extensionWaiters.add(waiter);
       });
@@ -273,24 +241,6 @@ function becomeHub() {
       };
     }
 
-    // A refused extension retries twice a second, so an offer older than a wait for the extension is gone.
-    // Moving the secret and approving the offer happen in one synchronous step, so no pairing can arrive
-    // between them.
-    function approvePairingReset() {
-      if (draining) return { error: HUB_CLOSING };
-      const offers = [...pairOffers.keys()].filter((digest) => pairOffers.get(digest) >= Date.now() - EXTENSION_WAIT_MS);
-      if (extension || !offers.length || !existsSync(EXTENSION_SECRET_PATH)) return { result: { moved: null } };
-      if (offers.length > 1) return { error: "Several programs offer to pair", code: PAIRING_SEVERAL_OFFERS };
-      const moved = `${EXTENSION_SECRET_PATH}.replaced-${Date.now()}`;
-      try {
-        renameSync(EXTENSION_SECRET_PATH, moved);
-      } catch (error) {
-        return { error: error.message };
-      }
-      approvedOffer = offers[0];
-      return { result: { moved } };
-    }
-
     // The extension must prove the secret it paired with, and the hub proves it back; see the extension's
     // service worker. Only an authenticated connection receives requests.
     function acceptExtension(req, socket) {
@@ -303,9 +253,6 @@ function becomeHub() {
 
       const activate = (secret, extensionNonce) => {
         authenticated = true;
-        refusal = null;
-        pairOffers.clear();
-        approvedOffer = null;
         admitted.authenticated();
         peer.send(JSON.stringify({ type: "auth-ok", mac: hmac(secret, `hub:${extensionNonce}`) }));
         const previous = extension;
@@ -319,36 +266,12 @@ function becomeHub() {
         const message = parse(text);
         if (!message) return;
         if (!authenticated) {
-          const offer = message.type === "pair" && typeof message.secret === "string" && message.secret.length >= 32 ? createHash("sha256").update(message.secret).digest("hex") : null;
-          if (offer && !existsSync(EXTENSION_SECRET_PATH) && (!approvedOffer || sameHex(offer, approvedOffer))) {
-            try {
-              ensureStateDir();
-              writeFileSync(EXTENSION_SECRET_PATH, message.secret, { mode: 0o600, flag: "wx" });
-              activate(message.secret, String(message.nonce));
-            } catch {
-              peer.close();
-            }
-          } else if (message.type === "pair" && typeof message.secret === "string" && sameSecret(message.secret)) {
-            // The hub stored this secret, but its auth-ok did not arrive; the extension still offers it.
-            activate(message.secret, String(message.nonce));
-          } else if (message.type === "auth" && existsSync(EXTENSION_SECRET_PATH)) {
-            let secret = null;
-            try {
-              secret = readFileSync(EXTENSION_SECRET_PATH, "utf8").trim();
-            } catch {}
-            if (secret && sameHex(message.mac, hmac(secret, `extension:${nonce}`))) activate(secret, String(message.nonce));
-            else peer.close();
-          } else {
-            if (offer && existsSync(EXTENSION_SECRET_PATH)) {
-              // The extension retries twice a second, and setup's terminal shows this process's stderr.
-              if (refusal?.code !== PAIRING_NEW_EXTENSION) process.stderr.write(`[browser-control] Refused to pair a new extension instance: ${EXTENSION_SECRET_PATH} already exists.\n`);
-              refusal = { code: PAIRING_NEW_EXTENSION, at: Date.now() };
-              pairOffers.delete(offer);
-              pairOffers.set(offer, refusal.at);
-              if (pairOffers.size > MAX_PAIR_OFFERS) pairOffers.delete(pairOffers.keys().next().value);
-            } else if (message.type === "auth") refusal = { code: PAIRING_STALE_SECRET, at: Date.now() };
-            peer.close();
-          }
+          let secret = null;
+          try {
+            secret = readFileSync(EXTENSION_SECRET_PATH, "utf8").trim();
+          } catch {}
+          if (message.type === "auth" && secret && HEX_NONCE.test(message.nonce) && sameHex(message.mac, hmac(secret, `extension:${nonce}`))) activate(secret, message.nonce);
+          else peer.close();
           return;
         }
         // An event names the sessions that may see it (`audience`), or none to reach every session.
@@ -401,10 +324,6 @@ function becomeHub() {
           }
           return;
         }
-        if (message.type === APPROVE_PAIRING_RESET) {
-          peer.send(JSON.stringify({ ...approvePairingReset(), id: message.id }));
-          return;
-        }
         if (message.type === "hello") {
           if (typeof message.sessionId !== "string") return;
           clientSession = message.sessionId;
@@ -450,11 +369,6 @@ function becomeHub() {
           new Promise((resolveCall, rejectCall) =>
             request(method, params, (reply) => (reply.error ? rejectCall(replyError(reply)) : resolveCall(reply.result)), sessionId),
           ),
-        approvePairingReset: async () => {
-          const reply = approvePairingReset();
-          if (reply.error) throw replyError(reply);
-          return reply.result;
-        },
       });
     });
   });
@@ -538,7 +452,6 @@ function connectClient() {
         socket.send(JSON.stringify({ id, ...fields }));
       });
     const send = (method, params) => exchange(method, { method, params }, deadlineFor(params) + 5_000);
-    const approvePairingReset = () => exchange("The pairing reset", { type: APPROVE_PAIRING_RESET }, AUTH_TIMEOUT_MS);
     socket.addEventListener("open", () => {
       opened = true;
     });
@@ -555,7 +468,7 @@ function connectClient() {
           verified = true;
           clearTimeout(authTimer);
           socket.send(JSON.stringify({ type: "hello", sessionId }));
-          resolve({ send, approvePairingReset });
+          resolve({ send });
         } else {
           fail(new Error(IMPOSTOR_HUB));
         }

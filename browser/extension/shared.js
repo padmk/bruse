@@ -66,3 +66,6 @@ export async function extensionBuild(readText) {
   const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", data));
   return { hash: [...digest].map((byte) => byte.toString(16).padStart(2, "0")).join(""), files: [...files.keys()].sort() };
 }
+
+// Native host name shared by setup and the extension.
+export const PAIRING_HOST = "org.bruse.pairing";

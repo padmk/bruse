@@ -22,19 +22,11 @@ export const TOKEN_PATH = join(STATE_DIR, "hub-token");
 // Code of the error a server gets when the hub on the port runs another version, which it cannot talk to.
 export const HUB_VERSION_MISMATCH = "HUB_VERSION_MISMATCH";
 
-// Codes of the error a server gets while the hub keeps refusing an extension: a new one offers to pair
-// though a pairing exists, or one authenticates with an old secret though no pairing exists.
-export const PAIRING_NEW_EXTENSION = "PAIRING_NEW_EXTENSION";
-export const PAIRING_STALE_SECRET = "PAIRING_STALE_SECRET";
-
-// Code of the error setup gets when it asks to reset the pairing while more than one secret is on offer.
-export const PAIRING_SEVERAL_OFFERS = "PAIRING_SEVERAL_OFFERS";
-
-// Secret the extension paired with on first connection; hub and extension prove it to each other.
+// Native host supplies this secret to the extension; hub and extension prove it to each other.
 export const EXTENSION_SECRET_PATH = join(STATE_DIR, "extension-secret");
 
 // Chromium derives an extension's ID from the SHA-256 of its manifest key, written with letters a-p.
-function extensionId(manifestKey) {
+export function extensionId(manifestKey) {
   const hash = createHash("sha256").update(Buffer.from(manifestKey, "base64")).digest("hex").slice(0, 32);
   return [...hash].map((digit) => String.fromCharCode(97 + parseInt(digit, 16))).join("");
 }

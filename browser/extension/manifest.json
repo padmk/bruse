@@ -15,7 +15,8 @@
     "downloads",
     "scripting",
     "offscreen",
-    "webNavigation"
+    "webNavigation",
+    "nativeMessaging"
   ],
   "optional_permissions": [
     "history",
