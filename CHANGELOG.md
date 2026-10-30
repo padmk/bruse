@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.18.7
 
 - **Agent clients sorted by name:** setup and doctor list them alphabetically, so Claude Code and Claude Desktop are next to each other.
 - **Setup names an agent session that holds the port:** after an uninstall, an earlier session's server keeps the hub port without a token setup can check; setup now says to restart those sessions instead of pointing at an unknown program.
