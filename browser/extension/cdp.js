@@ -71,7 +71,7 @@ chrome.debugger.onEvent.addListener(({ tabId, sessionId: source }, method, param
     }
   } else if (method === "Target.detachedFromTarget") {
     for (const [frameId, frame] of session.frames) if (frame.sessionId === params.sessionId) session.frames.delete(frameId);
-    for (const key of session.pageContexts) if (key.startsWith(`${params.sessionId}:`)) session.pageContexts.delete(key);
+    for (const key of session.pageContexts.keys()) if (key.startsWith(`${params.sessionId}:`)) session.pageContexts.delete(key);
     // Requests of a frame that went away report no end. A cross-origin frame's target ID is its frame ID.
     dropRequests(session, (r) => r.session === params.sessionId || r.frameId === params.targetId);
   } else if (method === "Page.frameDetached") {
@@ -84,16 +84,17 @@ chrome.debugger.onEvent.addListener(({ tabId, sessionId: source }, method, param
     session.dialog = null;
   } else if (method === "Runtime.executionContextCreated") {
     // Only the page's own contexts count; extensions' content scripts run and log in isolated ones.
+    // Both the numeric ID and the unique ID map to the unique ID, by which commands are sent.
     if (params.context.auxData?.isDefault) {
-      session.pageContexts.add(contextKey(params.context.id));
-      if (params.context.uniqueId) session.pageContexts.add(contextKey(params.context.uniqueId));
+      session.pageContexts.set(contextKey(params.context.id), params.context.uniqueId);
+      if (params.context.uniqueId) session.pageContexts.set(contextKey(params.context.uniqueId), params.context.uniqueId);
     }
   } else if (method === "Runtime.executionContextDestroyed") {
     // A later context (such as a content script's world) may get the same ID.
     session.pageContexts.delete(contextKey(params.executionContextId));
     session.pageContexts.delete(contextKey(params.executionContextUniqueId));
   } else if (method === "Runtime.executionContextsCleared") {
-    for (const key of session.pageContexts) if (key.startsWith(`${source ?? "main"}:`)) session.pageContexts.delete(key);
+    for (const key of session.pageContexts.keys()) if (key.startsWith(`${source ?? "main"}:`)) session.pageContexts.delete(key);
   } else if (method === "Runtime.consoleAPICalled") {
     if (!session.pageContexts.has(contextKey(params.executionContextId))) return;
     const message = params.args.map((arg) => arg.value ?? arg.description ?? arg.unserializableValue ?? "").join(" ");
@@ -225,7 +226,7 @@ async function attachNow(tabId) {
     if (!/already attached/i.test(error.message)) throw error;
     reattached = true;
   }
-  const session = { lastUsed: Date.now(), dialog: null, console: [], dialogWaiters: [], pageContexts: new Set(), frames: new Map(), requests: [], inflight: new Map(), attachedAt: Date.now(), networkActivityAt: null };
+  const session = { lastUsed: Date.now(), dialog: null, console: [], dialogWaiters: [], pageContexts: new Map(), frames: new Map(), requests: [], inflight: new Map(), attachedAt: Date.now(), networkActivityAt: null };
   sessions.set(tabId, session);
   // A pause that came while the attach was in flight found no session to detach; one that comes from
   // now on finds this one.
@@ -443,38 +444,51 @@ export async function cdp(tabId, method, params, sessionId, timeoutMs, caller) {
   return withDebuggerAccess(tabId, async (session) => sendChecked(tabId, session, method, params, await currentFrameSession(tabId, session, sessionId), timeoutMs, caller), caller);
 }
 
-// Parameters by which commands pick the JavaScript context they run in.
-const CONTEXT_PARAMS = ["contextId", "uniqueContextId", "executionContextId"];
+// Commands that can name their context by its unique ID instead of the numeric one given.
+const UNIQUE_CONTEXT_OF = { "Runtime.evaluate": "contextId", "Runtime.callFunctionOn": "executionContextId" };
 // A remote object handle is "<isolate>.<context id>.<object id>"; the context is the one the object lives in.
 const OBJECT_HANDLE = /^-?\d+\.(-?\d+)\.-?\d+$/;
 
-// The remote object handles in a command's parameters at any depth: `objectId` and keys such as
-// `prototypeObjectId`, including those inside arrays (Runtime.callFunctionOn's `arguments`).
-function* objectHandles(value) {
-  if (!value || typeof value !== "object") return;
-  for (const [key, item] of Object.entries(value)) {
-    if (key === "objectId" || key.endsWith("ObjectId")) yield item;
-    else yield* objectHandles(item);
+// The remote object handles a command uses: top-level `objectId` and keys such as `prototypeObjectId`,
+// and the arguments of Runtime.callFunctionOn. Values passed by value are page data, not handles.
+function objectHandles(method, params) {
+  const handles = Object.entries(params).filter(([key]) => key === "objectId" || key.endsWith("ObjectId")).map(([, handle]) => handle);
+  if (method === "Runtime.callFunctionOn" && Array.isArray(params.arguments)) {
+    for (const argument of params.arguments) if (argument && typeof argument === "object" && "objectId" in argument) handles.push(argument.objectId);
   }
+  return handles;
 }
 
 // Raw commands run JavaScript and use objects only in the page's own (default) contexts of the target
 // they go to, never in an isolated world where this or another extension's content script runs with
 // extension APIs. The contexts are known from Runtime events, so commands that stop them are refused.
+// Numeric context IDs start again in a new renderer process, and the browser delivers a command sent
+// before a cross-process navigation to the new process, so a numeric ID could name an isolated world
+// there. Commands are therefore sent with unique context IDs, which differ between processes; returns
+// the parameters to send.
 function requirePageContext(session, method, params = {}, sessionId) {
   if (method === "Runtime.disable") {
     throw new Error("Agents may not send Runtime.disable: the page's own contexts are told from isolated worlds by Runtime events");
   }
-  if (!params || typeof params !== "object") return;
-  if (method === "Runtime.addBinding" && params.executionContextId === undefined && params.executionContextName === undefined) {
-    throw new Error("Runtime.addBinding needs the executionContextId of one of the page's own contexts; without it the binding reaches isolated worlds such as extensions' content scripts too");
+  if (method === "Runtime.addBinding") {
+    throw new Error("Agents may not send Runtime.addBinding: it names its context only by numeric ID or by name, which can reach isolated worlds such as extensions' content scripts");
   }
-  const contexts = CONTEXT_PARAMS.filter((key) => params[key] !== undefined).map((key) => params[key]);
-  for (const handle of objectHandles(params)) contexts.push(typeof handle === "string" ? OBJECT_HANDLE.exec(handle)?.[1] : undefined);
-  if (params.executionContextName === undefined && contexts.every((id) => id !== undefined && session.pageContexts.has(`${sessionId ?? "main"}:${id}`))) return;
+  if (!params || typeof params !== "object") return params;
+  const uniqueId = (id) => (id === undefined ? undefined : session.pageContexts.get(`${sessionId ?? "main"}:${id}`));
+  const numericKey = UNIQUE_CONTEXT_OF[method];
+  let sent = params;
+  if (numericKey && params[numericKey] !== undefined && params.uniqueContextId === undefined && uniqueId(params[numericKey]) !== undefined) {
+    const { [numericKey]: id, ...rest } = params;
+    sent = { ...rest, uniqueContextId: uniqueId(id) };
+  }
+  const numeric = ["contextId", "executionContextId", "executionContextName"].some((key) => sent[key] !== undefined);
+  const contextKnown = sent.uniqueContextId === undefined || uniqueId(sent.uniqueContextId) !== undefined;
+  const handlesKnown = objectHandles(method, sent).every((handle) => typeof handle === "string" && uniqueId(OBJECT_HANDLE.exec(handle)?.[1]) !== undefined);
+  if (!numeric && contextKnown && handlesKnown) return sent;
   throw new Error(
     "Agents may run JavaScript only in the page's own contexts, not in isolated worlds such as extensions' content scripts, " +
-      "and use only objects from those contexts; leave out the context parameter to use the page's main context",
+      "and use only objects from those contexts; leave out the context parameter to use the page's main context, or name " +
+      "one by uniqueContextId (Runtime.evaluate and Runtime.callFunctionOn also take its numeric ID)",
   );
 }
 
@@ -483,7 +497,7 @@ async function sendChecked(tabId, session, method, params, sessionId, timeoutMs,
   // The session may have been detached while access was checked; withDebuggerAccess then attaches anew,
   // which asks the gate again.
   if (sessions.get(tabId) !== session) throw new Error("Debugger is not attached to the tab");
-  requirePageContext(session, method, params, sessionId);
+  params = requirePageContext(session, method, params, sessionId);
   if (session.dialog && !DIALOG_SAFE_METHODS.has(method) && !method.startsWith("Input.")) {
     throw new Error(`A JavaScript ${session.dialog.type} dialog is open on this tab ("${session.dialog.message}"); handle it with getJsDialog() first`);
   }
