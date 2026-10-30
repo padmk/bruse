@@ -50,6 +50,10 @@ Both parts are needed: the server cannot reach tabs, and the extension cannot ac
    agrees. Otherwise, give the user the steps and the path. Either way the installer continues by itself
    when the extension connects.
 
+   Limits when you click for the user: on the extensions page change only Developer mode and Load
+   unpacked, and leave other extensions alone. Select only the path the installer printed. Stop and ask at
+   any window you did not expect. Tell the user that Developer mode stays on.
+
    The first time, macOS may ask whether the terminal may control the browser; the user can allow it,
    or open the extensions page by hand (`brave://extensions`, `chrome://extensions`, `edge://extensions`).
 4. **Confirm.** The installer prints `Connected to <browser>` and `Bruse is ready`. That connection also
@@ -67,9 +71,12 @@ Use a stable Node path such as `/opt/homebrew/bin/node`, not a versioned one.
 ## Troubleshooting
 
 - **The extension does not connect after a reinstall.** If the user removed the extension and loaded it
-  again, it has a new secret, while the old one is still stored. Ask the user, then move
-  `~/.local/share/bruse/state/extension-secret` to the Trash; the extension pairs again within a
-  second. Run the installer again to confirm.
+  again, it has a new secret, while the old one is still stored. `bruse setup` then asks in a terminal
+  whether to reset the pairing, and without a terminal it stops and says so. The user runs it and answers;
+  you never answer that question for the user, and you do not touch `extension-secret` yourself.
+- **Setup says the extension holds a pairing from an earlier installation.** An uninstall left the
+  extension in the browser. The user removes it on the extensions page and loads it again; then run the
+  installer again.
 - **"Load unpacked" fails.** Check that the selected folder contains `manifest.json`.
 - **Developer mode warning.** Chromium shows a notice about developer-mode extensions. It is expected
   for extensions loaded this way.
@@ -77,9 +84,9 @@ Use a stable Node path such as `/opt/homebrew/bin/node`, not a versioned one.
 ## Checking and uninstalling
 
 `bruse doctor` checks the installation, the registrations and the browser connection and
-says what to do about each problem. `bruse uninstall` removes the registrations and a connected extension and
-moves the installed copy and the pairing state to the Trash. It says so when the user has to remove the
-extension on the browser's extensions page.
+says what to do about each problem. `bruse uninstall` removes the registrations, moves the installed copy and the
+pairing state to the Trash and opens the extensions page. The user removes the extension there, before
+installing again.
 
 ## Rules
 

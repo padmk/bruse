@@ -244,6 +244,10 @@ test("reinstalled extension requires pairing reset", { timeout: 120_000 }, async
   await env.browser.cdp.send("Extensions.uninstall", { id: env.browser.extensionId });
   await env.browser.cdp.send("Extensions.loadUnpacked", { path: env.copy.extensionDir });
   await assert.rejects(call(hub), /did not connect/i);
+  // Another session, through the hub, learns why; it gets no way around the refusal.
+  const client = await hubClient(env.port, env.stateDir);
+  await assert.rejects(client.call("browser.info"), (error) => error.code === "PAIRING_NEW_EXTENSION" && /only the user can reset/i.test(error.message));
+  client.close();
   assert.equal(readFileSync(secretPath(), "utf8"), oldSecret);
   renameSync(secretPath(), join(env.stateDir, "old-extension-secret"));
   await call(hub);

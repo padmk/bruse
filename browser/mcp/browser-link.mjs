@@ -6,7 +6,7 @@
 import { createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import http from "node:http";
-import { EXTENSION_ORIGINS, EXTENSION_SECRET_PATH, HUB_VERSION_MISMATCH, PORT, PRODUCT_NAME, STATE_DIR, TOKEN_PATH, VERSION } from "./config.mjs";
+import { EXTENSION_ORIGINS, EXTENSION_SECRET_PATH, HUB_VERSION_MISMATCH, PAIRING_NEW_EXTENSION, PAIRING_STALE_SECRET, PORT, PRODUCT_NAME, STATE_DIR, TOKEN_PATH, VERSION } from "./config.mjs";
 import { acceptUpgrade, rejectUpgrade } from "./websocket.mjs";
 
 const REQUEST_TIMEOUT_MS = 90_000;
@@ -16,7 +16,12 @@ const AUTH_TIMEOUT_MS = 5_000;
 // Connections that have not authenticated yet, at most; more are refused until some finish.
 const MAX_UNAUTHENTICATED = 32;
 const KEEPALIVE_MS = 20_000;
-const NOT_CONNECTED = `The browser extension did not connect. Make sure the browser is running and the ${PRODUCT_NAME} extension is enabled, and run \`bruse doctor\`. If the extension was reinstalled, remove ${EXTENSION_SECRET_PATH} so that it can pair again.`;
+const NOT_CONNECTED_START = "The browser extension did not connect.";
+const NOT_CONNECTED = `${NOT_CONNECTED_START} Make sure the browser is running and the ${PRODUCT_NAME} extension is enabled, and run \`bruse doctor\`. If the extension was reinstalled, the user runs \`bruse setup\` in a terminal.`;
+const REFUSALS = {
+  [PAIRING_NEW_EXTENSION]: `${NOT_CONNECTED_START} A new extension offered to pair, but the hub is paired with another one. Only the user can reset the pairing, by running \`bruse setup\` in a terminal.`,
+  [PAIRING_STALE_SECRET]: `${NOT_CONNECTED_START} The extension in the browser holds a pairing from an earlier installation, and the hub has none. Remove it on the browser's extensions page, load it again and run \`bruse setup\`.`,
+};
 
 // How MCP servers authenticate to the hub and the hub to them (see connectClient). The hub announces it
 // in its challenge and on plain HTTP requests, so that servers of different versions can tell why they
@@ -24,7 +29,8 @@ const NOT_CONNECTED = `The browser extension did not connect. Make sure the brow
 const CLIENT_PROTOCOL = 2;
 const PROTOCOL_HEADER = "x-hub-protocol";
 // Whether a call failed only because no extension is connected to a hub that proved the hub token.
-export const isNotConnected = (error) => error?.message === NOT_CONNECTED;
+// Hubs of other versions word the rest of the message differently.
+export const isNotConnected = (error) => Boolean(error?.message?.startsWith(NOT_CONNECTED_START));
 const OTHER_HUB = `The process listening on 127.0.0.1:${PORT} is not a browser hub of ${PRODUCT_NAME} ${VERSION}. Most likely an agent session started before an update still runs an older ${PRODUCT_NAME} MCP server, which this version cannot talk to. Restart (or end) the agent sessions that use ${PRODUCT_NAME}, then retry.`;
 const IMPOSTOR_HUB = `The process listening on 127.0.0.1:${PORT} did not prove that it is the browser hub (it does not know the hub token), so no request was sent to it.`;
 const HEX_NONCE = /^[0-9a-f]{64}$/;
@@ -33,6 +39,9 @@ const HEX_NONCE = /^[0-9a-f]{64}$/;
 function deadlineFor(params) {
   return Math.max(REQUEST_TIMEOUT_MS, (Number(params?.timeoutMs) || 0) + 10_000);
 }
+
+// An error reply from the hub, with its code when it has one.
+const replyError = ({ error, code }) => Object.assign(new Error(error), { code });
 
 function parse(text) {
   try {
@@ -164,6 +173,7 @@ function becomeHub() {
   return new Promise((resolve, reject) => {
     const token = randomBytes(32).toString("hex");
     let extension = null;
+    let refusal = null; // the most recent refused pairing: { code, at }
     const extensionWaiters = new Set();
     const clients = new Map(); // authenticated client connection -> its session id, once it said hello
     const pending = new Map(); // hub request id -> settle(reply)
@@ -188,6 +198,7 @@ function becomeHub() {
 
     function whenExtensionConnected() {
       if (extension) return Promise.resolve();
+      const started = Date.now();
       return new Promise((resolveWait, rejectWait) => {
         const waiter = () => {
           clearTimeout(timer);
@@ -196,7 +207,8 @@ function becomeHub() {
         };
         const timer = setTimeout(() => {
           extensionWaiters.delete(waiter);
-          rejectWait(new Error(NOT_CONNECTED));
+          // A refused extension retries twice a second, so an older refusal is from one that is gone.
+          rejectWait(refusal?.at >= started ? Object.assign(new Error(REFUSALS[refusal.code]), { code: refusal.code }) : new Error(NOT_CONNECTED));
         }, EXTENSION_WAIT_MS);
         extensionWaiters.add(waiter);
       });
@@ -216,7 +228,7 @@ function becomeHub() {
         await whenExtensionConnected();
         forward(method, params, settle, session);
       } catch (error) {
-        settle({ error: error.message });
+        settle({ error: error.message, code: error.code });
       }
     }
 
@@ -260,6 +272,7 @@ function becomeHub() {
 
       const activate = (secret, extensionNonce) => {
         authenticated = true;
+        refusal = null;
         admitted.authenticated();
         peer.send(JSON.stringify({ type: "auth-ok", mac: hmac(secret, `hub:${extensionNonce}`) }));
         const previous = extension;
@@ -292,7 +305,11 @@ function becomeHub() {
             if (secret && sameHex(message.mac, hmac(secret, `extension:${nonce}`))) activate(secret, String(message.nonce));
             else peer.close();
           } else {
-            if (message.type === "pair") process.stderr.write(`[browser-control] Refused to pair a new extension instance: ${EXTENSION_SECRET_PATH} already exists.\n`);
+            if (message.type === "pair" && existsSync(EXTENSION_SECRET_PATH)) {
+              // The extension retries twice a second, and setup's terminal shows this process's stderr.
+              if (refusal?.code !== PAIRING_NEW_EXTENSION) process.stderr.write(`[browser-control] Refused to pair a new extension instance: ${EXTENSION_SECRET_PATH} already exists.\n`);
+              refusal = { code: PAIRING_NEW_EXTENSION, at: Date.now() };
+            } else if (message.type === "auth") refusal = { code: PAIRING_STALE_SECRET, at: Date.now() };
             peer.close();
           }
           return;
@@ -390,7 +407,7 @@ function becomeHub() {
       resolve({
         send: (method, params) =>
           new Promise((resolveCall, rejectCall) =>
-            request(method, params, (reply) => (reply.error ? rejectCall(new Error(reply.error)) : resolveCall(reply.result)), sessionId),
+            request(method, params, (reply) => (reply.error ? rejectCall(replyError(reply)) : resolveCall(reply.result)), sessionId),
           ),
       });
     });
@@ -469,7 +486,7 @@ function connectClient() {
         }, deadlineFor(params) + 5_000);
         pending.set(id, (reply) => {
           clearTimeout(timer);
-          if (reply.error) rejectCall(new Error(reply.error));
+          if (reply.error) rejectCall(replyError(reply));
           else resolveCall(reply.result);
         });
         socket.send(JSON.stringify({ id, method, params }));
