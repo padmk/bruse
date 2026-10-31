@@ -28,7 +28,7 @@ see [the benchmark](bench/README.md) for the method, every run and what the numb
 ## Requirements
 
 - macOS (Linux works too, but is tested less), with Node.js 22 or newer
-- A Chromium browser: Brave, Chrome, Edge, Chromium or Vivaldi
+- Brave or Chrome
 - An MCP client; setup registers the server with the supported ones you pick (see [Install](#install))
 - A browser that allows extensions loaded in Developer mode and their `debugger` permission. A browser
   your organization manages may block either by policy; then an administrator has to allow the
@@ -216,8 +216,7 @@ The full API is in [browser/mcp/cua/docs.mjs](browser/mcp/cua/docs.mjs).
   Until a connection has authenticated, the hub takes only small messages from it, closes it when it
   leaves the hub's replies unread, and keeps only a few such connections at a time. Hub and extension authenticate each other with HMAC over fresh nonces.
   The extension executes requests only after the hub proves the shared secret.
-- **Native pairing.** Setup registers a native messaging host for Brave, Chrome, Edge, Chromium and
-  Vivaldi. The manifest's public key pins the unpacked extension ID regardless of its folder. The
+- **Native pairing.** Setup registers a native messaging host for your browser. The manifest's public key pins the unpacked extension ID regardless of its folder. The
   browser starts the host over private pipes and the extension retrieves the secret from
   `~/.local/share/bruse/state/extension-secret` (0600). The secret never crosses the hub port, even
   on first use, so a process of another account that binds the port first cannot pair or drive tabs.

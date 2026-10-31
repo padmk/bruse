@@ -1,7 +1,6 @@
 # Installing Bruse (instructions for an AI agent)
 
-Bruse gives AI agents background control of the user's own Chromium browser (Brave, Chrome, Edge,
-Chromium, Vivaldi). Install it for the user by following these steps. Tell the user first that code run
+Bruse gives AI agents background control of the user's own browser (Brave or Chrome). Install it for the user by following these steps. Tell the user first that code run
 through Bruse has their user account's permissions and can use the accounts signed in to the browser
 profile ([SECURITY.md](https://github.com/padmk/bruse/blob/main/SECURITY.md)), and ask whether to go on.
 
@@ -56,7 +55,7 @@ Both parts are needed: the server cannot reach tabs, and the extension cannot ac
    any window you did not expect. Tell the user that Developer mode stays on.
 
    The first time, macOS may ask whether the terminal may control the browser; the user can allow it,
-   or open the extensions page by hand (`brave://extensions`, `chrome://extensions`, `edge://extensions`).
+   or open the extensions page by hand (`brave://extensions`, `chrome://extensions`).
 4. **Confirm.** The installer prints `Connected to <browser>` and `Bruse is ready`. The extension
    retrieves its pairing secret through the native host, never through the hub port. If the extension
    was already connected (an update), the
