@@ -165,9 +165,13 @@ releases it and checks that its old unique context fails. See SECURITY.md for th
   the cause remains unresolved. Popup ownership and blank-attachment checks passed in these runs.
 - A shared tab was closed by an agent's evaluated `window.close()`; the API ownership guards and
   Browser/Target refusals passed. This script-closure limitation is documented in SECURITY.md.
-- Installed Chrome 156.0.8078.74 loaded the extension in a temporary profile, but isolated native-host
-  probes did not establish an end-to-end connection. Edge and Vivaldi were absent from both Applications
-  folders. Their native discovery and connection remain unverified; the user's Brave was not used.
+- Installed Chrome 156.0.8078.74, temporary profile, extension loaded with `Extensions.loadUnpacked` over
+  `--remote-debugging-pipe` because `--load-extension` has no effect there. Chrome reads hosts from
+  `<user-data-dir>/NativeMessagingHosts`: without the manifest there it reports "host not found". With a
+  copy of the manifest setup wrote, the pinned extension ID got a valid secret from the host and another
+  ID was refused as forbidden. The default profile's directory is the one setup writes; it was not driven
+  directly, so the user's profile stays untouched. Edge and Vivaldi were absent from both Applications
+  folders, so their discovery and connection remain unverified; the user's Brave was not used.
 - The saved-pairing test checks the reloaded build rather than accepting a pre-reload connection.
   Window tests wait for chrome.tabs, and creation/end tests accept either ordering while checking cleanup.
   The original saved-pairing failure and the intermittent popup/download reports were not reproduced
