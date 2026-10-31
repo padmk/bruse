@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Keep native pairing replies scoped to their connection, so a delayed reply from a disconnected hub cannot overwrite the proof expected from its replacement.
+
 ## 0.20.0
 
 - Pin Runtime object receiver calls to unique page contexts while preserving object groups and callable semantics. Convert zero-isolate node handles for supported DOM, Accessibility and Overlay commands through a pinned call with dialog handling, and refuse unsafe consumers including `DOM.getFileInfo`. Locators enumerate nodes through deep serialization so they work with Chrome 158's zero-isolate handles.
