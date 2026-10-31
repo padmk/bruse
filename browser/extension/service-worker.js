@@ -382,7 +382,7 @@ async function hmac(secret, message) {
   return hex(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(message)));
 }
 
-async function answerChallenge(nonce) {
+async function answerChallenge(nonce, connection) {
   if (!/^[0-9a-f]{64}$/.test(nonce)) throw new Error("Invalid hub challenge");
   // Always consult the host: a reinstall or a restored browser profile may retain a stale secret.
   // An existing pairing can still connect before setup installs the host during an upgrade.
@@ -397,7 +397,7 @@ async function answerChallenge(nonce) {
     if (!hubSecret) throw new Error(`Native pairing unavailable. Run bruse setup: ${error.message}`);
   }
   const ownNonce = randomHex();
-  hub.expectedHubMac = await hmac(hubSecret, `hub:${ownNonce}`);
+  connection.expectedHubMac = await hmac(hubSecret, `hub:${ownNonce}`);
   return { type: "auth", mac: await hmac(hubSecret, `extension:${nonce}`), nonce: ownNonce };
 }
 
@@ -427,7 +427,9 @@ async function handle(gen, text) {
     // Each answer starts the native host, so whatever holds the port gets one per connection.
     if (hub.challenged) return null;
     hub.challenged = true;
-    return JSON.stringify(await answerChallenge(String(message.nonce)));
+    const connection = hub;
+    const reply = await answerChallenge(String(message.nonce), connection);
+    return hub === connection ? JSON.stringify(reply) : null;
   }
   if (message.type === "auth-ok") {
     hub.verified = Boolean(hub.expectedHubMac) && message.mac === hub.expectedHubMac;

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHmac } from "node:crypto";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
@@ -160,4 +161,62 @@ test("a saved pairing works without a host and an unpacked permission update sta
       { message: "the extension with the updated permission to reconnect" });
     assert.equal(readFileSync(join(stateDir, "extension-secret"), "utf8").trim(), secret);
   } finally { client?.close(); await session?.close(); await browser?.close(); copy.remove(); }
+});
+
+test("a native reply from an old connection cannot replace the current hub proof", { timeout: 60_000 }, async () => {
+  const port = await freePort();
+  const copy = browserCopy(port);
+  const { acceptUpgrade } = await import(join(copy.browserDir, "mcp", "websocket.mjs"));
+  const server = http.createServer();
+  const peers = [];
+  const messages = new Map();
+  server.on("upgrade", (req, socket) => {
+    const peer = acceptUpgrade(req, socket);
+    peers.push(peer);
+    messages.set(peer, []);
+    peer.on("message", (text) => messages.get(peer).push(JSON.parse(text)));
+  });
+  server.listen(port, "127.0.0.1");
+  await once(server, "listening");
+  let browser;
+  try {
+    browser = await launchBrowser(copy.extensionDir);
+    const { cdp, extensionId } = browser;
+    await until(() => peers.length === 1);
+    const worker = await until(async () => (await cdp.send("Target.getTargets")).targetInfos.find((target) => target.type === "service_worker" && target.url.startsWith(`chrome-extension://${extensionId}/`)));
+    const { sessionId } = await cdp.send("Target.attachToTarget", { targetId: worker.targetId, flatten: true });
+    const evaluate = async (expression) => {
+      const reply = await cdp.send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true }, sessionId);
+      if (reply.exceptionDetails) throw new Error(reply.exceptionDetails.exception?.description ?? reply.exceptionDetails.text);
+      return reply.result.value;
+    };
+    await until(() => evaluate("typeof chrome !== 'undefined' && typeof chrome.runtime?.sendNativeMessage === 'function'"));
+    // Hold native replies so that a disconnected connection completes after its replacement.
+    await evaluate(`globalThis.nativeReplies = []; globalThis.nativeSigns = 0; const sign = crypto.subtle.sign.bind(crypto.subtle); crypto.subtle.sign = async (...args) => { const result = await sign(...args); nativeSigns++; return result; }; chrome.runtime.sendNativeMessage = () => new Promise(resolve => nativeReplies.push(resolve));`);
+    peers[0].send(JSON.stringify({ type: "challenge", nonce: "a".repeat(64) }));
+    await until(() => evaluate("nativeReplies.length === 1"));
+    peers[0].close();
+    await until(() => peers.length === 2);
+    const current = peers[1];
+    current.send(JSON.stringify({ type: "challenge", nonce: "b".repeat(64) }));
+    await until(() => evaluate("nativeReplies.length === 2"));
+    const secret = "c".repeat(64);
+    await evaluate(`nativeReplies[1]({secret: 'c'.repeat(64)});`);
+    const auth = await until(() => messages.get(current).find((message) => message.type === "auth"));
+    await evaluate(`nativeReplies[0]({secret: 'c'.repeat(64)});`);
+    // Both HMAC operations of each answer finish before auth-ok arrives.
+    await until(() => evaluate("nativeSigns === 4"));
+    current.send(JSON.stringify({ type: "auth-ok", mac: createHmac("sha256", secret).update(`hub:${auth.nonce}`).digest("hex") }));
+    current.send(JSON.stringify({ id: 1, method: "browser.info", params: {} }));
+    await until(() => peers.length > 2 || messages.get(current).some((message) => message.id === 1));
+    assert.equal(peers.length, 2, "the current connection stays authenticated");
+    const reply = messages.get(current).find((message) => message.id === 1);
+    assert.equal(reply.error, undefined);
+    assert.equal(reply.result.id, extensionId);
+  } finally {
+    await browser?.close();
+    for (const peer of peers) peer.close();
+    await new Promise((resolve) => server.close(resolve));
+    copy.remove();
+  }
 });

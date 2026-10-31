@@ -206,3 +206,70 @@ orphan cleanup, password-manager handling, debugger reattachment, pause, replace
 the reported errors were cell or Runtime timeouts and dependent assertions, with no initial
 extension-connection error. The gate script passed. Those timeouts remain unresolved, so this is
 not a clean full-suite verification.
+
+### Loaded macOS verification on 2026-10-31
+
+Full-suite repetitions used Chrome for Testing 153.0.8010.12, four concurrent files and sixteen
+test-owned CPU workers. Each worker had a forty-minute limit and was stopped when its three-run
+batch finished. Shared activity changed substantially during the runs, so identical worker counts
+do not establish identical host conditions. The one-minute load at baseline run boundaries ranged
+from 93 to 148; a separate initial attempt observed load above 240.
+
+The initial ordinary runner attempt stalled after reporting results and browser cleanup. It was
+stopped and is excluded from the comparison. The bounded repetitions used:
+
+```sh
+node --test --test-force-exit --test-timeout=300000 --test-reporter=tap --test-concurrency=4 test/*.test.mjs
+```
+
+The runner options do not change the extension's authentication, browser command or MCP cell budgets.
+TAP records the actual error and stack when a test fails. There were 107 baseline tests; the pairing
+regression adds one test. Skips depend on browser capabilities.
+
+Two post-fix repetitions exited with truncated piped TAP output, so they are excluded from the
+count comparison. Replacement repetitions write stdout/stderr directly to an opened log file rather
+than through a pipe. One other piped post-fix repetition had a complete summary: 66 passed, 42 failed,
+none skipped. Chrome for Testing renderer helpers sometimes outlived their browser parent and profile
+cleanup. Helpers were stopped only when their exact profile appeared in this task's Trash records;
+no process using another profile was stopped. Host load exceeded 700 during the post-fix batch.
+These changing conditions prevent a controlled estimate of the fix's effect on full-suite reliability.
+
+First failures must be distinguished from assertions after them:
+
+| Path | First observed failure | Interpretation |
+| --- | --- | --- |
+| Actions | `The page did not respond within 8 s (Runtime.callFunctionOn)` in the overlay test; another run first failed with `Input.insertText` | Product command deadline, visible to a user; late completion was not established. Later Runtime errors and missing REPL bindings are not separate proof of a cause. |
+| Orphan cleanup | `The browser extension did not connect.` in the first test | Product's 8-second connection wait. The next test's undefined client's `kill` is dependent on the failed setup. Native spawn time and worker wake were not measured. |
+| Content world | `cdp: no hub reply within 30 s` when checking a removed context | Harness deadline; the product hub allows at least 90 seconds. Later `page.state` failures and direct `Runtime.evaluate: no CDP reply within 30 s` occurred in that file. A reply shortly after the deadline was not established. |
+| Guard | `tabs.navigate: no hub reply within 30 s` | Harness deadline, with late completion unproven. |
+| Downloads | `Execution timed out after 30000 ms` opening a tab | Product cell budget; the reset explains missing variables in subsequent cells. This does not prove incorrect download assignment. |
+| Password manager, pause, replacement, sessions and smoke | `Execution timed out after 30000 ms` during initial tab creation or reading | Product cell budget, also observable outside tests. Subsequent missing bindings or incomplete session setup are dependent failures. |
+
+An independently reproduced product race affected reconnects: a native reply from a disconnected
+connection wrote its expected hub proof into the replacement connection's state. Completing the
+replacement's native reply first and the old reply second made the valid replacement fail authentication.
+The expected proof is scoped to its connection and obsolete answers are discarded. The browser
+regression holds both native replies, releases them in that order, waits for their HMAC operations,
+then authenticates and successfully requests `browser.info`. The one-challenge-per-connection rule
+and the 500 ms retry interval are unchanged. This establishes the race and its correction, not that
+it caused the loaded suite's first connection failure.
+
+The remaining failures are unresolved. They cannot be classified as environmental-only from these
+runs. Service-worker wake latency, native host spawn latency, and eventual completion of timed-out
+hub or Runtime operations remain unproven; no timeout was increased.
+
+### Installed Chrome full flow on 2026-10-31
+
+A throwaway script outside the repository ran the real extension code in headless installed Google
+Chrome 156.0.8078.74, before and after the pairing fix. It used `--remote-debugging-pipe`,
+`--enable-unsafe-extension-debugging` and `Extensions.loadUnpacked`, with `--use-mock-keychain` and
+`--disable-features=MacAppCodeSignClone`. A browser copy changed only the hub port to a free port,
+explicitly rejecting 47615. Setup wrote the test-owned native manifest and launcher into the temporary
+profile, pinning a temporary state directory. The manifest admitted the real pinned extension ID.
+
+Through MCP stdio, the extension authenticated to that isolated hub, created a tab on a local HTTP
+page, clicked its button with a locator and read back the changed button text. Both runs passed.
+The script sent `Browser.close`, waited for Chrome to exit and moved its profile, browser copy and
+state directory to Trash. It did not drive the user's profile, use the installed hub/state, or change
+real client registrations. This proves the isolated full flow in that installed Chrome build; it does
+not verify the user's existing profile or other browser products.
