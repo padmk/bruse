@@ -1,8 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.20.1
 
 - Keep native pairing replies scoped to their connection, so a delayed reply from a disconnected hub cannot overwrite the proof expected from its replacement.
+- Agent docs and install instructions name Brave and Chrome, and say that page scripts can still close a shared tab.
 
 ## 0.20.0
 
