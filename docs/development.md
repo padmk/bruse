@@ -170,8 +170,7 @@ releases it and checks that its old unique context fails. See SECURITY.md for th
   `<user-data-dir>/NativeMessagingHosts`: without the manifest there it reports "host not found". With a
   copy of the manifest setup wrote, the pinned extension ID got a valid secret from the host and another
   ID was refused as forbidden. The default profile's directory is the one setup writes; it was not driven
-  directly, so the user's profile stays untouched. Edge and Vivaldi are not tested and are not to be
-  downloaded or run on the development machine; only Brave and Chrome are checked there. The user's Brave was not used.
+  directly, so the user's profile stays untouched. The user's Brave was not used.
 - The saved-pairing test checks the reloaded build rather than accepting a pre-reload connection.
   Window tests wait for chrome.tabs, and creation/end tests accept either ordering while checking cleanup.
   The original saved-pairing failure and the intermittent popup/download reports were not reproduced
