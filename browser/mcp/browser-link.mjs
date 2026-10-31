@@ -17,7 +17,7 @@ const AUTH_TIMEOUT_MS = 5_000;
 const MAX_UNAUTHENTICATED = 32;
 const KEEPALIVE_MS = 20_000;
 const NOT_CONNECTED_START = "The browser extension did not connect.";
-const NOT_CONNECTED = `${NOT_CONNECTED_START} Make sure the browser is running and the ${PRODUCT_NAME} extension is enabled, and run \`bruse doctor\`. If the extension was reinstalled, the user runs \`bruse setup\` in a terminal.`;
+const NOT_CONNECTED = `${NOT_CONNECTED_START} Make sure the browser is running and the ${PRODUCT_NAME} extension is enabled, and run \`bruse doctor\`. If it is enabled but stays disconnected, its process may have crashed, which it cannot recover from alone: the user clicks Reload on it on the extensions page. If the extension was reinstalled, the user runs \`bruse setup\` in a terminal.`;
 // How MCP servers authenticate to the hub and the hub to them (see connectClient). The hub announces it
 // in its challenge and on plain HTTP requests, so that servers of different versions can tell why they
 // cannot connect.

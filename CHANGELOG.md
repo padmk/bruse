@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Say that a crashed extension needs Reload on the extensions page. Chromium leaves such an extension terminated, so none of its code runs to reconnect.
+
 ## 0.20.1
 
 - Keep native pairing replies scoped to their connection, so a delayed reply from a disconnected hub cannot overwrite the proof expected from its replacement.
