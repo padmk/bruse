@@ -19,10 +19,19 @@
 import { spawnSync } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { homedir, platform } from "node:os";
-import { dirname, join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import { DATA_DIR } from "../browser/mcp/config.mjs";
 
 const UNREADABLE = { status: 1, stdout: "", stderr: "could not read its MCP configuration" };
+
+// Runs an agent client's CLI. Many are Node scripts that start whichever `node` comes first on PATH,
+// which can be missing or broken, so they get the Node.js that runs this command first.
+export const runClient = (path, args, options) =>
+  spawnSync(path, args, {
+    encoding: "utf8",
+    ...options,
+    env: { ...process.env, PATH: `${dirname(process.execPath)}${delimiter}${process.env.PATH ?? ""}` },
+  });
 
 export function moreClients(onPath, name) {
   const home = homedir();
@@ -91,7 +100,7 @@ function configClient({ label, path, key, entry, cli }, name) {
     }
   };
 
-  const run = (args) => (read() ? spawnSync(cli.path, args, { encoding: "utf8" }) : UNREADABLE);
+  const run = (args) => (read() ? runClient(cli.path, args) : UNREADABLE);
 
   const registration = () => {
     const config = read();
