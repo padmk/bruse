@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.20.0
+
+- Pin Runtime object receiver calls to unique page contexts while preserving object groups and callable semantics. Convert zero-isolate node handles for supported DOM, Accessibility and Overlay commands through a pinned call with dialog handling, and refuse unsafe consumers including `DOM.getFileInfo`. Locators enumerate nodes through deep serialization so they work with Chrome 158's zero-isolate handles.
+- Wait for a cross-origin frame to receive pointer movement before pressing a mouse button. Only moves are retried. If no movement is seen within 3 seconds the click goes ahead, because a page can stop these events from being observed.
+- Pin the pairing state directory in MCP registrations so a client's different `XDG_DATA_HOME` does not select another state directory. Run setup again to update registrations.
+- Clarify that page scripts, including agent evaluations and clicks, can close a shared tab with `window.close()` when the browser permits it. Browser and Target commands remain refused.
+- Wait for chrome.tabs when checking window ownership and for the updated extension fingerprint after a permission reload. Cap the test suite at four concurrent files to avoid starting every browser at once.
+- Bound test CDP requests and reject them on connection close so a missing reply cannot leave a test body waiting forever. Test browser cleanup moves temporary directories to Trash and browser launches disable macOS app cloning.
+- Keep native pairing replies scoped to their connection, so a delayed reply from a disconnected hub cannot overwrite the proof expected from its replacement.
+- Agent docs and install instructions name Brave and Chrome.
+- New icon and popup colors, matching the Bruse brand.
+- Say that a crashed extension needs Reload on the extensions page. Chromium leaves such an extension terminated, so none of its code runs to reconnect.
+- Setup, doctor and uninstall reach agent clients such as Codex and Gemini CLI when the `node` on PATH is missing or broken, for example after a Homebrew upgrade of one of its libraries. They run the client's CLI with the Node.js that runs Bruse.
+
 ## 0.19.0
 
 - **Pairing through a native host:** the extension now gets its secret from a native messaging host that the browser starts only for this extension, so no secret crosses the hub port, even on first use. A program that took the port first gets nothing and cannot drive the extension. Setup registers the host for Brave, Chrome, Edge, Chromium and Vivaldi, uninstall removes it, and doctor says how to repair it.
