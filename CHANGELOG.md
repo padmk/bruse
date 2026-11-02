@@ -1,7 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.20.2
 
+- New icon and popup colors, matching the Bruse brand.
 - Say that a crashed extension needs Reload on the extensions page. Chromium leaves such an extension terminated, so none of its code runs to reconnect.
 
 ## 0.20.1

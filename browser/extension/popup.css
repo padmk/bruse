@@ -1,7 +1,7 @@
 :root {
   color-scheme: light dark;
-  --accent: #4f5bff;
-  --accent-text: #ffffff;
+  --accent: light-dark(#650d26, #ffd05a);
+  --accent-text: light-dark(#fff0cc, #470819);
   --muted: color-mix(in srgb, currentColor 65%, transparent);
   --on: #22c55e;
   --off: #ef4444;
