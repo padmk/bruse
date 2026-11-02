@@ -26,6 +26,10 @@ jobs:
 
   # Unit tests and end-to-end tests in a real Chromium.
   tests:
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [24, 26]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -34,7 +38,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 24
+          node-version: ${{ matrix.node }}
       # Chrome for Testing with its system libraries; the tests load the extension into it.
       - run: npx --yes playwright@1.64.1 install --with-deps chromium
       - run: npm test
