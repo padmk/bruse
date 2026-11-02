@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.21.0
+
+- Require Node.js 24 or newer. The installer, setup and doctor refuse older versions.
+
 ## 0.20.0
 
 - Pin Runtime object receiver calls to unique page contexts while preserving object groups and callable semantics. Convert zero-isolate node handles for supported DOM, Accessibility and Overlay commands through a pinned call with dialog handling, and refuse unsafe consumers including `DOM.getFileInfo`. Locators enumerate nodes through deep serialization so they work with Chrome 158's zero-isolate handles.
