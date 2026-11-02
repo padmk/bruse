@@ -3,11 +3,11 @@
 //
 //   node bench/run.mjs [--reps 5] [--tasks table,form] [--tools bruse,chrome] [--model claude-opus-5-5] [--effort medium]
 //   node bench/run.mjs --suite real [--reps 8]     # public websites (tasks-real.mjs) instead of the local pages
-//   node bench/run.mjs --agent codex [--tools bruse,openai] [--model gpt-6.1-terra] [--effort medium]
+//   node bench/run.mjs --agent codex --openai-bridge <path> [--tools bruse,openai] [--model gpt-6.1-terra] [--effort medium]
 //
 // With Claude Code the tools are Bruse and Claude in Chrome. With Codex they are Bruse and OpenAI's own
 // browser runtime (cua_repl from the ChatGPT app), which `codex exec` reaches only through the
-// brave-cua-mcp bridge (--openai-bridge, default ~/dev/brave-cua-mcp/src/server.mjs). Both are offered to
+// bridge in cua-mcp commit 9c2275d (--openai-bridge, its src/server.mjs). Both are offered to
 // Codex as the same MCP server name, so the model sees the same tool either way.
 //
 // Results go to bench/results/<timestamp>/runs.jsonl, with every conversation in transcripts/ and the
@@ -37,6 +37,11 @@ const tools = (args.tools ?? (agent === "codex" ? "bruse,openai" : "bruse,chrome
 const model = args.model ?? (agent === "codex" ? "gpt-6.1-terra" : "claude-opus-5-5");
 const effort = args.effort ?? "medium";
 const browserApp = "Brave Browser";
+
+if (agent === "codex" && tools.includes("openai") && !args["openai-bridge"]) {
+  console.error("Measuring OpenAI's runtime needs --openai-bridge <path to src/server.mjs in a checkout of cua-mcp commit 9c2275d>.");
+  process.exit(2);
+}
 
 // The code under test, as a commit. Uncommitted changes would make the results unattributable, so a
 // dirty tree runs only with --allow-dirty and is marked as such.
@@ -202,10 +207,9 @@ function runClaude(tool, task, transcriptPath) {
 // Codex has no per-tool deny list: the shell runs in a read-only sandbox without network, web search and
 // the app's own browser connectors are off, and the browser MCP server is the only way to the pages.
 const cuaNode = "/Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node";
-const openaiBridge = args["openai-bridge"] ?? path.join(os.homedir(), "dev", "brave-cua-mcp", "src", "server.mjs");
 const codexServers = {
   bruse: [node, path.join(here, "..", "browser", "mcp", "server.mjs")],
-  openai: [cuaNode, openaiBridge],
+  openai: [cuaNode, args["openai-bridge"]],
 };
 const codexHint = "Do this in the user's Brave browser with the js browser tool. ";
 
@@ -218,6 +222,7 @@ function runCodex(tool, task, transcriptPath) {
       "-c", "mcp_servers.node_repl.enabled=false", "-c", "mcp_servers.portside.enabled=false",
       "-c", `mcp_servers.cua_repl.command=${JSON.stringify(command)}`, "-c", `mcp_servers.cua_repl.args=[${JSON.stringify(script)}]`,
       "-c", "mcp_servers.cua_repl.startup_timeout_sec=120",
+      "-c", 'mcp_servers.cua_repl.env.CUA_BRIDGE_SURFACES="browser"',
       // exec cannot ask, and Codex wants approval for tools that do not declare themselves read-only.
       "-c", 'mcp_servers.cua_repl.tools.js.approval_mode="approve"',
       codexHint + task.prompt,
