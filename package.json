@@ -14,7 +14,7 @@
     "bruse": "bin/bruse.mjs"
   },
   "engines": {
-    "node": ">=22"
+    "node": ">=24"
   },
   "scripts": {
     "test": "node --test --test-concurrency=4 test/*.test.mjs"
