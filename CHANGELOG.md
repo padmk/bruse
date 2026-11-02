@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.21.0
+
+- Require Node.js 24 or newer. The installer, setup and doctor refuse older versions.
+
 ## 0.20.3
 
 - Setup, doctor and uninstall reach agent clients such as Codex and Gemini CLI when the `node` on PATH is missing or broken, for example after a Homebrew upgrade of one of its libraries. They run the client's CLI with the Node.js that runs Bruse.
