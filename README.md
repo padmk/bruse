@@ -27,7 +27,7 @@ see [the benchmark](bench/README.md) for the method, every run and what the numb
 
 ## Requirements
 
-- macOS (Linux works too, but is tested less), with Node.js 24 or newer
+- macOS (Linux works too, but is tested less), with Node.js 26 or newer
 - Brave or Chrome
 - An MCP client; setup registers the server with the supported ones you pick (see [Install](#install))
 - A browser that allows extensions loaded in Developer mode and their `debugger` permission. A browser
