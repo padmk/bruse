@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.23.0
 
 - **Updates are hard to miss:** after `brew upgrade bruse`, the Homebrew notice shows `bruse setup` on its own line, in color, and says that agents keep the previous version until it runs. On the first browser call of a session, an agent running a previous version is told to ask you to run `bruse setup`; this starts with the update after the one you set up with this version.
 
