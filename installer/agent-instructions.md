@@ -22,7 +22,7 @@ Both parts are needed: the server cannot reach tabs, and the extension cannot ac
 
 ## Steps
 
-1. **Check Node.js.** Run `node --version`; it must be 24 or newer. If it is missing or older, ask the user
+1. **Check Node.js.** Run `node --version`; it must be 26 or newer. If it is missing or older, ask the user
    before installing Node (for example `brew install node` on macOS).
 2. **Run the installer:**
 

@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Require Node.js 26 or newer, the active LTS line since 2026-10-28. The installer, setup and doctor refuse older versions.
+
 ## 0.21.0
 
 - Require Node.js 24 or newer. The installer, setup and doctor refuse older versions.
