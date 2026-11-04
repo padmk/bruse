@@ -9,13 +9,18 @@ import { PRODUCT_NAME, UPDATE_SOURCE_FILE, VERSION } from "./config.mjs";
 
 const ownCopy = fileURLToPath(new URL("..", import.meta.url));
 
-// The version in the folder setup copied from, when it differs from this copy's. A checkout or a test
-// copy has no record, and a moved or removed source has nothing to compare.
+const manifestVersion = (browserDir) => JSON.parse(readFileSync(join(browserDir, "extension", "manifest.json"), "utf8")).version;
+
+// The version in the folder setup copied from, when setup has not installed it yet. A checkout or a test
+// copy has no record, and a moved or removed source has nothing to compare. When setup already replaced
+// this copy (a session started before it), the extension's version note tells the agent to start a new
+// session instead (see browserInfo in cua/index.mjs).
 function waitingVersion() {
   try {
     const { browserDir } = JSON.parse(readFileSync(join(ownCopy, UPDATE_SOURCE_FILE), "utf8"));
-    const { version } = JSON.parse(readFileSync(join(browserDir, "extension", "manifest.json"), "utf8"));
-    return typeof version === "string" && version !== VERSION ? version : null;
+    const version = manifestVersion(browserDir);
+    if (typeof version !== "string" || version === VERSION) return null;
+    return version === manifestVersion(ownCopy) ? null : version;
   } catch {
     return null;
   }
