@@ -6,7 +6,7 @@
 import { installPairingHost, pairingHostProblems } from "./native-host.mjs";
 import { spawnSync } from "node:child_process";
 import { createInterface } from "node:readline/promises";
-import { cpSync, existsSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { platform } from "node:os";
 import { join, resolve } from "node:path";
@@ -86,8 +86,12 @@ function trustNotice() {
   note(`More in SECURITY.md: ${SECURITY_URL}`);
 }
 
+// fnm puts a per-shell link to the active Node.js first on PATH (.../fnm_multishells/<id>/bin/node) and
+// removes it later, so registrations use the installation the link points to.
+const stableNode = (path) => (path?.includes("/fnm_multishells/") ? realpathSync(path) : path);
+
 // A stable path such as /opt/homebrew/bin/node keeps working after Node upgrades; process.execPath is versioned.
-const nodePath = () => process.env.INSTALL_NODE || onPath("node") || process.execPath;
+const nodePath = () => stableNode(process.env.INSTALL_NODE || onPath("node")) || process.execPath;
 
 // The clients to register with: --clients names them; in a terminal the user picks from the list.
 // Without a terminal (an agent or a script runs setup), an update keeps the clients that already have the
