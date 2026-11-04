@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.23.2
 
 - Setup registers the Node.js installation behind fnm's per-shell link instead of the link itself, which fnm removes later and which left the MCP server and pairing host unable to start.
 
