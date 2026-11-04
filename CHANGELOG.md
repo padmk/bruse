@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Setup registers the Node.js installation behind fnm's per-shell link instead of the link itself, which fnm removes later and which left the MCP server and pairing host unable to start.
+
 ## 0.23.1
 
 - An agent session started before `bruse setup` no longer asks for setup again after it ran; it is told to start a new session instead.
