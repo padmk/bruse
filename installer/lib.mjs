@@ -143,8 +143,13 @@ export function agentClients() {
   return [...clients, ...moreClients(onPath, MCP_NAME)].sort((a, b) => a.name.localeCompare(b.name));
 }
 
+// BROWSER_CONTROL_TRASH_DIR stands in for the Trash, so tests keep what they discard out of the user's Trash.
 export function moveToTrash(path) {
-  if (platform() === "darwin") {
+  const standIn = process.env.BROWSER_CONTROL_TRASH_DIR;
+  if (standIn) {
+    mkdirSync(standIn, { recursive: true });
+    renameSync(path, join(standIn, `${path.split("/").at(-1)}-${randomUUID()}`));
+  } else if (platform() === "darwin") {
     execFileSync("osascript", ["-e", `tell application "Finder" to delete (POSIX file ${JSON.stringify(path)} as alias)`], { stdio: "ignore" });
   } else {
     const trash = join(process.env.XDG_DATA_HOME ?? join(homedir(), ".local", "share"), "Trash", "files");

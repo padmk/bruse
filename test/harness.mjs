@@ -6,7 +6,7 @@ import { installPairingHost } from "../installer/native-host.mjs";
 import { spawn } from "node:child_process";
 import { createHmac, randomBytes, randomUUID } from "node:crypto";
 import { once } from "node:events";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import { homedir, platform, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -29,14 +29,17 @@ export function tempDir(prefix) {
   return mkdtempSync(join(tmpdir(), `bruse-test-${prefix}-`));
 }
 
-// Directories made by tempDir; tests remove only these.
+// Directories made by tempDir; tests delete only these.
 function removeTemp(path) {
-  if (!path.startsWith(tmpdir()) || !path.includes("bruse-test-") || !existsSync(path)) return;
-  const trash = platform() === "darwin" ? join(homedir(), ".Trash") : join(homedir(), ".local", "share", "Trash", "files");
-  mkdirSync(trash, { recursive: true });
-  console.log(`Trash: ${path}`);
-  renameSync(path, join(trash, `${path.split("/").at(-1)}-${randomUUID()}`));
+  if (!path.startsWith(tmpdir()) || !path.includes("bruse-test-")) return;
+  rmSync(path, { recursive: true, force: true });
 }
+
+// What the installer under test moves to the Trash goes to a temporary stand-in, deleted when the test
+// process exits, instead of the user's Trash.
+const trashStandIn = tempDir("trash");
+process.env.BROWSER_CONTROL_TRASH_DIR = trashStandIn;
+process.on("exit", () => removeTemp(trashStandIn));
 
 export async function freePort() {
   const server = http.createServer();
