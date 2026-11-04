@@ -138,7 +138,7 @@ not use Brave while it runs.
 `node bench/run.mjs --agent codex --openai-bridge <path> --model <model> --effort <effort>` runs the same
 tasks in `codex exec` with Bruse against the browser use bundled with the ChatGPT app (`--tools bruse,openai`).
 Codex's own browser plugin needs the app as its host, so the runner points it at a bridge to that runtime:
-`--openai-bridge` names `src/server.mjs` in a checkout of `cua-mcp` commit `9c2275d`, the last one with the
+`--openai-bridge` names `src/server.mjs` in a checkout of `backstage` (github.com/padmk/backstage) at commit `9c2275d`, the last one with the
 bridge. Both tools drive the same Brave.
 Apps, web search and the other REPLs are disabled and the sandbox is read-only. Codex reports tokens, not
 cost; input tokens include cached ones.

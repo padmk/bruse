@@ -7,7 +7,7 @@
 //
 // With Claude Code the tools are Bruse and Claude in Chrome. With Codex they are Bruse and OpenAI's own
 // browser runtime (cua_repl from the ChatGPT app), which `codex exec` reaches only through the
-// bridge in cua-mcp commit 9c2275d (--openai-bridge, its src/server.mjs). Both are offered to
+// bridge in backstage commit 9c2275d (--openai-bridge, its src/server.mjs). Both are offered to
 // Codex as the same MCP server name, so the model sees the same tool either way.
 //
 // Results go to bench/results/<timestamp>/runs.jsonl, with every conversation in transcripts/ and the
@@ -39,7 +39,7 @@ const effort = args.effort ?? "medium";
 const browserApp = "Brave Browser";
 
 if (agent === "codex" && tools.includes("openai") && !args["openai-bridge"]) {
-  console.error("Measuring OpenAI's runtime needs --openai-bridge <path to src/server.mjs in a checkout of cua-mcp commit 9c2275d>.");
+  console.error("Measuring OpenAI's runtime needs --openai-bridge <path to src/server.mjs in a checkout of backstage at commit 9c2275d>.");
   process.exit(2);
 }
 
