@@ -1,15 +1,16 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { moveToTrash } from "../installer/lib.mjs";
 
 const installer = fileURLToPath(new URL("../installer/install.mjs", import.meta.url));
 const dataHome = mkdtempSync(join(tmpdir(), "install-test-"));
-after(() => moveToTrash(dataHome));
+// The installer moves the previous copy to this stand-in for the Trash.
+process.env.BROWSER_CONTROL_TRASH_DIR = join(dataHome, "trash");
+after(() => rmSync(dataHome, { recursive: true, force: true }));
 
 // Runs installFiles over an existing installation in its own process (fail() exits), with renames into
 // the installed path failing as `failing` says: "staged" fails only the new copy, "both" also the restore,

@@ -239,6 +239,8 @@ exec /bin/mv "$path" '${trash}/'
   chmodSync(join(bin, "osascript"), 0o755);
   const plain = environment;
   environment = { ...plain, PATH: `${bin}:${plain.PATH}` };
+  // The fake osascript stands in for the Finder here, so the Trash stand-in is off.
+  delete environment.BROWSER_CONTROL_TRASH_DIR;
   const state = join(installed, "state");
   mkdirSync(state, { recursive: true });
   writeFileSync(join(state, "extension-secret"), "s".repeat(64));
