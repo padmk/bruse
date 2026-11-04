@@ -43,6 +43,9 @@ MCP server (hub) ◀──WebSocket 127.0.0.1:47615──▶ extension ──chr
     thread and survives the replacement; the worker reaches it through `browser-port.mjs`.
   - `repl.mjs`: the persistent REPL; `hoist.mjs`: turns top-level declarations of a cell into globals so
     they persist and can be redeclared.
+  - `update-notice.mjs`: tells the agent once per session when the folder setup copied from (recorded
+    in the installed copy's `update-source.json`; Homebrew's stable opt path, from `INSTALL_SOURCE`)
+    holds another version, as after `brew upgrade bruse` without `bruse setup`.
   - `focus-guard.mjs`: gives the front back to the user's app when an agent action makes a page
     open a tab and the browser takes the front (see Behavior); a switch the user makes stands.
   - `browser-link.mjs`, `websocket.mjs`, `config.mjs`: hub election, authentication and transport. The

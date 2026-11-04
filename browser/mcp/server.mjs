@@ -8,6 +8,7 @@ import { isPressInput } from "../extension/shared.js";
 import { callBrowser, endSession, onBrowserEvent, sessionId } from "./browser-link.mjs";
 import { VERSION } from "./config.mjs";
 import { beforeInput, isOpeningInput, onEvent as guardFocus } from "./focus-guard.mjs";
+import { updateNotice } from "./update-notice.mjs";
 
 const SERVER_INFO = { name: "browser-control", version: VERSION };
 
@@ -202,7 +203,13 @@ async function handle(message) {
       return { tools: TOOLS };
     case "tools/call": {
       const { name, arguments: args = {} } = message.params ?? {};
-      if (name === "js") return serialized(() => repl.run(String(args.code ?? ""), args.timeout_ms));
+      if (name === "js") {
+        return serialized(async () => {
+          const result = await repl.run(String(args.code ?? ""), args.timeout_ms);
+          const notice = updateNotice();
+          return notice ? { ...result, content: [...result.content, { type: "text", text: notice }] } : result;
+        });
+      }
       if (name === "js_reset") {
         return serialized(async () => {
           await repl.reset();

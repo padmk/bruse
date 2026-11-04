@@ -6,12 +6,12 @@
 import { installPairingHost, pairingHostProblems } from "./native-host.mjs";
 import { spawnSync } from "node:child_process";
 import { createInterface } from "node:readline/promises";
-import { cpSync, existsSync, mkdirSync, renameSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { platform } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { HUB_VERSION_MISMATCH, PORT } from "../browser/mcp/config.mjs";
+import { HUB_VERSION_MISMATCH, PORT, UPDATE_SOURCE_FILE } from "../browser/mcp/config.mjs";
 import { agentClients, clientId, installedBrowser, showPage, extensionDir, fail, failureReason, installRoot, installed, manifest, note, onPath, problemMessage, product, requireNode, serverPath, source, step, moveToTrash } from "./lib.mjs";
 
 const PAIR_WAIT_MS = 10 * 60_000;
@@ -33,6 +33,9 @@ export function installFiles({ rename = renameSync, trash = moveToTrash } = {}) 
   mkdirSync(installRoot, { recursive: true });
   const staged = join(installRoot, `browser.new-${process.pid}`);
   cpSync(source, staged, { recursive: true, filter: (path) => !path.endsWith(".DS_Store") });
+  // INSTALL_SOURCE names a path that later versions replace in place, such as Homebrew's opt path; the
+  // server compares its version with the one there (see update-notice.mjs).
+  writeFileSync(join(staged, UPDATE_SOURCE_FILE), `${JSON.stringify({ browserDir: process.env.INSTALL_SOURCE || source })}\n`);
   if (existsSync(installed)) {
     const previous = join(installRoot, `browser.previous-${Date.now()}`);
     rename(installed, previous);

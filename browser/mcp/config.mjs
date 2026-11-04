@@ -19,6 +19,10 @@ export const STATE_DIR = process.env.BROWSER_CONTROL_STATE_DIR ?? join(DATA_DIR,
 // Secret that MCP servers present to the hub; web pages cannot read it, so they cannot drive the hub.
 export const TOKEN_PATH = join(STATE_DIR, "hub-token");
 
+// File in an installed copy naming the browser/ folder setup copied it from, for example Homebrew's
+// stable opt path, so the server can tell when a newer version waits for `bruse setup`.
+export const UPDATE_SOURCE_FILE = "update-source.json";
+
 // Code of the error a server gets when the hub on the port runs another version, which it cannot talk to.
 export const HUB_VERSION_MISMATCH = "HUB_VERSION_MISMATCH";
 
