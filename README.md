@@ -96,7 +96,9 @@ Start a new agent session afterwards: MCP servers load when a session starts.
 
 Bruse does not update itself. To update, get the new version (`brew upgrade bruse`, or a newer zip or
 checkout) and run `bruse setup`, which replaces the installed copy and reloads the extension; `bruse
-doctor` tells you when the browser still runs older extension code.
+doctor` tells you when the browser still runs older extension code. After `brew upgrade bruse`, agents
+keep the previous version until you run `bruse setup`, and the agent tells you so on its first browser
+call.
 
 ## Commands
 
