@@ -150,8 +150,10 @@ test("file clients preserve configuration and reject comments", { timeout: 180_0
   writeFileSync(malformed, "{ // comment\n}\n");
   // Without a terminal, setup registers only with the clients it is given.
   const clients = "cursor,claude-desktop,devin-desktop,windsurf,vs-code,vs-code-insiders,github-copilot-cli,gemini-cli";
+  // Setup registers clients in name order and then waits for the extension, so the test stops it once every client has a result.
+  const allReported = (output) => files.every(([name]) => output.includes(`${name}: added`) || output.includes(`${name}: failed`));
   const setup = run("setup", "--clients", clients);
-  await until(() => setup.output().includes("Gemini CLI: added"), { timeoutMs: 60_000 });
+  await until(() => allReported(setup.output()), { timeoutMs: 60_000 });
   setup.child.kill("SIGTERM");
   const result = await setup.done;
   assert.match(result.output, /Cursor: failed \(could not read its MCP configuration\)/);
@@ -178,7 +180,7 @@ test("file clients preserve configuration and reject comments", { timeout: 180_0
   assert.ok(readdirSync(join(installed, "backups")).length >= files.length - 1);
   writeFileSync(malformed, JSON.stringify({ other: 42, mcpServers: { existing: { command: "other" } } }));
   const retry = run("setup", "--clients", clients);
-  await until(() => retry.output().includes("Gemini CLI: added"), { timeoutMs: 60_000 });
+  await until(() => allReported(retry.output()), { timeoutMs: 60_000 });
   retry.child.kill("SIGTERM");
   await retry.done;
   assert.equal(JSON.parse(readFileSync(malformed)).mcpServers.bruse.args.at(-1), join(installed, "browser", "mcp", "server.mjs"));
