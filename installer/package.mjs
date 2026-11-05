@@ -22,10 +22,14 @@ cpSync(join(root, "bin", "bruse.mjs"), join(stage, "bin", "bruse.mjs"));
 cpSync(join(root, "installer", "Install.command"), join(stage, `Install ${name}.command`));
 chmodSync(join(stage, `Install ${name}.command`), 0o755);
 for (const file of ["LICENSE", "SECURITY.md", "CHANGELOG.md"]) cpSync(join(root, file), join(stage, file));
-// README links to files the package leaves out point to this version in the repository instead.
-const readme = readFileSync(join(root, "README.md"), "utf8").replace(/\]\(([^)#:]+)\)/g, (link, path) =>
-  existsSync(join(stage, path)) ? link : `](${homepage}/blob/v${version}/${path})`,
-);
+// README links and images that name files the package leaves out point to this version in the
+// repository instead: links to its page, images to the file itself.
+const inPackage = (path) => existsSync(join(stage, path));
+const readme = readFileSync(join(root, "README.md"), "utf8")
+  .replace(/\]\(([^)#:]+)\)/g, (link, path) => (inPackage(path) ? link : `](${homepage}/blob/v${version}/${path})`))
+  .replace(/\b(href|src|srcset)="([^"#:]+)"/g, (attribute, name, path) =>
+    inPackage(path) ? attribute : `${name}="${homepage}/${name === "href" ? "blob" : "raw"}/v${version}/${path}"`,
+  );
 writeFileSync(join(stage, "README.md"), readme);
 // Agents opened in the unpacked package read these: Codex reads AGENTS.md, Claude Code reads CLAUDE.md.
 cpSync(join(root, "installer", "agent-instructions.md"), join(stage, "AGENTS.md"));
