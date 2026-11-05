@@ -178,13 +178,13 @@ The following is a diff from the previous accessibility tree with ~ and + repres
 The focused UI element is 15 radio button (settable, checked) Medium
 ```
 
-Other calls in a session:
+Other calls on the same tab:
 
 ```js
-await cua.getState();                                              // browsers and tabs
-await tab.playwright.getByRole("button", { name: "Save" }).click(); // Playwright-style locators
-await tab.getScreenshot();                                         // when the tree does not show enough
-await tab.markDeliverable();                                       // keep the tab open after the session
+await cua.getState();                                                       // browsers and tabs
+await form.playwright.getByRole("button", { name: "Submit order" }).click(); // Playwright-style locators
+await form.getScreenshot();                                                 // when the tree does not show enough
+await form.markDeliverable();                                               // keep the tab open after the session
 ```
 
 The full API is in [browser/mcp/cua/docs.mjs](browser/mcp/cua/docs.mjs).
