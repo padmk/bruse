@@ -30,7 +30,8 @@ MCP server (hub) ◀──WebSocket 127.0.0.1:47615──▶ extension ──chr
 - `installer/`: `install.mjs` (the installer), `Install.command` (its double-click entry point on macOS,
   which finds Node.js), `agent-instructions.md` (installation steps for an agent, shipped as the
   package's `AGENTS.md` with a `CLAUDE.md` that imports it), `clients.mjs` (the agent clients beyond
-  Claude Code and Codex) and `package.mjs` (builds the zip package, with every other installer module).
+  Claude Code and Codex) and `package.mjs` (builds the zip package, with every other installer module, and points the README's
+  links and images to files the package leaves out at the release's tag in the repository).
 - `browser/native-host/pairing.mjs`: one framed native request, retrieving or creating the private
   pairing secret through `secret.mjs`, which setup also calls. `installer/native-host.mjs` writes browser manifests and a launcher in the stable
   installed copy, using the same stable Node path as MCP registration. The extension manifest key
