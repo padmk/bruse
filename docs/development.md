@@ -26,7 +26,8 @@ MCP server (hub) ◀──WebSocket 127.0.0.1:47615──▶ extension ──chr
   files as ES modules for Node; installed copies of `browser/` include it.
 - `bench/`: benchmark against Claude in Chrome on local task pages (`tasks.mjs`) and public websites
   (`tasks-real.mjs`), with one grading rule (`grading.mjs`) and the conversation checks that decide
-  whether the browser produced an answer (`transcript.mjs`); see `bench/README.md`.
+  whether the browser produced an answer (`transcript.mjs`), plus a prompt injection test
+  (`injection.mjs`); see `bench/README.md`.
 - `installer/`: `install.mjs` (the installer), `Install.command` (its double-click entry point on macOS,
   which finds Node.js), `agent-instructions.md` (installation steps for an agent, shipped as the
   package's `AGENTS.md` with a `CLAUDE.md` that imports it), `clients.mjs` (the agent clients beyond
@@ -98,6 +99,9 @@ set to Brave. Run them in Chrome for Testing.
 ## Benchmarks
 
 `bench/` compares Bruse with Claude in Chrome on local task pages; see [bench/README.md](../bench/README.md).
+`bench/injection.mjs` measures whether page content steers an agent into leaking a local file. The
+proposal for a REPL with restricted permissions, which that test is meant to judge, is in
+[restricted-repl.md](restricted-repl.md).
 
 ## Releasing
 

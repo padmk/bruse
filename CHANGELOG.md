@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- SECURITY.md says that a client holding the hub token can also end a session whose identifier it knows, which closes that session's unmarked tabs. The benchmark has a prompt injection test (`bench/injection.mjs`) with its first results, and `docs/restricted-repl.md` describes what a REPL with restricted permissions would have to cover.
+
 ## 0.23.3
 
 - **Raw DevTools commands in `Network` and `Page` by name:** only listed commands of these two domains pass, so a command that a later browser version adds is refused until it is listed. Newly refused, besides the cookie and cache commands: choosing the download folder (`Page.setDownloadBehavior`), bringing the window to the front (`Page.bringToFront`), creating isolated worlds and loading network resources outside the page (`Network.loadNetworkResource`).
