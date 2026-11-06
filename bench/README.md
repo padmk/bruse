@@ -58,8 +58,10 @@ step that needs the user is reported as a failure of that run. Both tools run in
 
 ## Results on public websites (2026-10-29)
 
-`results/2026-10-29T17-28-51-255Z`: commit `c6f4daa`, whose code is this history's before the element-number
-fix described below (the history was squashed afterwards), the extension's code fingerprint confirmed
+These results are historical: they measure version 0.17.0, and later releases were not benchmarked again.
+`results/2026-10-29T17-28-51-255Z`: commit `c6f4daa`, kept under the tag `bench-2026-10-29` because the
+history was squashed afterwards and no branch contains it; its code is this history's before the
+element-number fix described below. The extension's code fingerprint confirmed
 equal to the checkout's, claude-opus-5-5, effort medium, 8 runs per task and tool, alternating which tool went
 first, Brave 156 on one Mac. Median time and pass count, how much less time and money the median Bruse
 run took, and the 95 % bootstrap interval of the Bruse/Claude in Chrome time ratio over paired runs:
