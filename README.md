@@ -39,7 +39,7 @@ On six read and interaction tasks on public websites (Wikipedia, GitHub, the Pyt
 paginated shop and a single-page app), measured on 2026-10-29 with the same model and prompts, Bruse's
 median run took 48 to 68 % less time and 38 to 74 % less money than Claude in Chrome, with all 96 runs
 of both tools passing. That is one computer, one browser (Brave), one model and eight runs per task,
-on the code before the last fixes to replaced elements and tab shares, which were not measured again;
+on version 0.17.0 (tag `bench-2026-10-29`); later releases were not measured again;
 see [the benchmark](bench/README.md) for the method, every run and what the numbers do not cover.
 
 ## Requirements
@@ -275,11 +275,16 @@ The `js` tool repeats these rules in its documentation, which the first call ret
   but it would still not stop an agent from sending what it read elsewhere, and every task would need
   its sign-in redirects, payment pages and other domains allowed, a list users would widen until it
   limits little. A browser profile without important sign-ins protects those accounts fully and needs no
-  list, so that is the recommendation; a list stays an option if users ask for one.
+  list, so that is the recommendation. An enforced list would still limit the reach of an agent's
+  mistake; it is left out for now because of its scope and upkeep, and stays an option if users ask
+  for one.
 - **Why `fetch` stays in the REPL, and confirmations stay instructions.** Turning off `fetch` would not
   stop the network, since Node.js modules and processes reach it too; a real limit means running the
-  REPL as a separate process with restricted permissions, which would also cut off the files that
-  uploads, downloads and exports use. Technical confirmations cannot tell an irreversible click from any
+  REPL as a separate process with restricted Node.js permissions. Uploads, downloads and exports could
+  then use a session folder, but uploading a file kept elsewhere would need copying or your approval,
+  and the browser itself still reaches local files (file pages, file inputs), so the extension would
+  have to limit those too. Node.js describes its permissions as a precaution, not a boundary against
+  malicious code. Bruse runs the REPL in the MCP server's process. Technical confirmations cannot tell an irreversible click from any
   other at the input level and would interrupt every step, so the agent is instructed to confirm such
   steps with you instead.
 - **Pages, not the browser.** The extension lets agents open and drive web pages (and data and file

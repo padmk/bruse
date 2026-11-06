@@ -29,6 +29,8 @@ Bruse gives the agents you run full control of your browser: the code an agent s
 
 Tab isolation limits what an agent does through Bruse's browser API. It is not a sandbox: code in the `js` tool runs as your user, so an agent that sets out to get around it (for example by reading the hub token) is outside the threat model, like any program of yours.
 
+The hub token is a full client credential, not a per-session one. A client that holds it names its own session when it connects: with a fresh identifier it gets a new session that can open tabs in the user's profile, and with the identifier of a running session (a random UUID kept by that session's MCP server) it can act as that session and reach its tabs. In the default "agent tabs" mode it stays limited to the tabs of the session it names and the tabs the user shared. Such a client is a program running as the user and therefore outside the threat model.
+
 No independent security audit of Bruse has been published.
 
 Pairing uses native messaging. Setup registers a host whose `allowed_origins` contains only the ID
