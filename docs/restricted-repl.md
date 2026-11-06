@@ -29,6 +29,26 @@ process, so a macOS build can promise only the Node.js permissions.
 - Full Node.js stays available as an explicit choice at setup, for users who want the agent to work
   with local files directly.
 
+## Contract between the REPL and its parent
+
+The restricted REPL is only as strong as what it can ask its parent to do. Today the worker sends
+`browser-call` messages (`browser-port.mjs`) and the server relays any method with any parameters to the
+hub under the session's identifier (`Session.relay` in `server.mjs`); the extension then decides what the
+session may reach. In restricted mode the parent must decide first:
+
+- **Methods.** The parent relays only the hub methods the `cua` API uses, by name, and refuses the rest,
+  in particular `extension.reload` and other requests that do not act on the session's own tabs.
+- **Session.** The parent sets the session identifier on every relayed call and ignores any identifier
+  the child sends, so the child cannot act as another session or end one.
+- **Paths.** The parent never reads, writes or opens a file for the child. A parameter that names a
+  file (file inputs, `file:` addresses) is checked against the session folder by the extension's guard,
+  which sees every request whatever process sent it.
+- **End of a call or session.** When a call times out or the session ends, the parent stops relaying for
+  the old child before it starts a new one and releases held keys and buttons, as it does for workers
+  today; a reply that arrives later is dropped.
+- **Credentials.** The hub token, the pairing secret and the state directory stay in the parent; nothing
+  in a reply contains them.
+
 ## Paths that reach local files
 
 Node.js permissions cover file access by the REPL process itself. The browser reads and writes files on
