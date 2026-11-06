@@ -42,7 +42,7 @@ test("a user tab stays hidden until shared, and binding a shared tab does not tr
   const u = url("/page?user");
   await env.browser.cdp.send("Target.createTarget", { url: u });
   await waitPage(u, true);
-  const userTabId = await env.inPopup(`chrome.tabs.query({}).then((tabs) => tabs.find((tab) => tab.url === ${JSON.stringify(u)}).id)`);
+  const userTabId = await until(() => env.inPopup(`chrome.tabs.query({}).then((tabs) => tabs.find((tab) => tab.url === ${JSON.stringify(u)})?.id ?? null)`), { message: `${u} in the tabs API` });
   const s = await env.session();
   assert.ok(!(await json(s, "await cua.listTabs({emit:false})")).some((t) => t.url === u), "an unshared tab is not listed");
   assert.match(await s.js("await cua.getState();"), /not shared with agents/);
@@ -61,7 +61,7 @@ test("shares stopped at the same time, also by a closing tab, all end", async ()
   const urls = [1, 2, 3].map((n) => url(`/page?share=${n}`));
   for (const u of urls) await env.browser.cdp.send("Target.createTarget", { url: u });
   for (const u of urls) await waitPage(u, true);
-  const ids = await env.inPopup(`chrome.tabs.query({}).then((tabs) => ${JSON.stringify(urls)}.map((u) => tabs.find((tab) => tab.url === u).id))`);
+  const ids = await until(() => env.inPopup(`chrome.tabs.query({}).then((tabs) => { const ids = ${JSON.stringify(urls)}.map((u) => tabs.find((tab) => tab.url === u)?.id); return ids.every((id) => id !== undefined) ? ids : null; })`), { message: "the shared pages in the tabs API" });
   for (const id of ids) await env.share(id);
   const shared = () => env.inPopup(`chrome.storage.session.get("sharedTabs").then(({ sharedTabs }) => sharedTabs ?? [])`);
   assert.deepEqual((await shared()).toSorted(), ids.toSorted());
