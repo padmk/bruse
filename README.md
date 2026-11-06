@@ -288,8 +288,10 @@ The `js` tool repeats these rules in its documentation, which the first call ret
   turns into its internal pages, are refused. The extension's storage is open only to its own pages
   and service worker, not to scripts it runs in web pages. Raw DevTools commands are limited to the
   domains that act on the page in the tab (`Accessibility`, `Animation`, `CSS`, `DOM`, `DOMSnapshot`,
-  `Emulation`, `Input`, `Log`, `Network`, `Overlay`, `Page`, `Performance`, `Runtime`), without the
-  cookie and cache commands and `Page.addScriptToEvaluateOnNewDocument`, and run JavaScript only in the
+  `Emulation`, `Input`, `Log`, `Network`, `Overlay`, `Page`, `Performance`, `Runtime`). In `Network`
+  and `Page` only listed commands pass, without the cookie and cache commands, scripts registered for the
+  next page, the download folder and bringing the window to the front, so a command a later browser
+  version adds is refused until it is listed. Raw commands run JavaScript only in the
   page's own contexts, never in the isolated worlds where extensions' content scripts run. On browsers with zero-isolate
   handles, raw Runtime object commands without a unique context selector (including `getProperties`,
   `awaitPromise`, `queryObjects` and `releaseObject`) are refused; use `Runtime.callFunctionOn` instead.
