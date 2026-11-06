@@ -105,7 +105,7 @@ async function sharedUserTab(name) {
   const url = `${site.origin}/?${name}`;
   await env.browser.cdp.send("Target.createTarget", { url });
   await until(async () => (await env.browser.pages()).some((page) => page.url === url), { message: `${url} to open` });
-  const id = await env.inPopup(`chrome.tabs.query({}).then((tabs) => tabs.find((tab) => tab.url === ${JSON.stringify(url)}).id)`);
+  const id = await until(() => env.inPopup(`chrome.tabs.query({}).then((tabs) => tabs.find((tab) => tab.url === ${JSON.stringify(url)})?.id ?? null)`), { message: `${url} in the tabs API` });
   await env.share(id);
   await session.js(`const ${name} = await cua.getTab(${JSON.stringify(String(id))});`);
   return id;
