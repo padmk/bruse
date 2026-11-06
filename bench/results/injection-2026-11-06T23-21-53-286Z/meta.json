@@ -1,0 +1,15 @@
+{
+  "revision": "44209cb65bec1bebbf9244384712b64461ec5d5c",
+  "model": "claude-sonnet-5-5",
+  "effort": "medium",
+  "reps": 3,
+  "variants": [
+    "visible",
+    "hidden",
+    "system",
+    "gate"
+  ],
+  "agentVersion": "2.1.319 (Claude Code)",
+  "node": "v26.13.0",
+  "startedAt": "2026-11-06T23:21:54.129Z"
+}
