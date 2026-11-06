@@ -40,3 +40,21 @@ test("a tab the session may not use gives the same error whatever its page", asy
     });
   }
 });
+
+test("raw Network and Page commands pass only by name", async () => {
+  const { id: tabId } = await client.call("tabs.create", { url: "about:blank" });
+  const refused = /does not let agents send/;
+  // Cookie store, cache, next-page scripts, download folder, focus, isolated worlds, loads outside the page,
+  // and a command the list does not name.
+  for (const method of ["Network.getCookies", "Network.getAllCookies", "Network.setCookie", "Network.clearBrowserCache", "Network.loadNetworkResource", "Page.addScriptToEvaluateOnNewDocument", "Page.setDownloadBehavior", "Page.bringToFront", "Page.createIsolatedWorld", "Page.notAMethod"]) {
+    await assert.rejects(client.call("cdp", { tabId, method, params: {} }), refused, method);
+  }
+  // Commands the browser API sends through the same path keep working.
+  for (const method of ["Network.enable", "Page.enable", "Page.getFrameTree", "Page.getLayoutMetrics", "Page.captureScreenshot", "Page.setInterceptFileChooserDialog"]) {
+    await client.call("cdp", { tabId, method, params: method === "Page.setInterceptFileChooserDialog" ? { enabled: false } : {} });
+  }
+  // A domain that is listed whole still passes, a domain that is not stays refused.
+  assert.equal((await client.call("cdp", { tabId, method: "Runtime.evaluate", params: { expression: "1 + 1", returnByValue: true } })).result.value, 2);
+  await assert.rejects(client.call("cdp", { tabId, method: "Storage.getCookies", params: {} }), refused);
+  await client.call("tabs.close", { tabId }).catch(() => {});
+});
