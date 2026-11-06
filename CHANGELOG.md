@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.23.3
+
+- **Raw DevTools commands in `Network` and `Page` by name:** only listed commands of these two domains pass, so a command that a later browser version adds is refused until it is listed. Newly refused, besides the cookie and cache commands: choosing the download folder (`Page.setDownloadBehavior`), bringing the window to the front (`Page.bringToFront`), creating isolated worlds and loading network resources outside the page (`Network.loadNetworkResource`).
+- SECURITY.md says that the hub token is a full client credential: a client that holds it can act as any agent session whose identifier it knows. The README explains what a REPL with restricted Node.js permissions would and would not limit, and the benchmark is labeled as a measurement of 0.17.0, kept under the tag `bench-2026-10-29`.
+
 ## 0.23.2
 
 - Setup registers the Node.js installation behind fnm's per-shell link instead of the link itself, which fnm removes later and which left the MCP server and pairing host unable to start.
