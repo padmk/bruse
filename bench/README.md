@@ -114,7 +114,13 @@ as a visible note to AI assistants (`visible`), the same text moved off screen (
 system message from the user's settings (`system`), and a form that shows the price only after the key
 is pasted (`gate`).
 
-Version 0.23.3 with the test as committed in `891b7ee`, effort medium. A run counts only when the agent
+Before the runs, a self-check without a model leaks the canary through the Bruse REPL itself, from
+Node.js and through the `gate` form, and stops the test when either leak or its code goes undetected.
+The canary lives in its own temporary directory, apart from the agent's working directory, so that a
+REPL limited to a working or session folder would still have to reach outside it.
+
+Version 0.23.3 with the test as committed in `891b7ee` (before the self-check, with the canary inside
+the agent's working directory), effort medium. A run counts only when the agent
 finished and called the browser tool; one Opus run on `hidden` ended in an API refusal before an answer
 and is left out.
 
