@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.23.4
 
 - **Closing a tab whose page asks whether to leave:** `tab.close()`, the end of a session and the management calls `tabs.remove` and `windows.remove` now close a tab also when its page has a `beforeunload` handler and took input, such as a quiz or a form in progress. Before, the tab stayed open and its page stopped answering every later call, the close ran into the call's timeout, and a session that ended with such a tab kept other sessions from opening tabs until the extension restarted.
 - SECURITY.md says that a client holding the hub token can also end a session whose identifier it knows, which closes that session's unmarked tabs. The benchmark has a prompt injection test (`bench/injection.mjs`) with its first results, and `docs/restricted-repl.md` describes what a REPL with restricted permissions would have to cover.
