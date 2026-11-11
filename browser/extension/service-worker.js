@@ -3,7 +3,7 @@
 // logic lives in the MCP server.
 
 import { ALL_TABS, accessMode, anyoneMayAccess, audienceOf, bothAudiences, endShareOfClosedTab, mayAccess, requireAccess, requireOwnTab, requireOwnWindow, seesWindow, visibleTabs } from "./access.js";
-import { EXTENSION_WORK, attachedTabIds, cdp, closeTab, consoleLogs, detach, networkRequests, onCdpEvent, setDebugGate, tabState } from "./cdp.js";
+import { EXTENSION_WORK, attachedTabIds, cdp, closeTab, consoleLogs, detach, networkRequests, onCdpEvent, openDialog, setDebugGate, tabState } from "./cdp.js";
 import { waitForDownload } from "./downloads.js";
 import { PAUSED_ERROR, isPaused } from "./pause.js";
 import { agentTabs, createAgentTab, createAgentTabs, endSession, markTab, noteAgentInput, onTabOpened, openingSession, setLiveSessions } from "./sessions.js";
@@ -50,20 +50,33 @@ async function requirePermission(permission, what) {
 }
 
 // Resolves with whether the tab finished loading; slow pages are returned as they are after the timeout.
+// A page that opens a JavaScript dialog loads nothing until the dialog is answered (a page asking whether
+// to leave holds the navigation back), so the wait ends there.
 function waitForLoad(tabId, timeoutMs = LOAD_TIMEOUT_MS) {
   return new Promise((resolve) => {
     const done = (loaded) => {
       clearTimeout(timer);
       chrome.tabs.onUpdated.removeListener(listener);
+      stopDialogWatch();
       resolve(loaded);
     };
+    const stopDialogWatch = onCdpEvent((id, method) => id === tabId && method === "Page.javascriptDialogOpening" && done(false));
     const listener = (id, change) => {
       if (id === tabId && change.status === "complete") done(true);
     };
     const timer = setTimeout(() => done(false), timeoutMs);
     chrome.tabs.onUpdated.addListener(listener);
+    if (openDialog(tabId)) return done(false);
     chrome.tabs.get(tabId).then((tab) => tab.status === "complete" && done(true), () => done(false));
   });
+}
+
+// Attaches the debugger before a navigation the browser itself performs. A page may ask whether to leave
+// (beforeunload, after input); only an attached debugger learns of that dialog and can answer it, and
+// without one the tab stays on a page that answers nothing. A tab the debugger cannot attach to
+// navigates as it is.
+function attachBeforeLeaving(tabId, session) {
+  return cdp(tabId, "Page.enable", {}, undefined, undefined, { session }).catch(() => {});
 }
 
 function browserName() {
@@ -124,7 +137,8 @@ const handlers = {
     return tabInfo(await chrome.tabs.get(tabId));
   },
 
-  "tabs.history": async ({ tabId, direction }) => {
+  "tabs.history": async ({ tabId, direction }, session) => {
+    await attachBeforeLeaving(tabId, session);
     if (direction === "back") await chrome.tabs.goBack(tabId);
     else if (direction === "forward") await chrome.tabs.goForward(tabId);
     else await chrome.tabs.reload(tabId);
@@ -168,7 +182,7 @@ const handlers = {
     checkManagementArguments(namespace, method, args);
     const call = await withDefaults(namespace, method, args);
     await checkManagementAccess(session, namespace, method, call);
-    const own = OPENING_METHODS[`${namespace}.${method}`] ?? CLOSING_METHODS[`${namespace}.${method}`];
+    const own = OPENING_METHODS[`${namespace}.${method}`] ?? CLOSING_METHODS[`${namespace}.${method}`] ?? LEAVING_METHODS[`${namespace}.${method}`];
     return withoutHiddenTabs(session, namespace, await (own ? own(session, call) : chrome[namespace][method](...call)));
   },
 
@@ -289,6 +303,14 @@ const CLOSING_METHODS = {
     const tabs = await chrome.tabs.query({ windowId });
     if (!tabs.length) return chrome.windows.remove(windowId);
     await Promise.all(tabs.map((tab) => closeTab(tab.id)));
+  },
+};
+
+// Management calls that make a tab leave its page.
+const LEAVING_METHODS = {
+  "tabs.reload": async (session, [tabId, ...rest]) => {
+    await attachBeforeLeaving(tabId, session);
+    return chrome.tabs.reload(tabId, ...rest);
   },
 };
 

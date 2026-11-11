@@ -82,13 +82,29 @@ export const SELECT_TEXT = `function (text, prefix, suffix, selectionType) {${OP
   selection.addRange(range);
 }`;
 
-// this = element. Dispatches a paste event carrying the given data; returns whether the page handled it.
-export const DISPATCH_PASTE = `function (mimeType, data) {${OPT_OUT_OF_PASSWORD_MANAGERS}
+// this = a node or document. Pastes into the element that has focus in its document, followed through
+// shadow roots and frames of the same process: dispatches a paste event carrying the data and, when the
+// page does not handle it, inserts HTML itself. Returns whether the data was handled either way; plain
+// text that was not is left to the caller to insert as typed text.
+export const PASTE_INTO_FOCUSED = `function (mimeType, data) {
+  let doc = this.nodeType === 9 ? this : this.ownerDocument;
+  let target = doc.activeElement ?? doc.body;
+  for (;;) {
+    const inner = target.shadowRoot?.activeElement ?? target.contentDocument?.activeElement;
+    if (!inner) break;
+    target = inner;
+  }
+  doc = target.ownerDocument;
+  (function () {${OPT_OUT_OF_PASSWORD_MANAGERS}
+  }).call(target);
   const transfer = new DataTransfer();
   transfer.setData(mimeType, data);
   if (mimeType !== "text/plain") transfer.setData("text/plain", data);
-  const event = new ClipboardEvent("paste", { clipboardData: transfer, bubbles: true, cancelable: true });
-  return !this.dispatchEvent(event);
+  const event = new ClipboardEvent("paste", { clipboardData: transfer, bubbles: true, cancelable: true, composed: true });
+  if (!target.dispatchEvent(event)) return true;
+  if (mimeType !== "text/html") return false;
+  doc.execCommand("insertHTML", false, data);
+  return true;
 }`;
 
 // Finds elements for a chain of locator steps. Returns an array of elements.

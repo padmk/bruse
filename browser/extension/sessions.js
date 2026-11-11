@@ -140,6 +140,16 @@ chrome.webNavigation.onCreatedNavigationTarget.addListener(async ({ sourceTabId,
         // The session recorded with the page's report; an opening it could not attribute has no owner.
         const sessionId = reported.sessionId;
         if (!sessionId || state.tabs[tabId]) return null;
+        // The session may have ended while the opening was judged; its new tab goes the way of a tab
+        // still being created then (see groupAgentTabsNow).
+        if (endedSessions.has(sessionId)) {
+          if (await isPaused()) {
+            state.tabs[tabId] = { sessionId, mark: null };
+            notePausedEnd(state, sessionId, endedSessions.get(sessionId));
+            await save(state);
+          } else await closeTab(tabId).catch(() => {});
+          return null;
+        }
         state.tabs[tabId] = { sessionId, mark: null };
         keepLoaded(tabId);
         openedFor.set(tabId, sessionId);
@@ -413,6 +423,9 @@ async function endAbsentSessions() {
     if (current.ids.has(id)) continue;
     if (!current.absentSince.has(id)) current.absentSince.set(id, now);
     if (paused || now - current.absentSince.get(id) < ABSENT_SESSION_GRACE_MS) continue;
+    // A newer report (the session may be back) or a lost hub arrived while this sweep read storage or
+    // ended another session; the sweep that report queued decides from here.
+    if (live !== current) return;
     current.absentSince.delete(id);
     await endSessionNow(id, "absent");
   }
