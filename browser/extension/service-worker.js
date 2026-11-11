@@ -3,7 +3,7 @@
 // logic lives in the MCP server.
 
 import { ALL_TABS, accessMode, anyoneMayAccess, audienceOf, bothAudiences, endShareOfClosedTab, mayAccess, requireAccess, requireOwnTab, requireOwnWindow, seesWindow, visibleTabs } from "./access.js";
-import { EXTENSION_WORK, attachedTabIds, cdp, consoleLogs, detach, networkRequests, onCdpEvent, setDebugGate, tabState } from "./cdp.js";
+import { EXTENSION_WORK, attachedTabIds, cdp, closeTab, consoleLogs, detach, networkRequests, onCdpEvent, setDebugGate, tabState } from "./cdp.js";
 import { waitForDownload } from "./downloads.js";
 import { PAUSED_ERROR, isPaused } from "./pause.js";
 import { agentTabs, createAgentTab, createAgentTabs, endSession, markTab, noteAgentInput, onTabOpened, openingSession, setLiveSessions } from "./sessions.js";
@@ -136,8 +136,7 @@ const handlers = {
 
   "tabs.close": async ({ tabId }, session) => {
     await requireOwnTab(session, tabId);
-    await detach(tabId);
-    await chrome.tabs.remove(tabId);
+    await closeTab(tabId);
     return null;
   },
 
@@ -169,8 +168,8 @@ const handlers = {
     checkManagementArguments(namespace, method, args);
     const call = await withDefaults(namespace, method, args);
     await checkManagementAccess(session, namespace, method, call);
-    const opening = OPENING_METHODS[`${namespace}.${method}`];
-    return withoutHiddenTabs(session, namespace, await (opening ? opening(session, call) : chrome[namespace][method](...call)));
+    const own = OPENING_METHODS[`${namespace}.${method}`] ?? CLOSING_METHODS[`${namespace}.${method}`];
+    return withoutHiddenTabs(session, namespace, await (own ? own(session, call) : chrome[namespace][method](...call)));
   },
 
   // Picks up edited extension files without visiting the extensions page.
@@ -278,6 +277,20 @@ async function checkManagementAccess(session, namespace, method, args) {
     await requireOwnWindow(session, second.windowId);
   }
 }
+
+// Management calls that close tabs close each one with closeTab, so that a page asking whether to leave
+// does not keep its tab open.
+const CLOSING_METHODS = {
+  "tabs.remove": async (_session, [ids]) => {
+    await Promise.all([ids].flat().map((tabId) => closeTab(tabId)));
+  },
+  // A window goes with its last tab.
+  "windows.remove": async (_session, [windowId]) => {
+    const tabs = await chrome.tabs.query({ windowId });
+    if (!tabs.length) return chrome.windows.remove(windowId);
+    await Promise.all(tabs.map((tab) => closeTab(tab.id)));
+  },
+};
 
 // Management calls that open tabs. Like tabs.create, in every access mode, they open the tabs for the
 // session: its own, in the agent group, closed when it ends.

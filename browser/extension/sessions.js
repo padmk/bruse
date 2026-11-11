@@ -7,7 +7,7 @@
 
 import { loadAgentState as load, saveAgentState as save } from "./agent-state.js";
 import { anyoneMayAccess } from "./access.js";
-import { detach, onCdpEvent, sinceAgentInput } from "./cdp.js";
+import { closeTab, detach, onCdpEvent, sinceAgentInput } from "./cdp.js";
 import { isPaused, onPausedChange } from "./pause.js";
 import { AGENT_INPUT_WINDOW_MS } from "./shared.js";
 
@@ -252,7 +252,7 @@ async function groupAgentTabsNow(tabIds, sessionId) {
     throw new Error(tabIds.length === 1 ? "The agent session ended while its tab was being created; the tab closes when the user resumes agents" : "The agent session ended while its tabs were being created; the tabs close when the user resumes agents");
   }
   if (endedSessions.has(sessionId)) {
-    await Promise.all(tabIds.filter((tabId) => !KEPT_MARKS.has(state.tabs[tabId]?.mark)).map((tabId) => chrome.tabs.remove(tabId).catch(() => {})));
+    await Promise.all(tabIds.filter((tabId) => !KEPT_MARKS.has(state.tabs[tabId]?.mark)).map((tabId) => closeTab(tabId).catch(() => {})));
     throw new Error(tabIds.length === 1 ? "The agent session ended while its tab was being created; the tab was closed" : "The agent session ended while its tabs were being created; the tabs were closed");
   }
   // Ownership is recorded even if grouping fails, so that the session's end still closes the tabs.
@@ -331,7 +331,7 @@ async function endSessionNow(sessionId, cause) {
     return keepUntilResume(state, sessionId, cause);
   }
   // One by one, so a tab that is already gone does not keep the others open.
-  await Promise.all(toClose.map((tabId) => chrome.tabs.remove(tabId).catch(() => {})));
+  await Promise.all(toClose.map((tabId) => closeTab(tabId).catch(() => {})));
   // A kept tab is the user's again, so the browser may discard it like any other (see keepLoaded).
   await Promise.all(kept.map((tabId) => chrome.tabs.ungroup(tabId).catch(() => {})));
   for (const tabId of kept) chrome.tabs.update(tabId, { autoDiscardable: true }).catch(() => {});

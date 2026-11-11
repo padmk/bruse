@@ -272,6 +272,45 @@ export async function detach(tabId) {
   await chrome.debugger.detach({ tabId }).catch(() => {});
 }
 
+// How long a tab gets to close before closeTab reports that it stayed open.
+const CLOSE_TIMEOUT_MS = 10_000;
+
+// Closes a tab and resolves once it is gone. After input, a page with a beforeunload handler asks
+// whether to leave. With no debugger attached nothing can answer that dialog: the tab stays open, its
+// page stops responding and the browser's own close call never settles. So the debugger is attached
+// while the tab closes and answers the dialog with "leave". This is the extension's own work on a tab
+// the caller may close, so it does not ask the access gate; it sends the page nothing but that answer.
+export async function closeTab(tabId) {
+  const target = { tabId };
+  // The tab's commands end here; the dialog is this function's to answer, not an agent's.
+  sessions.delete(tabId);
+  const leave = (source, method, params) => {
+    if (source.tabId !== tabId || method !== "Page.javascriptDialogOpening" || params.type !== "beforeunload") return;
+    chrome.debugger.sendCommand(source.sessionId ? { tabId, sessionId: source.sessionId } : target, "Page.handleJavaScriptDialog", { accept: true }).catch(() => {});
+  };
+  let onRemoved, timer;
+  chrome.debugger.onEvent.addListener(leave);
+  try {
+    // Fails when the debugger is attached already or cannot attach (an internal page); both are fine.
+    await chrome.debugger.attach(target, PROTOCOL_VERSION).catch(() => {});
+    await chrome.debugger.sendCommand(target, "Page.enable").catch(() => {});
+    await new Promise((resolve, reject) => {
+      onRemoved = (id) => id === tabId && resolve();
+      chrome.tabs.onRemoved.addListener(onRemoved);
+      timer = setTimeout(() => reject(new Error(`Tab ${tabId} did not close within ${CLOSE_TIMEOUT_MS / 1000} s`)), CLOSE_TIMEOUT_MS);
+      chrome.tabs.remove(tabId).catch(reject);
+    });
+  } catch (error) {
+    // The tab is still there, with no session that would detach the debugger later.
+    await chrome.debugger.detach(target).catch(() => {});
+    throw error;
+  } finally {
+    clearTimeout(timer);
+    chrome.tabs.onRemoved.removeListener(onRemoved);
+    chrome.debugger.onEvent.removeListener(leave);
+  }
+}
+
 // Removes frames that other extensions injected into the page (for example password manager menus).
 // The browser refuses debugger access to a tab while such a frame is present; this runs only after it
 // did, and removes no more than those frames and known password manager wrappers that hold frames. Each
