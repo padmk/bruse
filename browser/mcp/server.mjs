@@ -56,7 +56,17 @@ const TOOLS = [
 const TERMINATE_GRACE_MS = 500;
 // A reset the worker does not confirm in time (it is busy or stuck) replaces the worker instead.
 const RESET_WAIT_MS = 2_000;
-const TIMED_OUT_NOTE = "The REPL was reset because the call timed out: code still running from it was stopped. Bind tabs again with cua.getTab(id).";
+// Timers take at most 2^31 - 1 ms and run a longer delay at once, which would end the call as timed out.
+const MAX_TIMEOUT_MS = 2 ** 31 - 1 - TERMINATE_GRACE_MS;
+
+// The timeout of a js call from its `timeout_ms` argument; clients may send null for an argument left out.
+function callTimeout(value) {
+  if (value === undefined || value === null) return DEFAULT_TIMEOUT_MS;
+  if (!Number.isInteger(value) || value < 1) throw Object.assign(new Error("timeout_ms must be a whole number of milliseconds, 1 or more"), { code: -32602 });
+  return Math.min(value, MAX_TIMEOUT_MS);
+}
+
+const TIMED_OUT_NOTE ="The REPL was reset because the call timed out: code still running from it was stopped. Bind tabs again with cua.getTab(id).";
 
 // Mouse buttons and keys the REPL's code holds pressed. A worker replaced in the middle of a long press
 // would leave them down in the page; the host releases them.
@@ -165,7 +175,7 @@ class ReplHost {
     });
   }
 
-  async run(code, timeoutMs = DEFAULT_TIMEOUT_MS) {
+  async run(code, timeoutMs) {
     const result = await this.request({ type: "run", code, timeoutMs }, timeoutMs + TERMINATE_GRACE_MS);
     if (result !== undefined && !result.timedOut) return result;
     await this.restart();
@@ -204,8 +214,9 @@ async function handle(message) {
     case "tools/call": {
       const { name, arguments: args = {} } = message.params ?? {};
       if (name === "js") {
+        const timeoutMs = callTimeout(args.timeout_ms);
         return serialized(async () => {
-          const result = await repl.run(String(args.code ?? ""), args.timeout_ms);
+          const result = await repl.run(String(args.code ?? ""), timeoutMs);
           const notice = updateNotice();
           return notice ? { ...result, content: [...result.content, { type: "text", text: notice }] } : result;
         });

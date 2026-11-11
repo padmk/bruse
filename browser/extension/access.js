@@ -11,7 +11,7 @@
 // The session of a request comes from the hub's envelope, not from the request's parameters, so a
 // session cannot act as another.
 
-import { tabOwner } from "./agent-state.js";
+import { loadAgentState, tabOwner } from "./agent-state.js";
 
 const AGENT_TABS = "agent-tabs";
 export const ALL_TABS = "all-tabs";
@@ -74,11 +74,17 @@ export function wasSharedWhenClosed(tabId) {
   return closedShares.has(tabId);
 }
 
+// The access rule over one reading of the mode, the shares and the tab owners, as a function
+// (sessionId, tabId) -> whether the session may reach the tab. A listing reads storage once for all of
+// its tabs; a check before an action takes a new reading.
+async function accessReading() {
+  const [mode, shared, { tabs }] = await Promise.all([accessMode(), sharedTabs(), loadAgentState()]);
+  return (sessionId, tabId) => mode === ALL_TABS || shared.has(tabId) || (Boolean(sessionId) && tabs[tabId]?.sessionId === sessionId);
+}
+
 // Whether `sessionId` may reach the tab.
 export async function mayAccess(sessionId, tabId) {
-  if ((await accessMode()) === ALL_TABS) return true;
-  if ((await sharedTabs()).has(tabId)) return true;
-  return Boolean(sessionId) && (await tabOwner(tabId)) === sessionId;
+  return (await accessReading())(sessionId, tabId);
 }
 
 // Whether any session may reach the tab: a tab nobody may reach keeps no debugger attached.
@@ -149,7 +155,7 @@ export async function seesWindow(sessionId, windowId) {
 
 // The tabs of a list that the session may reach, and how many others there are.
 export async function visibleTabs(sessionId, tabs) {
-  const shown = [];
-  for (const tab of tabs) if (await mayAccess(sessionId, tab.id)) shown.push(tab);
+  const reaches = await accessReading();
+  const shown = tabs.filter((tab) => reaches(sessionId, tab.id));
   return { shown, hidden: tabs.length - shown.length };
 }

@@ -9,7 +9,7 @@ import { OFF_PAGE, PAGE_CODE_MS, callOn, clickAt, coveringElement, dragBetween, 
 import { modifierMask, pressChord } from "./keys.mjs";
 import { Locator, functionSource, isRegExp } from "./locator.mjs";
 import { emitImage, emitText } from "./output.mjs";
-import { DISPATCH_PASTE, SELECT_TEXT, SET_VALUE } from "./page-scripts.mjs";
+import { PASTE_INTO_FOCUSED, SELECT_TEXT, SET_VALUE } from "./page-scripts.mjs";
 
 const SETTLE_LOAD_MS = 5_000;
 // How long after a click or key press a navigation it started is looked for.
@@ -37,6 +37,7 @@ const FILE_CHOOSER_WAIT_MS = 20_000;
 // How long a click by element number waits for something covering the element (an animation, a toast) to go away.
 const COVERED_WAIT_MS = 1_000;
 const FRAME_POINTER_WAIT_MS = 3_000;
+const NAVIGATED_MESSAGE = "The page or the element's frame loaded a new document since this element number was read; call getAXState() for current element numbers";
 const DIRECTIONS = { up: [0, -1], u: [0, -1], down: [0, 1], d: [0, 1], left: [-1, 0], l: [-1, 0], right: [1, 0], r: [1, 0] };
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -101,7 +102,9 @@ export class Tab {
 
   // Waits for a loading page and, after a recent action, until the DOM has been quiet for a moment.
   // Returns whether anything may have changed while waiting.
-  async settle(info) {
+  async settle(info, state) {
+    // Behind an open dialog the page neither loads nor changes, so there is nothing to wait for.
+    if ((state ?? (await this.pageState())).dialog) return false;
     const sinceAction = Date.now() - (this.lastActionAt ?? 0);
     const loading = (info ?? (await this.info())).status === "loading";
     if (loading) await this.context.call("tabs.waitForLoad", { tabId: this.tabId, timeoutMs: SETTLE_LOAD_MS }).catch(() => {});
@@ -155,6 +158,7 @@ export class Tab {
   // had at that snapshot never counts as the replacement (see findReplacement).
   async nodeFor(index) {
     const ref = await this.withFrameSession(this.tracker.nodeRef(index));
+    if (!(await this.inSameDocument(ref))) throw new Error(NAVIGATED_MESSAGE);
     if (!ref.departed && (await isAttached(this.cdpSender(ref.sessionId), ref.backendNodeId))) return ref;
     const state = await this.pageState();
     const page = await fetchPageTree((sessionId) => this.cdpSender(sessionId, { timeoutMs: PAGE_CODE_MS }), state.frames);
@@ -167,6 +171,16 @@ export class Tab {
     this.tracker.recordSnapshot(root, page.domNodes);
     this.tracker.replaceNode(index, replacement);
     return this.withFrameSession(replacement);
+  }
+
+  // Whether the frame of an element number still shows the document the number was read in. Backend
+  // node IDs start over in the process of a new document, so after a navigation the ID of a number may
+  // name an unrelated element there.
+  async inSameDocument(ref) {
+    if (!ref.loaderId) return false;
+    const { frameTree } = await this.cdpSender(ref.sessionId)("Page.getFrameTree");
+    const loaderOf = (tree) => (tree.frame.id === ref.documentFrameId ? tree.frame.loaderId : (tree.childFrames ?? []).map(loaderOf).find(Boolean));
+    return loaderOf(frameTree) === ref.loaderId;
   }
 
   // A cross-origin frame's session is looked up again by frame: the debugger may have attached anew
@@ -254,7 +268,7 @@ export class Tab {
 
   async renderState(options = {}) {
     let [info, state] = await Promise.all([this.info(), this.pageState()]);
-    if (await this.settle(info)) [info, state] = await Promise.all([this.info(), this.pageState()]);
+    if (await this.settle(info, state)) [info, state] = await Promise.all([this.info(), this.pageState()]);
     const header = `Browser tab: ${this.id}, Title: ${JSON.stringify(info.title ?? "")}, URL: ${JSON.stringify(info.url ?? "")}.`;
     if (state.dialog) {
       const { type, message } = state.dialog;
@@ -406,26 +420,21 @@ export class Tab {
     await this.afterInput({ mayNavigate: true });
   }
 
+  // The paste goes to the element with focus in the document of the element named (a frame's field is
+  // focused in the frame, not in the page that holds it), or in the page when none is named.
   async paste(elementIndex, text, { format = "text" } = {}) {
     await this.ensureNoDialog();
-    await this.focusTarget(elementIndex, { requireFocus: true });
-    const cdp = this.cdpSender();
     const mimeType = format === "html" ? "text/html" : "text/plain";
-    const objectGroup = `paste-${Math.random().toString(36).slice(2)}`;
-    const { result } = await cdp("Runtime.evaluate", { expression: "document.activeElement", returnByValue: false, objectGroup });
-    let handled = false;
-    if (result.objectId) {
-      try {
-        const { node } = await cdp("DOM.describeNode", { objectId: result.objectId });
-        handled = await callOn(cdp, node.backendNodeId, DISPATCH_PASTE, [mimeType, text]);
-      } finally {
-        cdp("Runtime.releaseObjectGroup", { objectGroup }).catch(() => {});
-      }
+    let handled;
+    if (elementIndex === null || elementIndex === undefined) {
+      handled = await this.evaluateInPage(`(${PASTE_INTO_FOCUSED}).call(document, ${JSON.stringify(mimeType)}, ${JSON.stringify(text)})`);
+    } else {
+      const { backendNodeId, sessionId } = await this.nodeFor(elementIndex);
+      const cdp = this.cdpSender(sessionId);
+      await focusNode(cdp, backendNodeId, { requireFocus: true });
+      handled = await callOn(cdp, backendNodeId, PASTE_INTO_FOCUSED, [mimeType, text]);
     }
-    if (!handled) {
-      if (format === "html") await this.evaluateInPage(`document.execCommand("insertHTML", false, ${JSON.stringify(text)})`);
-      else await cdp("Input.insertText", { text });
-    }
+    if (!handled) await this.cdpSender()("Input.insertText", { text });
     await this.afterInput();
   }
 

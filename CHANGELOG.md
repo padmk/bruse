@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.23.5
+
+- **Pages that ask whether to leave, and dialogs opened while no debugger was attached:** `tab.reload()`, `tab.back()`, `tab.forward()` and the management call `tabs.reload` on a page with a `beforeunload` handler that took input now report the page's dialog within a moment, and `getJsDialog()` answers it. Before, they waited 20 seconds, and when the debugger had detached from the idle tab the dialog could not be answered at all: the tab stayed on a page that answered nothing and every later call ran into its timeout. A dialog that a page opened while the debugger was detached (an `alert` from a timer in a tab left alone for two minutes) is reported on the next call instead of stalling it for 30 seconds, reading the state of a tab with an open dialog no longer waits up to 10 seconds for a load the dialog holds back, and closing a tab accepts any dialog open in it, where an `alert` kept the tab from closing.
+- **Element numbers after a navigation:** a number read before the tab or the element's frame loaded another document now fails and asks for a new `getAXState()`. Before, after a navigation to a page of another site, an old number could act on an unrelated element of the new page.
+- **Pasting into a frame:** `tab.paste(elementNumber, …)` reaches a field inside a frame. Before, the paste event and pasted HTML went to the page that holds the frame, and the call still reported success.
+- A session that reconnects at the moment its absence runs out keeps its tabs, and a tab that a page opens just as its session ends closes with it instead of staying open.
+- Listing tabs (`cua.getState()`, `cua.listTabs()`, the management calls) reads the access settings once per call, not three times per open tab.
+- A `js` call with `timeout_ms: null` uses the default timeout, other invalid values are refused with a clear message, and a timeout above about 24 days no longer ends the call at once.
+
 ## 0.23.4
 
 - **Closing a tab whose page asks whether to leave:** `tab.close()`, the end of a session and the management calls `tabs.remove` and `windows.remove` now close a tab also when its page has a `beforeunload` handler and took input, such as a quiz or a form in progress. Before, the tab stayed open and its page stopped answering every later call, the close ran into the call's timeout, and a session that ended with such a tab kept other sessions from opening tabs until the extension restarted.

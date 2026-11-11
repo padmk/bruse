@@ -254,7 +254,7 @@ async function attachNow(tabId) {
   }
   await rawSend(tabId, "Target.setAutoAttach", { autoAttach: true, waitForDebuggerOnStart: false, flatten: true }).catch(() => {});
   // Background tabs are throttled and may skip rendering; keep them live for input and screenshots.
-  await Promise.all([
+  const enabled = Promise.all([
     rawSend(tabId, "Page.enable"),
     rawSend(tabId, "Runtime.enable"),
     rawSend(tabId, "Log.enable"),
@@ -264,6 +264,11 @@ async function attachNow(tabId) {
     rawSend(tabId, "Page.setWebLifecycleState", { state: "active" }),
     rawSend(tabId, "Emulation.setFocusEmulationEnabled", { enabled: true }),
   ]).catch(() => {});
+  // A page that opened a JavaScript dialog while no debugger was attached reports it now and completes
+  // the other commands only once the dialog is answered; the session is ready for that answer.
+  let waiter;
+  await Promise.race([enabled, new Promise((resolve) => session.dialogWaiters.push((waiter = resolve)))]);
+  session.dialogWaiters = session.dialogWaiters.filter((w) => w !== waiter);
   return session;
 }
 
@@ -274,26 +279,34 @@ export async function detach(tabId) {
 
 // How long a tab gets to close before closeTab reports that it stayed open.
 const CLOSE_TIMEOUT_MS = 10_000;
+// How long closeTab waits for the tab to report its dialogs before it closes the tab.
+const CLOSE_ENABLE_WAIT_MS = 1_000;
 
 // Closes a tab and resolves once it is gone. After input, a page with a beforeunload handler asks
-// whether to leave. With no debugger attached nothing can answer that dialog: the tab stays open, its
-// page stops responding and the browser's own close call never settles. So the debugger is attached
-// while the tab closes and answers the dialog with "leave". This is the extension's own work on a tab
-// the caller may close, so it does not ask the access gate; it sends the page nothing but that answer.
+// whether to leave, and a page may have another JavaScript dialog open. With no debugger attached
+// nothing can answer a dialog: the tab stays open, its page stops responding and the browser's own close
+// call never settles. So the debugger is attached while the tab closes and accepts every dialog of the
+// tab, also one that was open before. This is the extension's own work on a tab the caller may close,
+// so it does not ask the access gate; it sends the page nothing but those answers.
 export async function closeTab(tabId) {
   const target = { tabId };
-  // The tab's commands end here; the dialog is this function's to answer, not an agent's.
+  const accept = (sessionId) => chrome.debugger.sendCommand(sessionId ? { tabId, sessionId } : target, "Page.handleJavaScriptDialog", { accept: true }).catch(() => {});
+  const wasOpen = Boolean(sessions.get(tabId)?.dialog);
+  // The tab's commands end here; its dialogs are this function's to answer, not an agent's.
   sessions.delete(tabId);
-  const leave = (source, method, params) => {
-    if (source.tabId !== tabId || method !== "Page.javascriptDialogOpening" || params.type !== "beforeunload") return;
-    chrome.debugger.sendCommand(source.sessionId ? { tabId, sessionId: source.sessionId } : target, "Page.handleJavaScriptDialog", { accept: true }).catch(() => {});
+  const answer = (source, method) => {
+    if (source.tabId === tabId && method === "Page.javascriptDialogOpening") accept(source.sessionId);
   };
   let onRemoved, timer;
-  chrome.debugger.onEvent.addListener(leave);
+  chrome.debugger.onEvent.addListener(answer);
   try {
     // Fails when the debugger is attached already or cannot attach (an internal page); both are fine.
     await chrome.debugger.attach(target, PROTOCOL_VERSION).catch(() => {});
-    await chrome.debugger.sendCommand(target, "Page.enable").catch(() => {});
+    if (wasOpen) await accept();
+    // Page.enable reports a dialog that opened while no debugger was attached, and completes only once
+    // that dialog is answered, so it is not waited for longer than a page without one takes.
+    const enabled = chrome.debugger.sendCommand(target, "Page.enable").catch(() => {});
+    await Promise.race([enabled, new Promise((resolve) => setTimeout(resolve, CLOSE_ENABLE_WAIT_MS))]);
     await new Promise((resolve, reject) => {
       onRemoved = (id) => id === tabId && resolve();
       chrome.tabs.onRemoved.addListener(onRemoved);
@@ -307,7 +320,7 @@ export async function closeTab(tabId) {
   } finally {
     clearTimeout(timer);
     chrome.tabs.onRemoved.removeListener(onRemoved);
-    chrome.debugger.onEvent.removeListener(leave);
+    chrome.debugger.onEvent.removeListener(answer);
   }
 }
 
@@ -665,6 +678,11 @@ export function tabState(tabId, caller) {
     const quietMs = session.inflight.size ? 0 : Date.now() - (session.networkActivityAt ?? session.attachedAt);
     return { dialog: session.dialog, frames, inflightRequests: session.inflight.size, networkQuietMs: quietMs };
   }, caller);
+}
+
+// The JavaScript dialog open in the tab, as far as the attached debugger reported one, or null.
+export function openDialog(tabId) {
+  return sessions.get(tabId)?.dialog ?? null;
 }
 
 export function consoleLogs(tabId) {
