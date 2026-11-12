@@ -94,9 +94,8 @@ starts the browser, sessions and local test sites, and `hubClient()` connects to
 server does, to send requests to the extension directly. `test/fixtures/password-manager` is an
 extension that shows a menu frame the way password managers do.
 
-Brave ignores `--user-data-dir` when it looks for native hosts (on macOS it reads
-`Google/Chrome/NativeMessagingHosts`), so tests that pair through the host fail under `BRUSE_TEST_CHROME`
-set to Brave. Run them in Chrome for Testing.
+Brave looks for native hosts in its user data directory, as Chrome for Testing does: the pairing tests
+pass with `BRUSE_TEST_CHROME` set to Brave 156 on macOS.
 
 ## Benchmarks
 
