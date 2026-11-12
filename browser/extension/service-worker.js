@@ -88,7 +88,7 @@ function attachBeforeLeaving(tabId, session) {
 const DOWNLOAD_HINT = 'The file is in the browser\'s downloads folder. To learn the path of such a download, call tab.playwright.waitForEvent("download") in a tab with a page before the tab.goto(url) that starts it (the goto fails with this message), then read the download\'s path().';
 
 // Opens a tab without taking the user's focus: in the window the user used last or, when the browser has
-// no normal window (only popup or app windows are open), in a new window that opens unfocused.
+// no normal window (none at all, or only popup and app windows), in a new window that opens unfocused.
 async function openBackgroundTab(url) {
   const window = await chrome.windows.getLastFocused({ windowTypes: ["normal"] }).catch(() => null);
   if (window) return chrome.tabs.create({ url, windowId: window.id, active: false });

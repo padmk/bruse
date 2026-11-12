@@ -18,7 +18,7 @@ CI (`.github/workflows/ci.yml`, Linux, Node.js 26) runs `node scripts/check.mjs`
 
 ## Constraints
 
-- Never test against the user's browser or installed Bruse: the tests start their own Chrome for Testing, hub port, state directory and native host manifest. Do not run `bruse setup` or `bruse uninstall` on the owner's machine to try a change; a checkout's server is registered by hand, as described in [Working on the code](docs/development.md#working-on-the-code). The pairing tests fail under Brave (`BRUSE_TEST_CHROME`), because Brave ignores `--user-data-dir` when it looks for native hosts.
+- Never test against the user's browser or installed Bruse: the tests start their own Chrome for Testing, hub port, state directory and native host manifest. Do not run `bruse setup` or `bruse uninstall` on the owner's machine to try a change; a checkout's server is registered by hand, as described in [Working on the code](docs/development.md#working-on-the-code).
 - Keep the server and the extension free of npm dependencies and code loaded at run time; [SECURITY.md](SECURITY.md) and the README promise it.
 - `browser/extension/shared.js` is the one owner of what the server and the extension must agree on (hub port, management allow-list, password manager names, the code fingerprint). It may use no browser or Node APIs beyond Web Crypto, since the server imports it from the extension directory.
 - The extension enforces tab isolation and the raw DevTools limits in `guard.js` and `access.js`, using the session the hub names. A change to what agents can reach must keep [SECURITY.md](SECURITY.md) and the README's security section true.

@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- The README and the message for an extension that did not connect said that a browser without windows stops its extensions on macOS. That holds for Chrome (seen in Chrome for Testing 156); Brave 156 keeps them running, and `createBrowserTab` opens its unfocused window there.
+- `docs/development.md` said that Brave reads native hosts from Chrome's folder and fails the pairing tests. Brave 156 reads them from its own user data directory, and the pairing tests pass in it.
+
 ## 0.23.7
 
 - `bruse doctor` and `bruse setup` no longer report a native pairing host that is missing for a browser that never ran on this machine. On macOS, setup could not create the folders of some browsers that are not installed (`EPERM`), and doctor then counted each as a problem.
