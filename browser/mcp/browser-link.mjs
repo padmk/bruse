@@ -84,7 +84,9 @@ function emitEvent(event) {
 const HUB_CLOSING = "The browser hub is shutting down";
 let draining = false;
 const HUB_GONE = "The browser hub went away while the request was in flight, so it may or may not have taken effect; check the page before repeating an action";
-// Requests that only read state; they are resent through a new hub when the old one exits mid-call.
+// The extension reconnects within half a second after a restart of its service worker or a reload.
+const EXTENSION_GONE = "The browser extension disconnected while the request was in flight (it restarted or was reloaded), so the request may or may not have taken effect. It reconnects within moments: check the page, then repeat the call if needed";
+// Requests that only read state; they are resent when the hub exits or the extension disconnects mid-call.
 const READ_ONLY_METHODS = new Set(["browser.info", "tabs.list", "tabs.get", "tabs.selected", "tabs.agent", "tabs.waitForLoad", "page.state", "page.console", "page.network", "history.search"]);
 const READ_ONLY_CDP = /^(DOM\.(getDocument|describeNode|getContentQuads|getBoxModel|getFrameOwner|resolveNode)|Accessibility\.|Page\.(getFrameTree|getLayoutMetrics|captureScreenshot)|Runtime\.(getProperties|releaseObject|releaseObjectGroup))$/;
 
@@ -138,7 +140,7 @@ export async function callBrowser(method, params = {}) {
         await new Promise((r) => setTimeout(r, 200));
         continue;
       }
-      if (attempt++ > 0 || error.message !== HUB_GONE || !isReadOnly(method, params)) throw error;
+      if (attempt++ > 0 || ![HUB_GONE, EXTENSION_GONE].includes(error.message) || !isReadOnly(method, params)) throw error;
     }
   }
 }
@@ -287,7 +289,7 @@ function becomeHub() {
       peer.on("close", () => {
         if (extension !== peer) return;
         extension = null;
-        for (const settle of pending.values()) settle({ error: "The browser extension disconnected" });
+        for (const settle of pending.values()) settle({ error: EXTENSION_GONE });
         pending.clear();
       });
     }

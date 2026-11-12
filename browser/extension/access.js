@@ -115,7 +115,13 @@ function notSharedError(tabId) {
   );
 }
 
+// A tab that closed is nobody's anymore, so a request for it would read as one for a hidden tab. Sharing
+// cannot bring it back, so in every access mode the agent is told that the tab is gone. Tab IDs are not
+// reused.
 export async function requireAccess(sessionId, tabId) {
+  if (!(await chrome.tabs.get(tabId).catch(() => null))) {
+    throw new Error(`Tab ${tabId} does not exist: it was closed (by the agent, the user or its page), or the ID is wrong. List the open tabs with cua.listTabs(), or open the page again with cua.createBrowserTab.`);
+  }
   if (!(await mayAccess(sessionId, tabId))) throw notSharedError(tabId);
 }
 

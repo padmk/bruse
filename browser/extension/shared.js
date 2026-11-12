@@ -36,6 +36,14 @@ export function isUnresponsivePageError(message) {
   return /The page did not respond within /.test(message ?? "");
 }
 
+// How the error of a tab whose page is gone (discarded, crashed or never loaded) ends. The MCP server
+// recognizes it to bind such a tab without its state, so that the agent can load the page again.
+export const LOAD_PAGE_HINT = "Load it with tab.reload() or tab.goto(url), then read the state.";
+
+export function isPageGoneError(message) {
+  return (message ?? "").includes(LOAD_PAGE_HINT);
+}
+
 // The manifest as the fingerprint sees it: with sorted keys, so that rewriting the file changes nothing
 // while any change to its content, such as a permission or the version, counts.
 function canonicalManifest(text) {

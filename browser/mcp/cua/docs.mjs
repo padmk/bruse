@@ -43,7 +43,7 @@ interface Tab {
   goto(url: string): Promise<void>; back(): Promise<void>; forward(): Promise<void>; reload(): Promise<void>; close(): Promise<void>;
   url(): Promise<string | undefined>; title(): Promise<string | undefined>;
   screenshot(options?: { fullPage?: boolean; clip?: { x: number; y: number; width: number; height: number } }): Promise<Uint8Array>; // not displayed
-  getJsDialog(): Promise<undefined | { type: "alert" | "confirm" | "prompt" | "beforeunload"; message: string; accept?(text?: string): Promise<void>; dismiss(): Promise<void> }>;
+  getJsDialog(): Promise<undefined | { type: "alert" | "confirm" | "prompt" | "beforeunload"; message: string; accept(text?: string): Promise<void>; dismiss(): Promise<void> }>;
   markDeliverable(): Promise<void>;   // keep this agent tab open after the session ends (a result for the user)
   markHandoff(): Promise<void>;       // keep it open for later work (login, approval, unfinished workflow)
   setViewport(options: { width: number; height: number; deviceScaleFactor?: number; mobile?: boolean }): Promise<void>; // responsive testing
@@ -106,6 +106,8 @@ interface PlaywrightAPI {             // locators: getByRole/getByText/getByLabe
 - \`getAXState()\`, \`getScreenshot()\` and \`getState()\` display their result; use \`nodeRepl.write(value)\` and
   \`await nodeRepl.emitImage(bytes)\` for anything else.
 - REPL state persists across calls: \`const tab = …\` at the top level stays available. \`js_reset\` clears it.
+  Load Node.js modules with \`require("node:fs")\` or \`await import("node:fs")\`; a cell is not a module, so
+  \`import … from\` statements do not work.
 - Agent tabs open in the background inside the agent tab group, which all agent sessions share. This
   session's tabs, and tabs they open (popups, even when bound with \`getTab\`), close when the session
   ends unless marked with \`markDeliverable()\` or \`markHandoff()\`; marked tabs then leave the group.

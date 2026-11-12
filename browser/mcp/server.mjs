@@ -66,7 +66,10 @@ function callTimeout(value) {
   return Math.min(value, MAX_TIMEOUT_MS);
 }
 
-const TIMED_OUT_NOTE ="The REPL was reset because the call timed out: code still running from it was stopped. Bind tabs again with cua.getTab(id).";
+const TIMED_OUT_NOTE = "The REPL was reset because the call timed out: code still running from it was stopped. Bind tabs again with cua.getTab(id).";
+const CANCELLED_NOTE = "The REPL was reset because the previous call was cancelled: its code was stopped. Bind tabs again with cua.getTab(id).";
+// What a call the client cancelled resolves with; such a call gets no reply.
+const CANCELLED = Symbol("cancelled");
 
 // Mouse buttons and keys the REPL's code holds pressed. A worker replaced in the middle of a long press
 // would leave them down in the page; the host releases them.
@@ -102,6 +105,7 @@ class ReplHost {
   constructor() {
     this.nextId = 1;
     this.pending = new Map();
+    this.runId = null; // request id of the js call the worker is running
     this.pressed = new PressedInput();
     onBrowserEvent((event) => {
       guardFocus(event);
@@ -111,7 +115,10 @@ class ReplHost {
   }
 
   start() {
-    const worker = (this.worker = new Worker(new URL("./repl-worker.mjs", import.meta.url), { workerData: { sessionId }, stderr: false }));
+    // The server's standard output carries the MCP protocol, so what REPL code or a module it loads prints
+    // there (process.stdout) goes to the server's log instead.
+    const worker = (this.worker = new Worker(new URL("./repl-worker.mjs", import.meta.url), { workerData: { sessionId }, stderr: false, stdout: true }));
+    worker.stdout.pipe(process.stderr, { end: false });
     let failure = null;
     worker.on("message", (message) => {
       if (message.type === "browser-call") return this.relay(worker, message);
@@ -171,16 +178,31 @@ class ReplHost {
         clearTimeout(timer);
         resolve(result);
       });
+      if (message.type === "run") this.runId = id;
       this.worker.postMessage({ ...message, id });
     });
   }
 
+  // Resolves with the call's result, or with CANCELLED when cancelRun() ended it. A call that timed out
+  // or was cancelled ends with the worker replaced, so nothing of it runs on.
   async run(code, timeoutMs) {
     const result = await this.request({ type: "run", code, timeoutMs }, timeoutMs + TERMINATE_GRACE_MS);
+    this.runId = null;
+    if (result === CANCELLED) {
+      await this.restart();
+      return CANCELLED;
+    }
     if (result !== undefined && !result.timedOut) return result;
     await this.restart();
     const content = result?.content ?? [{ type: "text", text: `Execution timed out after ${timeoutMs} ms` }];
     return { content: [...content, { type: "text", text: TIMED_OUT_NOTE }], isError: true };
+  }
+
+  // Ends the js call that is running, if any, without waiting for its code.
+  cancelRun() {
+    const settle = this.pending.get(this.runId);
+    this.pending.delete(this.runId);
+    settle?.(CANCELLED);
   }
 
   async reset() {
@@ -196,6 +218,33 @@ function serialized(task) {
   const result = queue.then(task, task);
   queue = result.catch(() => {});
   return result;
+}
+
+// The js calls that wait for their turn or run, by request id, so that the client can cancel them
+// (notifications/cancelled, sent when the user interrupts the agent): a waiting call is skipped, and a
+// running one is stopped at once instead of acting on pages until its code or timeout ends.
+const jsCalls = new Map(); // request id -> { cancelled, running }
+// Set when a cancelled call took the REPL's state with it, until the next call has told the agent.
+let cancelledNotePending = false;
+
+function cancelCall(requestId) {
+  const call = jsCalls.get(requestId);
+  if (!call || call.cancelled) return;
+  call.cancelled = true;
+  if (call.running) repl.cancelRun();
+}
+
+async function runJs(call, code, timeoutMs) {
+  if (call.cancelled) return CANCELLED;
+  call.running = true;
+  const result = await repl.run(code, timeoutMs);
+  if (result === CANCELLED || call.cancelled) {
+    cancelledNotePending = true;
+    return CANCELLED;
+  }
+  const notes = [cancelledNotePending ? CANCELLED_NOTE : null, updateNotice()].filter(Boolean);
+  cancelledNotePending = false;
+  return notes.length ? { ...result, content: [...result.content, ...notes.map((text) => ({ type: "text", text }))] } : result;
 }
 
 async function handle(message) {
@@ -215,15 +264,14 @@ async function handle(message) {
       const { name, arguments: args = {} } = message.params ?? {};
       if (name === "js") {
         const timeoutMs = callTimeout(args.timeout_ms);
-        return serialized(async () => {
-          const result = await repl.run(String(args.code ?? ""), timeoutMs);
-          const notice = updateNotice();
-          return notice ? { ...result, content: [...result.content, { type: "text", text: notice }] } : result;
-        });
+        const call = { cancelled: false, running: false };
+        jsCalls.set(message.id, call);
+        return serialized(() => runJs(call, String(args.code ?? ""), timeoutMs)).finally(() => jsCalls.delete(message.id));
       }
       if (name === "js_reset") {
         return serialized(async () => {
           await repl.reset();
+          cancelledNotePending = false;
           return { content: [{ type: "text", text: "The REPL was reset." }] };
         });
       }
@@ -244,9 +292,14 @@ createInterface({ input: process.stdin, crlfDelay: Infinity })
       return;
     }
     if (!message || typeof message !== "object") return;
-    if (message.id === undefined) return; // notifications need no reply
+    // Notifications need no reply.
+    if (message.id === undefined) {
+      if (message.method === "notifications/cancelled") cancelCall(message.params?.requestId);
+      return;
+    }
     try {
       const result = await handle(message);
+      if (result === CANCELLED) return;
       process.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", id: message.id, result })}\n`);
     } catch (error) {
       process.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", id: message.id, error: { code: error.code ?? -32603, message: error.message } })}\n`);

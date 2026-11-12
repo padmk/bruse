@@ -1,6 +1,6 @@
 // The `cua` object exposed in the REPL: browser inventory, browser selection and tab binding.
 
-import { MANAGEMENT_METHODS } from "../../extension/shared.js";
+import { MANAGEMENT_METHODS, isPageGoneError } from "../../extension/shared.js";
 import { callBrowser, onBrowserEvent, sessionId } from "../browser-port.mjs";
 import { PRODUCT_NAME, VERSION } from "../config.mjs";
 import { BROWSER_DOCUMENTATION } from "./docs.mjs";
@@ -169,8 +169,8 @@ export function createCua() {
       }
       [info] = matches;
     } else {
-      const id = Number(typeof reference === "object" ? (reference.id ?? reference.mention) : reference);
-      if (!Number.isInteger(id)) throw new Error(`Invalid tab reference ${JSON.stringify(reference)}`);
+      const id = typeof reference === "object" ? Number(reference?.id ?? reference?.mention) : Number(reference);
+      if (reference === null || reference === "" || !Number.isInteger(id)) throw new Error(`Invalid tab reference ${JSON.stringify(reference)}; pass a tab ID from cua.listTabs() or { url }`);
       info = await call("tabs.get", { tabId: id });
     }
     const tab = bind(info);
@@ -279,7 +279,13 @@ export function createCua() {
       const url = await tab.url();
       // New-tab pages carry no content worth reading.
       if (/^(chrome|brave):\/\/newtab\/?$/.test(url ?? "")) emitText(`Browser tab: ${tab.id}, Title: "New Tab", URL: ${JSON.stringify(url)}. Use tab.goto(url) to load a page.`);
-      else await tab.getAXState();
+      else {
+        // A tab whose page is gone (crashed or discarded) is bound all the same, so that the agent can load it again.
+        await tab.getAXState().catch((error) => {
+          if (!isPageGoneError(error.message)) throw error;
+          emitText(`Browser tab: ${tab.id}, URL: ${JSON.stringify(url ?? "")}. ${error.message}`);
+        });
+      }
       return tab;
     },
     async rewriteDocumentation() {

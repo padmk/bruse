@@ -276,6 +276,8 @@ async function groupAgentTabsNow(tabIds, sessionId) {
       if (tab) byWindow.set(tab.windowId, [...(byWindow.get(tab.windowId) ?? []), tab.id]);
     }
     for (const [windowId, ids] of byWindow) {
+      // Only a normal window has a tab strip with groups; the tab of a popup window is the session's all the same.
+      if ((await chrome.windows.get(windowId).catch(() => null))?.type !== "normal") continue;
       const groupId = await agentGroup(windowId, state);
       if (groupId !== undefined) {
         await chrome.tabs.group({ tabIds: ids, groupId });
@@ -317,11 +319,16 @@ export function endSession(sessionId) {
   return serialized(() => endSessionNow(sessionId, "explicit"));
 }
 
-// Ends the session for `cause`, as in endSession (see endedSessions for the causes).
-async function endSessionNow(sessionId, cause) {
+// Ends the session for `cause`, as in endSession (see endedSessions for the causes). `superseded` tells
+// whether the reason to end it stopped holding while storage was read; then the session stays as it is.
+async function endSessionNow(sessionId, cause, superseded = () => false) {
   rememberEnded(sessionId, cause);
   const state = await load();
   if (await isPaused()) return keepUntilResume(state, sessionId, cause);
+  if (superseded()) {
+    if (endedSessions.get(sessionId) === cause) endedSessions.delete(sessionId);
+    return { closed: 0 };
+  }
   state.pausedEnds = state.pausedEnds.filter((id) => id !== sessionId);
   state.absentEnds = state.absentEnds.filter((id) => id !== sessionId);
   const toClose = [];
@@ -426,8 +433,9 @@ async function endAbsentSessions() {
     // A newer report (the session may be back) or a lost hub arrived while this sweep read storage or
     // ended another session; the sweep that report queued decides from here.
     if (live !== current) return;
+    await endSessionNow(id, "absent", () => live !== current);
+    if (live !== current) return;
     current.absentSince.delete(id);
-    await endSessionNow(id, "absent");
   }
   if (paused || live !== current || !current.absentSince.size) return;
   const due = Math.min(...current.absentSince.values()) + ABSENT_SESSION_GRACE_MS - Date.now();
