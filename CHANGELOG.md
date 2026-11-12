@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- `bruse doctor` and `bruse setup` no longer report a native pairing host that is missing for a browser that never ran on this machine. On macOS, setup could not create the folders of some browsers that are not installed (`EPERM`), and doctor then counted each as a problem.
 - The message for an extension that did not connect names a browser without open windows as a cause: on macOS it keeps running but stops its extensions (seen in Chromium 156). The README said that `createBrowserTab` opens a window in that case; that holds only while a popup or app window is still open.
 
 ## 0.23.6
