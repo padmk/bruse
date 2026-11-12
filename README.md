@@ -397,8 +397,10 @@ Report vulnerabilities as described in [SECURITY.md](SECURITY.md).
   others). What its code prints to standard output goes to the server's log, not into the MCP stream.
 - A tab whose page crashed fails calls at once with a message to load it again; `tab.reload()` and
   `tab.goto(url)` do that. A tab that closed is reported as closed, not as a tab to ask the user for.
-- With no browser window open (on macOS the browser keeps running without one), `createBrowserTab`
-  opens its tab in a new window that does not take the focus.
+- When the browser has no normal window (only a popup or app window is open), `createBrowserTab`
+  opens its tab in a new window that does not take the focus. With no window at all, a browser on
+  macOS keeps running but stops its extensions, so calls say that the extension did not connect
+  until a window is open again.
 - Console logs include only the page's own contexts, not other extensions' content scripts.
 - All frames, including cross-origin ones in other processes, are part of the accessibility tree and
   accept input by element number. Playwright locators reach them too, through `frameLocator()`.

@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- The message for an extension that did not connect names a browser without open windows as a cause: on macOS it keeps running but stops its extensions (seen in Chromium 156). The README said that `createBrowserTab` opens a window in that case; that holds only while a popup or app window is still open.
+
 ## 0.23.6
 
 - **A navigation that ended the browser:** `tab.goto("about:blank#top")`, or the raw `Page.navigate`, on a tab that still showed the blank page it started with made Chromium 156 quit with every window (a failed check in the browser, on any navigation between fragments of that first blank page). Such a navigation now goes through the page itself, which is the same navigation and safe.
