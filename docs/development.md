@@ -129,12 +129,13 @@ secret before it reloads the extension, because a still-running 0.18 hub stores 
 local process while no secret file exists.
 
 Setup registers hosts for the five supported browsers and Chrome for Testing, including ones installed
-later. A directory that cannot be written gets a line in the output; setup fails when none could be
+later. A directory that cannot be written gets a line in the output, unless it does not exist (the
+browser never ran for this user; macOS refuses to create some of these with EPERM); setup fails when none could be
 written or the written hosts would not start. On macOS these
 live under `~/Library/Application Support/<browser>/NativeMessagingHosts`; on Linux under the browser's
 XDG config directory. Uninstall moves manifests belonging to this installation to the Trash once the
 installation itself has moved. Doctor
-checks manifests, allowed origins, the launcher, Node executable and host module; repair with `bruse setup`.
+checks the manifests of the browsers whose data directory exists, allowed origins, the launcher, Node executable and host module; repair with `bruse setup`.
 
 Adding `nativeMessaging` and reloading an existing unpacked extension stayed enabled in Chrome for
 Testing 153.0.8010.12 and in Brave 156 on macOS. The pairing tests cover this update path. Other browser builds may

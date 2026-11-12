@@ -3,7 +3,7 @@
 // manifest names the extension IDs allowed to start the host. Chromium starts hosts with a minimal
 // environment, so the manifest points at a launcher script with absolute paths.
 
-import { accessSync, constants, chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { accessSync, constants, chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir, platform } from "node:os";
 import { join } from "node:path";
 import { extensionId } from "../browser/mcp/config.mjs";
@@ -21,6 +21,11 @@ export function browserDataDirs({ home = homedir(), os = platform(), config = pr
   return ["BraveSoftware/Brave-Browser", "google-chrome", "google-chrome-beta", "google-chrome-for-testing", "chromium", "microsoft-edge", "vivaldi"].map((dir) => join(config, dir));
 }
 
+// The directories among them that exist, that is, whose browser has run for this user. A missing one
+// needs no host, and setup may be unable to create it: macOS refuses to (EPERM) for some browsers that
+// are not installed.
+export const usedBrowserDataDirs = () => browserDataDirs().filter((dir) => existsSync(dir));
+
 export const hostManifestPath = (dataDir) => join(dataDir, "NativeMessagingHosts", `${PAIRING_HOST}.json`);
 
 const shellQuote = (value) => `'${String(value).replace(/'/g, `'\\''`)}'`;
@@ -30,8 +35,8 @@ const shellQuote = (value) => `'${String(value).replace(/'/g, `'\\''`)}'`;
 // and a manifest into every given browser data directory. The launcher pins the state directory that
 // this setup resolved (or `stateDir`), because the browser starts the host without the user's shell
 // environment (XDG_DATA_HOME), and the hub must read the same secret. A directory that cannot be written
-// does not stop the others. Returns the directories `written` and those `failed`, each with its `path`
-// and `reason`; throws when the secret or the launcher cannot be written.
+// does not stop the others. Returns the directories `written` and those `failed`, each with its `dataDir`,
+// `path` and `reason`; throws when the secret or the launcher cannot be written.
 export async function installPairingHost({ browserDir, node, dataDirs = browserDataDirs(), stateDir, launcher = join(browserDir, "native-host", "pairing-host") }) {
   const { EXTENSION_ORIGINS, STATE_DIR } = await import(join(browserDir, "mcp", "config.mjs"));
   const { ensureExtensionSecret } = await import(join(browserDir, "native-host", "secret.mjs"));
@@ -55,7 +60,7 @@ export async function installPairingHost({ browserDir, node, dataDirs = browserD
       writeFileSync(path, `${JSON.stringify(manifest, null, 2)}\n`);
       written.push(dataDir);
     } catch (error) {
-      failed.push({ path, reason: error.message });
+      failed.push({ dataDir, path, reason: error.message });
     }
   }
   return { written, failed };
@@ -74,8 +79,9 @@ export function installedPairingHosts(launcherDir) {
     .filter((host) => host && (!launcherDir || host.launcher === join(launcherDir, "native-host", "pairing-host")));
 }
 
-// Validate every registered location, including malformed JSON and a missing executable.
-export function pairingHostProblems(browserDir, dataDirs = browserDataDirs()) {
+// Validate the host in every given location (by default, of the browsers in use), including malformed
+// JSON and a missing executable.
+export function pairingHostProblems(browserDir, dataDirs = usedBrowserDataDirs()) {
   const launcher = join(browserDir, "native-host", "pairing-host");
   return dataDirs.flatMap((dir) => {
     const path = hostManifestPath(dir);

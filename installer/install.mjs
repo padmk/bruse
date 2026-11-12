@@ -168,7 +168,8 @@ function openExtensionsPage() {
 // to a browser that is not installed, but not when no extension could pair.
 async function registerPairingHost() {
   const { written, failed } = await installPairingHost({ browserDir: installed, node: nodePath() }).catch((error) => fail(`Could not set up the native pairing host: ${error.message}`));
-  for (const { path, reason } of failed) note(`Could not register the native pairing host at ${path}: ${reason}`);
+  // A directory that does not exist belongs to a browser that never ran here; nothing to report.
+  for (const { dataDir, path, reason } of failed) if (existsSync(dataDir)) note(`Could not register the native pairing host at ${path}: ${reason}`);
   if (!written.length) fail("No browser directory could take the native pairing host (see above), so the extension could not pair. Fix these directories and run setup again.");
   const [problem] = pairingHostProblems(installed, written);
   if (problem) fail(`The native pairing host would not start, so the extension could not pair: ${problem}`);
