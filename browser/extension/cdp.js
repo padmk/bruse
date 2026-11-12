@@ -4,7 +4,7 @@
 // network requests, out-of-process frames) and when the agent last pressed a button or key in a tab.
 
 import { PAUSED_ERROR, isPaused, onPausedChange, setPaused } from "./pause.js";
-import { PASSWORD_MANAGER_ELEMENTS, isPressInput, unresponsivePageError } from "./shared.js";
+import { LOAD_PAGE_HINT, PASSWORD_MANAGER_ELEMENTS, isPressInput, unresponsivePageError } from "./shared.js";
 
 const PROTOCOL_VERSION = "1.3";
 const IDLE_DETACH_MS = 120_000;
@@ -13,8 +13,19 @@ const COMMAND_TIMEOUT_MS = 30_000;
 const INPUT_TIMEOUT_MS = 5_000;
 const MAX_CONSOLE_ENTRIES = 500;
 const MAX_REQUESTS = 300;
-// Commands that still work while a JavaScript dialog blocks the page.
-const DIALOG_SAFE_METHODS = new Set(["Page.handleJavaScriptDialog", "Page.captureScreenshot", "Page.getLayoutMetrics", "Fetch.continueResponse", "Fetch.disable"]);
+// Commands that still work while a JavaScript dialog blocks the page. Reading the page's size and
+// capturing it are not among them: behind a dialog they get no reply.
+const DIALOG_SAFE_METHODS = new Set(["Page.handleJavaScriptDialog", "Fetch.continueResponse", "Fetch.disable"]);
+
+// A tab without a page answers no command; each would wait for its timeout. That is a tab whose renderer
+// crashed, or one the browser has not loaded since it started; the browser reports both as unloaded. (A
+// tab it discarded to free memory is reported apart, see the service worker.)
+const NO_PAGE = `This tab has no loaded page: it crashed, or the browser has not loaded it yet. ${LOAD_PAGE_HINT}`;
+
+export async function hasNoPage(tabId) {
+  const tab = await chrome.tabs.get(tabId).catch(() => null);
+  return tab?.status === "unloaded" && !tab.discarded;
+}
 
 const sessions = new Map(); // tabId -> { lastUsed, dialog, console, requests, inflight (request id -> { session, frameId, url }), frames }
 const eventListeners = new Set();
@@ -83,6 +94,11 @@ chrome.debugger.onEvent.addListener(({ tabId, sessionId: source }, method, param
     for (const resolve of session.dialogWaiters.splice(0)) resolve();
   } else if (method === "Page.javascriptDialogClosed") {
     session.dialog = null;
+  } else if (method === "Inspector.targetCrashed" && !source) {
+    // The tab's renderer is gone: commands in flight end now, and the session, whose state described the
+    // lost page, ends with it. The next command attaches anew once the tab has a page again.
+    for (const fail of session.crashWaiters.splice(0)) fail();
+    detach(tabId);
   } else if (method === "Runtime.executionContextCreated") {
     // Only the page's own contexts count; extensions' content scripts run and log in isolated ones.
     // Both the numeric ID and the unique ID map to the unique ID, by which commands are sent.
@@ -226,6 +242,7 @@ async function attachNow(tabId) {
   // An attach is shared by concurrent callers, so it asks whether any session may use the tab; each
   // caller's own access is checked once it completes (withDebuggerAccess).
   await requireDebugAccess(tabId, EXTENSION_WORK);
+  if (await hasNoPage(tabId)) throw new Error(NO_PAGE);
   let reattached = false;
   try {
     await chrome.debugger.attach({ tabId }, PROTOCOL_VERSION);
@@ -234,7 +251,7 @@ async function attachNow(tabId) {
     if (!/already attached/i.test(error.message)) throw error;
     reattached = true;
   }
-  const session = { lastUsed: Date.now(), dialog: null, console: [], dialogWaiters: [], objectGroups: new Map(), pageContexts: new Map(), frames: new Map(), requests: [], inflight: new Map(), attachedAt: Date.now(), networkActivityAt: null };
+  const session = { lastUsed: Date.now(), dialog: null, console: [], dialogWaiters: [], crashWaiters: [], objectGroups: new Map(), pageContexts: new Map(), frames: new Map(), requests: [], inflight: new Map(), attachedAt: Date.now(), networkActivityAt: null };
   sessions.set(tabId, session);
   // A pause that came while the attach was in flight found no session to detach; one that comes from
   // now on finds this one.
@@ -245,6 +262,11 @@ async function attachNow(tabId) {
   if (!(await mayDebug(tabId, EXTENSION_WORK))) {
     await detach(tabId);
     throw new Error(NO_ACCESS);
+  }
+  // A crash while the attach was in flight found no session to end; one that comes from now on does.
+  if (await hasNoPage(tabId)) {
+    await detach(tabId);
+    throw new Error(NO_PAGE);
   }
   // After a service worker restart the session is still attached but its state is gone. Turning
   // auto-attach and Runtime off first makes the browser report frames and execution contexts again.
@@ -649,19 +671,28 @@ function requireNoDialog(session, method) {
   }
 }
 
+// Sends a command and rejects when the tab's renderer crashes before the reply, which then never comes.
+function sendUnlessCrashed(tabId, session, method, params, sessionId, timeoutMs) {
+  let waiter;
+  const crashed = new Promise((_, reject) => session.crashWaiters.push((waiter = () => reject(new Error(`The page of this tab crashed while ${method} was running. ${LOAD_PAGE_HINT}`)))));
+  return Promise.race([rawSend(tabId, method, params, sessionId, timeoutMs), crashed]).finally(() => {
+    session.crashWaiters = session.crashWaiters.filter((w) => w !== waiter);
+  });
+}
+
 async function executeWithDialog(tabId, session, method, params, sessionId, timeoutMs) {
   requireNoDialog(session, method);
   const isInput = method.startsWith("Input.");
   // While a dialog is open the page handles no input; further events of the same action are skipped.
   if (isInput && session.dialog) return {};
-  if (DIALOG_SAFE_METHODS.has(method)) return rawSend(tabId, method, params, sessionId, timeoutMs);
+  if (DIALOG_SAFE_METHODS.has(method)) return sendUnlessCrashed(tabId, session, method, params, sessionId, timeoutMs);
   // A command that makes the page open a modal dialog does not complete until the dialog closes. Input
   // finishes when the dialog opens; other commands fail with a pointer to getJsDialog().
   let waiter;
   const dialogOpened = new Promise((resolve) => session.dialogWaiters.push((waiter = resolve)));
   try {
     return await Promise.race([
-      rawSend(tabId, method, params, sessionId, timeoutMs),
+      sendUnlessCrashed(tabId, session, method, params, sessionId, timeoutMs),
       dialogOpened.then(() => {
         if (isInput) return {};
         throw new Error(`A JavaScript ${session.dialog?.type ?? ""} dialog opened while ${method} was running; handle it with getJsDialog()`);

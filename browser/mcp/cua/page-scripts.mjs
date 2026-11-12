@@ -107,6 +107,19 @@ export const PASTE_INTO_FOCUSED = `function (mimeType, data) {
   return true;
 }`;
 
+// this = a document. Returns the frame element that holds the focus when its document cannot be reached
+// from this one (a frame of another origin), followed through shadow roots and frames this document can
+// reach; null when the focus is in a document reachable from here.
+export const FOCUSED_FRAME = `function () {
+  let target = this.activeElement;
+  for (;;) {
+    const inner = target?.shadowRoot?.activeElement ?? target?.contentDocument?.activeElement;
+    if (!inner) break;
+    target = inner;
+  }
+  return target && (target.localName === "iframe" || target.localName === "frame") && !target.contentDocument ? target : null;
+}`;
+
 // Finds elements for a chain of locator steps. Returns an array of elements.
 export const LOCATOR_ENGINE = `function (steps, startRoot) {
   const norm = (s) => (s ?? "").replace(/\\s+/g, " ").trim();

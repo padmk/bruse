@@ -3,13 +3,13 @@
 // logic lives in the MCP server.
 
 import { ALL_TABS, accessMode, anyoneMayAccess, audienceOf, bothAudiences, endShareOfClosedTab, mayAccess, requireAccess, requireOwnTab, requireOwnWindow, seesWindow, visibleTabs } from "./access.js";
-import { EXTENSION_WORK, attachedTabIds, cdp, closeTab, consoleLogs, detach, networkRequests, onCdpEvent, openDialog, setDebugGate, tabState } from "./cdp.js";
+import { EXTENSION_WORK, attachedTabIds, cdp, closeTab, consoleLogs, detach, hasNoPage, networkRequests, onCdpEvent, openDialog, setDebugGate, tabState } from "./cdp.js";
 import { waitForDownload } from "./downloads.js";
 import { PAUSED_ERROR, isPaused } from "./pause.js";
 import { agentTabs, createAgentTab, createAgentTabs, endSession, markTab, noteAgentInput, onTabOpened, openingSession, setLiveSessions } from "./sessions.js";
 import { checkRequest } from "./guard.js";
 import { fromExtensionPage } from "./sender.js";
-import { PAIRING_HOST, MANAGEMENT_METHODS, extensionBuild, isPressInput } from "./shared.js";
+import { LOAD_PAGE_HINT, PAIRING_HOST, MANAGEMENT_METHODS, extensionBuild, isPressInput } from "./shared.js";
 
 // Content scripts that this extension runs in pages (see cdp.js) get no access to its storage, which
 // holds the access setting, the shares and the hub secret. Session storage starts out this way. Agent
@@ -51,21 +51,27 @@ async function requirePermission(permission, what) {
 
 // Resolves with whether the tab finished loading; slow pages are returned as they are after the timeout.
 // A page that opens a JavaScript dialog loads nothing until the dialog is answered (a page asking whether
-// to leave holds the navigation back), so the wait ends there.
+// to leave holds the navigation back), so the wait ends there. It also ends when the tab closes (as one
+// whose address turns out to be a download does) or its page crashes.
 function waitForLoad(tabId, timeoutMs = LOAD_TIMEOUT_MS) {
   return new Promise((resolve) => {
     const done = (loaded) => {
       clearTimeout(timer);
       chrome.tabs.onUpdated.removeListener(listener);
-      stopDialogWatch();
+      chrome.tabs.onRemoved.removeListener(onRemoved);
+      stopCdpWatch();
       resolve(loaded);
     };
-    const stopDialogWatch = onCdpEvent((id, method) => id === tabId && method === "Page.javascriptDialogOpening" && done(false));
+    const stopCdpWatch = onCdpEvent((id, method, _params, source) => {
+      if (id === tabId && (method === "Page.javascriptDialogOpening" || (method === "Inspector.targetCrashed" && !source))) done(false);
+    });
     const listener = (id, change) => {
       if (id === tabId && change.status === "complete") done(true);
     };
+    const onRemoved = (id) => id === tabId && done(false);
     const timer = setTimeout(() => done(false), timeoutMs);
     chrome.tabs.onUpdated.addListener(listener);
+    chrome.tabs.onRemoved.addListener(onRemoved);
     if (openDialog(tabId)) return done(false);
     chrome.tabs.get(tabId).then((tab) => tab.status === "complete" && done(true), () => done(false));
   });
@@ -77,6 +83,41 @@ function waitForLoad(tabId, timeoutMs = LOAD_TIMEOUT_MS) {
 // navigates as it is.
 function attachBeforeLeaving(tabId, session) {
   return cdp(tabId, "Page.enable", {}, undefined, undefined, { session }).catch(() => {});
+}
+
+const DOWNLOAD_HINT = 'The file is in the browser\'s downloads folder. To learn the path of such a download, call tab.playwright.waitForEvent("download") in a tab with a page before the tab.goto(url) that starts it (the goto fails with this message), then read the download\'s path().';
+
+// Opens a tab without taking the user's focus: in the window the user used last or, when the browser has
+// no normal window (on macOS it keeps running without one), in a new window that opens unfocused.
+async function openBackgroundTab(url) {
+  const window = await chrome.windows.getLastFocused({ windowTypes: ["normal"] }).catch(() => null);
+  if (window) return chrome.tabs.create({ url, windowId: window.id, active: false });
+  const created = await chrome.windows.create({ url, focused: false });
+  return created.tabs[0];
+}
+
+const withoutFragment = (url) => url.split("#")[0];
+
+// Chromium ends the whole browser (a failed check, seen in version 156) when the debugger navigates a tab
+// that never left the blank page it started with to another fragment of that page, such as
+// about:blank#top. Whether a blank page is that first one cannot be read, so every navigation between
+// fragments of a blank page goes through the page itself, which is the same navigation and safe.
+// It runs as the user's own navigation would (with user activation), so that it gets a history entry
+// that tab.back() returns to. Resolves with what Page.navigate replies for a navigation within a
+// document, or with null when `params` name another kind of navigation, which the debugger performs.
+async function navigateWithinBlankPage(tabId, params, session) {
+  // As the browser reads the address: with the scheme in lower case and without surrounding spaces.
+  const given = String(params?.url ?? "");
+  const url = URL.canParse(given) ? new URL(given).href : "";
+  if (!url.startsWith("about:blank") || !url.includes("#")) return null;
+  const tab = await chrome.tabs.get(tabId);
+  if (withoutFragment(tab.url || "about:blank") !== withoutFragment(url)) return null;
+  const caller = { session };
+  const { frameTree } = await cdp(tabId, "Page.getFrameTree", {}, undefined, undefined, caller);
+  if (params.frameId !== undefined && params.frameId !== frameTree.frame.id) return null;
+  const { exceptionDetails } = await cdp(tabId, "Runtime.evaluate", { expression: `location.href = ${JSON.stringify(url)}`, returnByValue: true, userGesture: true }, undefined, undefined, caller);
+  if (exceptionDetails) throw new Error(`Navigation to ${url} failed: ${exceptionDetails.exception?.description ?? exceptionDetails.text}`);
+  return { frameId: frameTree.frame.id };
 }
 
 function browserName() {
@@ -121,18 +162,26 @@ const handlers = {
   },
 
   "tabs.create": async ({ url }, session) => {
-    const tab = await createAgentTab(session, async () => {
-      const window = await chrome.windows.getLastFocused({ windowTypes: ["normal"] });
-      return chrome.tabs.create({ url: url ?? "about:blank", windowId: window.id, active: false });
-    });
+    const tab = await createAgentTab(session, () => openBackgroundTab(url ?? "about:blank"));
     if (url) await waitForLoad(tab.id);
-    return tabInfo(await chrome.tabs.get(tab.id));
+    const opened = await chrome.tabs.get(tab.id).catch(() => null);
+    // The browser closes a new tab whose address turns out to be a file to download.
+    if (!opened) throw new Error(`The tab opened for ${url} closed right away, as the browser does when an address is a file, which it downloads instead of showing. ${DOWNLOAD_HINT}`);
+    return tabInfo(opened);
   },
 
-  // CDP navigation reports blocked or failed loads instead of silently keeping the old page.
+  // CDP navigation reports blocked or failed loads instead of silently keeping the old page. The
+  // browser lets an extension open a data: address only in a new tab: it aborts the navigation of an
+  // existing one, also through the tabs API.
+  // A tab without a page (its renderer crashed) takes no debugger command; the browser loads the address.
   "tabs.navigate": async ({ tabId, url }, session) => {
-    const { errorText } = await cdp(tabId, "Page.navigate", { url }, undefined, undefined, { session });
-    if (errorText) throw new Error(`Navigation to ${url} failed: ${errorText}`);
+    if (await hasNoPage(tabId)) await chrome.tabs.update(tabId, { url });
+    else if (!(await navigateWithinBlankPage(tabId, { url }, session))) {
+      const { errorText, isDownload } = await cdp(tabId, "Page.navigate", { url }, undefined, undefined, { session });
+      if (isDownload) throw new Error(`${url} is a file, which the browser downloaded instead of showing, so the tab keeps its page. ${DOWNLOAD_HINT}`);
+      if (errorText && /^data:/i.test(url)) throw new Error(`Navigation to a data: address failed (${errorText}): the browser opens such an address only in a new tab. Use cua.createBrowserTab("1", url) instead.`);
+      if (errorText) throw new Error(`Navigation to ${url} failed: ${errorText}`);
+    }
     await waitForLoad(tabId);
     return tabInfo(await chrome.tabs.get(tabId));
   },
@@ -162,6 +211,10 @@ const handlers = {
   cdp: async ({ tabId, method, params, sessionId, timeoutMs }, session) => {
     if (TAB_ENDING_CDP.has(method)) await requireOwnTab(session, tabId);
     if (isPressInput(method, params)) noteAgentInput(tabId, session);
+    if (method === "Page.navigate" && !sessionId) {
+      const withinBlankPage = await navigateWithinBlankPage(tabId, params, session);
+      if (withinBlankPage) return withinBlankPage;
+    }
     return cdp(tabId, method, params, sessionId, timeoutMs, { session });
   },
   "page.state": ({ tabId }, session) => tabState(tabId, { session }),
@@ -197,7 +250,7 @@ const handlers = {
 // has; tabs.navigate and tabs.history load a new one. Checked after access, so that only a tab the
 // session may use is reported as discarded.
 const LOADED_PAGE_METHODS = new Set(["cdp", "page.state", "page.console", "page.network", "downloads.wait"]);
-const DISCARDED = "The browser discarded this tab to free memory, so its page and anything typed into it are gone. Load it again with tab.reload() or tab.goto(url), then read the state.";
+const DISCARDED = `The browser discarded this tab to free memory, so its page and anything typed into it are gone. ${LOAD_PAGE_HINT}`;
 
 // Methods that act on the tab in params.tabId.
 const TAB_METHODS = new Set(["tabs.get", "tabs.navigate", "tabs.history", "tabs.waitForLoad", "tabs.close", "tabs.mark", "cdp", "page.state", "page.console", "page.network", "downloads.wait"]);

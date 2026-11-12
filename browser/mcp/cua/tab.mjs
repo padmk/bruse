@@ -9,7 +9,7 @@ import { OFF_PAGE, PAGE_CODE_MS, callOn, clickAt, coveringElement, dragBetween, 
 import { modifierMask, pressChord } from "./keys.mjs";
 import { Locator, functionSource, isRegExp } from "./locator.mjs";
 import { emitImage, emitText } from "./output.mjs";
-import { PASTE_INTO_FOCUSED, SELECT_TEXT, SET_VALUE } from "./page-scripts.mjs";
+import { FOCUSED_FRAME, PASTE_INTO_FOCUSED, SELECT_TEXT, SET_VALUE } from "./page-scripts.mjs";
 
 const SETTLE_LOAD_MS = 5_000;
 // How long after a click or key press a navigation it started is looked for.
@@ -37,6 +37,8 @@ const FILE_CHOOSER_WAIT_MS = 20_000;
 // How long a click by element number waits for something covering the element (an animation, a toast) to go away.
 const COVERED_WAIT_MS = 1_000;
 const FRAME_POINTER_WAIT_MS = 3_000;
+// How many nested frames the focus is followed through; pages do not nest frames deeper.
+const MAX_FOCUS_FRAME_DEPTH = 16;
 const NAVIGATED_MESSAGE = "The page or the element's frame loaded a new document since this element number was read; call getAXState() for current element numbers";
 const DIRECTIONS = { up: [0, -1], u: [0, -1], down: [0, 1], d: [0, 1], left: [-1, 0], l: [-1, 0], right: [1, 0], r: [1, 0] };
 
@@ -285,8 +287,11 @@ export class Tab {
     return text;
   }
 
-  // Captures in CSS pixels, so a point in the image is the same point for click([x, y]).
+  // Captures in CSS pixels, so a point in the image is the same point for click([x, y]). A page behind an
+  // open JavaScript dialog answers neither the capture nor the reading of its size, so that fails at once.
   async captureScreenshot({ fullPage = false, clip } = {}) {
+    const { dialog } = await this.pageState();
+    if (dialog) throw new Error(`A JavaScript ${dialog.type} dialog is open on this tab (${JSON.stringify(dialog.message)}), and the page cannot be captured behind it; handle it with getJsDialog() first`);
     // A full-page capture of a long page can take a while.
     const cdp = this.cdpSender(null, { timeoutMs: PAGE_CODE_MS });
     const [metrics, ratio] = await Promise.all([cdp("Page.getLayoutMetrics"), this.evaluateInPage("devicePixelRatio").catch(() => 1)]);
@@ -310,6 +315,8 @@ export class Tab {
 
   async getAXStateAndScreenshot({ emit = true, disableDiffing = false } = {}) {
     const state = await this.getAXState({ emit, disableDiffing });
+    // The state names an open dialog; there is no picture of the page behind it.
+    if ((await this.pageState()).dialog) return { state };
     const screenshot = await this.captureScreenshot();
     if (emit) emitImage(screenshot, "image/jpeg");
     return { state, screenshot };
@@ -420,14 +427,44 @@ export class Tab {
     await this.afterInput({ mayNavigate: true });
   }
 
+  // Calls a function with `this` = the document that holds the keyboard focus and returns its value. A
+  // document sees focus inside a frame of another origin only as the frame element being the active one.
+  // Such a frame is entered through its own debugger session when it runs in another process (a
+  // cross-site iframe), and through its document's own context when it shares the process.
+  async callOnFocusedDocument(functionDeclaration, args = []) {
+    let sessionId = null;
+    let documentNodeId = null; // null: the document of the session itself
+    for (let depth = 0; ; depth++) {
+      const cdp = this.cdpSender(sessionId, { timeoutMs: PAGE_CODE_MS });
+      const objectGroup = `focus-${Math.random().toString(36).slice(2)}`;
+      try {
+        const { objectId } =
+          documentNodeId === null ? (await cdp("Runtime.evaluate", { expression: "document", objectGroup })).result : (await cdp("DOM.resolveNode", { backendNodeId: documentNodeId, objectGroup })).object;
+        const { result: frameElement } = await cdp("Runtime.callFunctionOn", { objectId, functionDeclaration: FOCUSED_FRAME, objectGroup });
+        const node = frameElement.objectId && depth < MAX_FOCUS_FRAME_DEPTH ? (await cdp("DOM.describeNode", { objectId: frameElement.objectId })).node : null;
+        const frame = node && (await this.pageState()).frames.find((f) => f.frameId === node.frameId);
+        if (frame) [sessionId, documentNodeId] = [frame.sessionId, null];
+        else if (node?.contentDocument?.backendNodeId) documentNodeId = node.contentDocument.backendNodeId;
+        else {
+          const { result, exceptionDetails } = await cdp("Runtime.callFunctionOn", { objectId, functionDeclaration, arguments: args.map((value) => ({ value })), returnByValue: true, awaitPromise: true });
+          if (exceptionDetails) throw pageException(exceptionDetails);
+          return result.value;
+        }
+      } finally {
+        cdp("Runtime.releaseObjectGroup", { objectGroup }).catch(() => {});
+      }
+    }
+  }
+
   // The paste goes to the element with focus in the document of the element named (a frame's field is
-  // focused in the frame, not in the page that holds it), or in the page when none is named.
+  // focused in the frame, not in the page that holds it), or, when none is named, in the document that
+  // holds the focus.
   async paste(elementIndex, text, { format = "text" } = {}) {
     await this.ensureNoDialog();
     const mimeType = format === "html" ? "text/html" : "text/plain";
     let handled;
     if (elementIndex === null || elementIndex === undefined) {
-      handled = await this.evaluateInPage(`(${PASTE_INTO_FOCUSED}).call(document, ${JSON.stringify(mimeType)}, ${JSON.stringify(text)})`);
+      handled = await this.callOnFocusedDocument(PASTE_INTO_FOCUSED, [mimeType, text]);
     } else {
       const { backendNodeId, sessionId } = await this.nodeFor(elementIndex);
       const cdp = this.cdpSender(sessionId);
@@ -474,10 +511,9 @@ export class Tab {
     const { dialog } = await this.pageState();
     if (!dialog) return undefined;
     const handle = (accept, promptText) => this.cdpSender()("Page.handleJavaScriptDialog", { accept, ...(promptText !== undefined ? { promptText } : {}) });
-    const result = { type: dialog.type, message: dialog.message, dismiss: () => handle(false) };
-    if (dialog.type === "confirm" || dialog.type === "beforeunload") result.accept = () => handle(true);
-    if (dialog.type === "prompt") result.accept = (text = dialog.defaultPrompt ?? "") => handle(true, text);
-    return result;
+    // Accepting an alert closes it, like dismissing it.
+    const accept = dialog.type === "prompt" ? (text = dialog.defaultPrompt ?? "") => handle(true, text) : () => handle(true);
+    return { type: dialog.type, message: dialog.message, accept, dismiss: () => handle(false) };
   }
 
   async logs({ filter, levels, limit } = {}) {

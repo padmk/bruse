@@ -39,10 +39,12 @@ MCP server (hub) ◀──WebSocket 127.0.0.1:47615──▶ extension ──chr
   pins `dcebpfjehgpkddgcdaipjemnndbdpmpc`, the ID used in `allowed_origins`. Native host manifests live outside versioned Homebrew paths.
 - `browser/mcp/`: MCP stdio server, no dependencies.
   - `server.mjs`: the `js` and `js_reset` tools. It runs the REPL in a worker thread (`repl-worker.mjs`)
-    and replaces the worker whenever a call times out or the worker crashes, so nothing the call left running (an endless
+    and replaces the worker whenever a call times out, the client cancels it (`notifications/cancelled`)
+    or the worker crashes, so nothing the call left running (an endless
     loop, a timer, a pending request) can act on a page later; a command the call had already sent to
     the browser still completes. The browser connection stays in the main
-    thread and survives the replacement; the worker reaches it through `browser-port.mjs`.
+    thread and survives the replacement; the worker reaches it through `browser-port.mjs`. The worker's
+    standard output is piped to the server's standard error, because the server's own carries the protocol.
   - `repl.mjs`: the persistent REPL; `hoist.mjs`: turns top-level declarations of a cell into globals so
     they persist and can be redeclared.
   - `update-notice.mjs`: tells the agent once per session when the folder setup copied from (recorded
@@ -52,7 +54,7 @@ MCP server (hub) ◀──WebSocket 127.0.0.1:47615──▶ extension ──chr
     open a tab and the browser takes the front (see Behavior); a switch the user makes stands.
   - `browser-link.mjs`, `websocket.mjs`, `config.mjs`: hub election, authentication and transport. The
     first server to bind the port becomes the hub; the others connect to it. A hub that exits first lets
-    in-flight requests finish, read-only requests interrupted by a handover are resent, and a new hub
+    in-flight requests finish, read-only requests interrupted by a handover or by the extension disconnecting are resent, and a new hub
     is elected right away by the servers whose sessions used the browser (by the others on their next
     call). The hub tells the extension which sessions are live.
   - `cua/`: the browser API. `index.mjs` (`cua` object, browser and management capability), `tab.mjs`

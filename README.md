@@ -388,7 +388,17 @@ Report vulnerabilities as described in [SECURITY.md](SECURITY.md).
   `locator.dragTo()` drags onto another element; `tab.dev.requests()` lists recent network requests,
   for example to confirm a submission made with `fetch`.
 - Input that opens a JavaScript dialog returns immediately; the dialog is reported and handled with
-  `getJsDialog()`.
+  `getJsDialog()`. A screenshot of a page behind an open dialog fails at once with that pointer, since
+  such a page answers no capture.
+- A `js` call that the client cancels (the user interrupts the agent) stops at once, like one that runs
+  into its timeout: the REPL worker is replaced, so its code acts on no page afterwards, and the next
+  call says that the REPL was reset. A cancelled call that was still waiting for its turn never runs.
+- The REPL has Node.js's usual globals (`process`, `require`, `fetch`, `AbortController`, `crypto` and
+  others). What its code prints to standard output goes to the server's log, not into the MCP stream.
+- A tab whose page crashed fails calls at once with a message to load it again; `tab.reload()` and
+  `tab.goto(url)` do that. A tab that closed is reported as closed, not as a tab to ask the user for.
+- With no browser window open (on macOS the browser keeps running without one), `createBrowserTab`
+  opens its tab in a new window that does not take the focus.
 - Console logs include only the page's own contexts, not other extensions' content scripts.
 - All frames, including cross-origin ones in other processes, are part of the accessibility tree and
   accept input by element number. Playwright locators reach them too, through `frameLocator()`.
@@ -424,7 +434,10 @@ Report vulnerabilities as described in [SECURITY.md](SECURITY.md).
 - `tab.setViewport()` overrides the viewport for responsive testing; `browser.capabilities.get("management")`
   organizes windows, tabs, tab groups and bookmarks; `tab.content` exports YouTube transcripts and
   Google Docs, Sheets and Slides to local files.
-- Browsers block extensions from loading `data:` and internal (`brave://`, `chrome://`) URLs.
+- The browser lets an extension open a `data:` address only in a new tab (`createBrowserTab`), not
+  navigate an existing tab to one, and internal (`brave://`, `chrome://`) pages are refused. An address
+  that is a file to download loads no page: `tab.goto()` says so, and the file comes through
+  `waitForEvent("download")`.
 
 ## Development
 

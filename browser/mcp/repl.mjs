@@ -3,6 +3,8 @@
 // that values such as `const tab = …` survive between calls and can be redeclared.
 
 import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { inspect } from "node:util";
 import vm from "node:vm";
@@ -54,6 +56,24 @@ function imagePayload(image, mimeType) {
   throw new Error("emitImage expects bytes, { bytes, mimeType }, a data URL or a file path");
 }
 
+// `require` for cells: relative paths resolve against the directory the server was started in, or
+// against this module when that directory is gone (reading it then throws).
+function cellRequire() {
+  try {
+    return createRequire(join(process.cwd(), "repl.js"));
+  } catch {
+    return createRequire(import.meta.url);
+  }
+}
+
+// Globals of Node.js that code written for it expects; a vm context starts with the language's own only.
+// Timers come separately, tracked per REPL session (see reset).
+const NODE_GLOBALS = {
+  process, Buffer, URL, URLSearchParams, TextEncoder, TextDecoder, fetch, Headers, Request, Response, FormData, Blob, File,
+  AbortController, AbortSignal, Event, EventTarget, WebSocket, crypto, structuredClone, atob, btoa, performance, queueMicrotask,
+  require: cellRequire(),
+};
+
 export class Repl {
   constructor() {
     this.reset();
@@ -99,16 +119,9 @@ export class Repl {
       clearTimeout: untrack(clearTimeout),
       setInterval: track(setInterval, clearInterval, false),
       clearInterval: untrack(clearInterval),
-      Buffer,
-      URL,
-      URLSearchParams,
-      TextEncoder,
-      TextDecoder,
-      fetch,
-      structuredClone,
-      atob,
-      btoa,
-      performance,
+      setImmediate: track(setImmediate, clearImmediate, true),
+      clearImmediate: untrack(clearImmediate),
+      ...NODE_GLOBALS,
     });
   }
 
