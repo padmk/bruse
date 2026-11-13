@@ -357,7 +357,8 @@ export class Tab {
     await this.afterInput();
   }
 
-  async scroll(target, direction, pages = 1) {
+  async scroll(target, direction, pages) {
+    pages ??= 1;
     const vector = DIRECTIONS[direction];
     if (!vector) throw new Error(`Unknown direction ${direction}`);
     await this.ensureNoDialog();
