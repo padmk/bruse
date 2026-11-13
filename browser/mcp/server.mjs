@@ -75,13 +75,13 @@ const REQUESTS_UNCONFIRMED = "the browser extension did not confirm that browser
 const timedOutNote = (confirmed) => `The REPL was reset because the call timed out: code still running from it was stopped, and ${confirmed ? REQUESTS_CANCELLED : REQUESTS_UNCONFIRMED}. Bind tabs again with cua.getTab(id).`;
 const cancelledNote = (confirmed) => `The REPL was reset because the previous call was cancelled: its code was stopped, and ${confirmed ? REQUESTS_CANCELLED : REQUESTS_UNCONFIRMED}. Bind tabs again with cua.getTab(id).`;
 
-// Has the extension cancel this session's requests in flight, those of a REPL that was just replaced.
-// Resolves with whether it confirmed. Sent after the replacement starts and before it gets any code, so
-// the extension receives it before any request of the new REPL.
-async function cancelInFlight() {
+// Has the extension cancel this session's requests in flight of REPLs before generation `current`, the
+// replacement's. Resolves with whether it confirmed.
+/** @param {number} current */
+async function cancelInFlight(current) {
   let timer;
   const confirmed = await Promise.race([
-    callBrowser("session.cancel").then(() => true, () => false),
+    callBrowser("session.cancel", { before: current }).then(() => true, () => false),
     new Promise((resolve) => (timer = setTimeout(() => resolve(false), CANCEL_WAIT_MS))),
   ]);
   clearTimeout(timer);
@@ -97,24 +97,44 @@ class PressedInput {
     this.pressed = new Map(); // "tab:mouse:button" or "tab:key:code" -> the press's cdp call
   }
 
+  // Notes a press as it is sent. Returns what to do once the call succeeds: a release forgets its press
+  // only then, and only if no newer press of the same key or button came meanwhile, so a release that is
+  // cancelled or fails leaves the press to releaseInput.
   note(method, params) {
-    if (method !== "cdp") return;
+    const done = () => {};
+    if (method !== "cdp") return done;
     const mouse = params?.method === "Input.dispatchMouseEvent";
-    if (!mouse && params?.method !== "Input.dispatchKeyEvent") return;
+    if (!mouse && params?.method !== "Input.dispatchKeyEvent") return done;
     const { type, button, code, key } = params.params ?? {};
     const id = mouse ? `${params.tabId}:mouse:${button}` : `${params.tabId}:key:${code ?? key}`;
     if (isPressInput(params.method, params.params)) this.pressed.set(id, params);
-    else if (type === (mouse ? "mouseReleased" : "keyUp")) this.pressed.delete(id);
+    else if (type === (mouse ? "mouseReleased" : "keyUp")) {
+      const press = this.pressed.get(id);
+      return () => {
+        if (this.pressed.get(id) === press) this.pressed.delete(id);
+      };
+    }
+    return done;
   }
 
-  releaseAll() {
-    // Newest first, so a chord's key goes up before its modifiers.
-    for (const { tabId, sessionId, method, params } of [...this.pressed.values()].reverse()) {
-      const { key, code, windowsVirtualKeyCode, modifiers } = params;
-      const release = method === "Input.dispatchMouseEvent" ? { ...params, type: "mouseReleased", clickCount: 1 } : { type: "keyUp", key, code, windowsVirtualKeyCode, modifiers };
-      callBrowser("cdp", { tabId, sessionId, method, params: release }).catch(ignore("a tab that is gone holds no input"));
-    }
+  // The presses held now, which the host forgets; release them with releaseInput.
+  take() {
+    const held = [...this.pressed.values()];
     this.pressed.clear();
+    return held;
+  }
+}
+
+// Releases presses a replaced worker held. The releases carry no generation, so no session.cancel aborts
+// them; they are sent after the worker's requests were cancelled, so a press it still had in flight
+// cannot land after its release.
+/** @param {ReturnType<PressedInput["take"]>} held */
+function releaseInput(held) {
+  // Newest first, so a chord's key goes up before its modifiers.
+  for (const { tabId, sessionId, method, params } of held.reverse()) {
+    const { key, code, windowsVirtualKeyCode, modifiers } = params;
+    const release = method === "Input.dispatchMouseEvent" ? { ...params, type: "mouseReleased", clickCount: 1 } : { type: "keyUp", key, code, windowsVirtualKeyCode, modifiers };
+    callBrowser("cdp", { tabId, sessionId, method, params: release }).catch(ignore("a tab that is gone holds no input"));
   }
 }
 
@@ -127,6 +147,7 @@ class ReplHost {
 
   constructor() {
     this.nextId = 1;
+    this.generation = 0; // of the current worker; its requests carry it (see requests.js in the extension)
     this.pending = new Map();
     this.runId = null; // request id of the js call the worker is running
     this.pressed = new PressedInput();
@@ -140,12 +161,13 @@ class ReplHost {
   start() {
     // The server's standard output carries the MCP protocol, so what REPL code or a module it loads prints
     // there (process.stdout) goes to the server's log instead.
+    const generation = ++this.generation;
     const worker = (this.worker = new Worker(new URL("./repl-worker.mjs", import.meta.url), { workerData: { sessionId }, stderr: false, stdout: true }));
     worker.stdout.pipe(process.stderr, { end: false });
     let failure = null;
     worker.on("message", (message) => {
       if (message.type === "browser-call") {
-        this.relay(worker, message).catch(logFailure("Relaying a browser call"));
+        this.relay(worker, generation, message).catch(logFailure("Relaying a browser call"));
         return;
       }
       this.pending.get(message.id)?.(message.result);
@@ -161,9 +183,10 @@ class ReplHost {
       const reason = failure?.message ?? "it exited";
       const settle = [...this.pending.values()];
       this.pending.clear();
-      this.pressed.releaseAll();
+      const held = this.pressed.take();
       this.start();
-      cancelInFlight().then((confirmed) => {
+      cancelInFlight(this.generation).then((confirmed) => {
+        releaseInput(held);
         for (const resolve of settle) {
           resolve({ content: [{ type: "text", text: `The REPL crashed (${reason}) and was started again; its state is gone, and ${confirmed ? REQUESTS_CANCELLED : REQUESTS_UNCONFIRMED}. Bind tabs again with cua.getTab(id).` }], isError: true });
         }
@@ -171,7 +194,7 @@ class ReplHost {
     });
   }
 
-  async relay(worker, { callId, method, params }) {
+  async relay(worker, generation, { callId, method, params }) {
     // A replaced worker may still be running until it is terminated; it reaches nothing anymore.
     if (worker !== this.worker) return;
     let reply;
@@ -181,8 +204,9 @@ class ReplHost {
         // The worker may have been replaced meanwhile; its input must not arrive after the reset.
         if (worker !== this.worker) return;
       }
-      this.pressed.note(method, params);
-      reply = { type: "browser-reply", callId, result: await callBrowser(method, params, { wanted: () => worker === this.worker }) };
+      const released = this.pressed.note(method, params);
+      reply = { type: "browser-reply", callId, result: await callBrowser(method, params, { wanted: () => worker === this.worker, generation }) };
+      if (worker === this.worker) released();
     } catch (error) {
       reply = { type: "browser-reply", callId, error: error?.message ?? String(error) };
     }
@@ -194,9 +218,10 @@ class ReplHost {
   async restart() {
     const old = this.worker;
     this.pending.clear();
-    this.pressed.releaseAll();
+    const held = this.pressed.take();
     this.start();
-    const [confirmed] = await Promise.all([cancelInFlight(), old.terminate()]);
+    const [confirmed] = await Promise.all([cancelInFlight(this.generation), old.terminate()]);
+    releaseInput(held);
     return confirmed;
   }
 

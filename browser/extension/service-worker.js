@@ -261,7 +261,7 @@ const handlers = {
   // The session's own tabs and their marks.
   "tabs.agent": async (_, { session }) => Object.fromEntries(Object.entries(await agentTabs()).filter(([, entry]) => entry.sessionId === session)),
   "session.end": (_, { session }) => endSession(session),
-  "session.cancel": (_, request) => ({ cancelled: cancelSessionRequests(request) }),
+  "session.cancel": ({ before }, { session }) => ({ cancelled: cancelSessionRequests(session, before) }),
 
   cdp: async ({ tabId, method, params, sessionId, timeoutMs }, request) => {
     if (params !== undefined && !isRecord(params)) throw new Error(`${method} takes its parameters as an object`);
@@ -760,9 +760,9 @@ async function handle(gen, text) {
   if (id === undefined) return null; // keepalive
   if (!hub.verified) return JSON.stringify({ id, error: "The browser connection is being authenticated again; retry the call" });
   // The hub sends a string or null (browser-link.mjs); a hub too old to send any sends no session.
-  // The request registers before its first await, so a session.cancel that arrives after it reaches it
-  // and one that arrived before does not (see requests.js).
-  const { request, end } = beginRequest(typeof message.session === "string" ? message.session : null);
+  // The request registers before its first await, with the REPL generation the hub says it comes from, so
+  // a session.cancel that arrives after it reaches it (see requests.js).
+  const { request, end } = beginRequest(typeof message.session === "string" ? message.session : null, message.generation);
   try {
     return await runRequest(id, method, message, request);
   } finally {

@@ -64,3 +64,55 @@ test("a close held at its last check when its call is cancelled does not happen 
   await hold.release();
   assert.ok(await staysOpen(opened.id), "the tab stays open");
 });
+
+test("a key held by a call that times out is released afterwards", async (t) => {
+  const s = await env.session();
+  t.after(() => s.close());
+  const page = `<title>Key held</title><script>addEventListener("keyup", (event) => (document.title = "Released " + event.key))</script>`;
+  await s.js(`const tab = await cua.createBrowserTab("1", ${JSON.stringify(`data:text/html,${page}`)});`);
+  await until(() => tabTitled("Key held"), { message: "the page to open" });
+  const { result } = await s.request("tools/call", {
+    name: "js",
+    arguments: { code: `await tab.cdpSender()("Input.dispatchKeyEvent", { type: "rawKeyDown", key: "Shift", code: "ShiftLeft", windowsVirtualKeyCode: 16 }); await new Promise(() => {});`, timeout_ms: 1_000 },
+  });
+  assert.match(result.content.map((item) => item.text).join("\n"), /timed out/);
+  await until(() => tabTitled("Released Shift"), { message: "the held Shift to be released" });
+});
+
+test("a key whose release is cancelled with its call is released afterwards", async (t) => {
+  const s = await env.session();
+  t.after(() => s.close());
+  const page = `<title>Release held</title><script>addEventListener("keyup", (event) => (document.title = "Released " + event.key))</script>`;
+  await s.js(`const tab = await cua.createBrowserTab("1", ${JSON.stringify(`data:text/html,${page}`)}); const send = tab.cdpSender();`);
+  await until(() => tabTitled("Release held"), { message: "the page to open" });
+  await s.js(`await send("Input.dispatchKeyEvent", { type: "rawKeyDown", key: "Shift", code: "ShiftLeft", windowsVirtualKeyCode: 16 });`);
+  // Holds the key-up at the debugger's check of the pause switch, so the call times out while it waits.
+  const hold = await env.holdCall("chrome.storage.local.get", `args[0] === "paused" && stack.includes("requireDebugAccess")`);
+  t.after(() => hold.release().catch(ignore("cleanup: a release the test made already fails")));
+  const reply = s.request("tools/call", { name: "js", arguments: { code: `await send("Input.dispatchKeyEvent", { type: "keyUp", key: "Shift", code: "ShiftLeft", windowsVirtualKeyCode: 16 });`, timeout_ms: 1_000 } });
+  await hold.held();
+  const { result } = await reply;
+  assert.match(result.content.map((item) => item.text).join("\n"), /timed out/);
+  await hold.release();
+  await until(() => tabTitled("Released Shift"), { message: "the held Shift to be released" });
+});
+
+test("a held key's release survives the cancel of a later call", async (t) => {
+  const s = await env.session();
+  t.after(() => s.close());
+  const page = `<title>Release survives</title><script>addEventListener("keyup", (event) => (document.title = "Released " + event.key))</script>`;
+  await s.js(`const tab = await cua.createBrowserTab("1", ${JSON.stringify(`data:text/html,${page}`)}); const send = tab.cdpSender();`);
+  await until(() => tabTitled("Release survives"), { message: "the page to open" });
+  await s.js(`await send("Input.dispatchKeyEvent", { type: "rawKeyDown", key: "Shift", code: "ShiftLeft", windowsVirtualKeyCode: 16 });`);
+  // Holds the server's release of the key, the next debugger command, at its check of the pause switch.
+  const hold = await env.holdCall("chrome.storage.local.get", `args[0] === "paused" && stack.includes("requireDebugAccess")`);
+  t.after(() => hold.release().catch(ignore("cleanup: a release the test made already fails")));
+  const first = await s.request("tools/call", { name: "js", arguments: { code: "await new Promise(() => {});", timeout_ms: 500 } });
+  assert.match(first.result.content.map((item) => item.text).join("\n"), /timed out/);
+  await hold.held();
+  // A second call that times out cancels the session's requests again while the release waits.
+  const second = await s.request("tools/call", { name: "js", arguments: { code: "await new Promise(() => {});", timeout_ms: 500 } });
+  assert.match(second.result.content.map((item) => item.text).join("\n"), /timed out/);
+  await hold.release();
+  await until(() => tabTitled("Released Shift"), { message: "the held Shift to be released" });
+});
