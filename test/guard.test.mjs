@@ -29,6 +29,15 @@ test("about: addresses other than about:blank and about:srcdoc are refused", asy
   assert.equal((await client.call("cdp", { tabId, method: "Runtime.evaluate", params: { expression: "location.href", returnByValue: true } })).result.value, "about:blank");
 });
 
+test("a method the extension does not take is refused, also one every object inherits", async () => {
+  for (const method of ["notAMethod", "constructor", "toString", "hasOwnProperty", "__proto__"]) {
+    await assert.rejects(client.call(method, {}), { message: `Unknown method ${method}` }, method);
+  }
+  for (const namespace of ["constructor", "__proto__"]) {
+    await assert.rejects(client.call("browser.manage", { namespace, method: "toString" }), { message: `${namespace}.toString is not available` }, namespace);
+  }
+});
+
 test("a tab the session may not use gives the same error whatever its page", async () => {
   await env.browser.cdp.send("Target.createTarget", { url: "chrome://version/" });
   const tab = await until(() => env.inPopup(`chrome.tabs.query({}).then((tabs) => tabs.find((tab) => tab.url.startsWith("chrome://version")) ?? null)`), { message: "the user's tab" });
