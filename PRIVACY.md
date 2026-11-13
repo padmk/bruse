@@ -32,7 +32,7 @@ your permissions and can reach the network.
   paused agents.
 - On your computer, in `~/.local/share/bruse`: the installed program, the pairing secret and the
   token that local agent sessions use.
-- In supported browsers' `NativeMessagingHosts` directories: a manifest naming the local pairing
+- In the `NativeMessagingHosts` directories of the installed supported browsers: a manifest naming the local pairing
   launcher and the allowed extension ID. It contains no secret. The host gives the extension its
   pairing secret over browser-managed pipes; the hub port carries only HMAC proofs.
 - Exports an agent makes (for example a YouTube transcript): in a private temporary folder

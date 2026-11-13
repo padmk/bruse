@@ -22,6 +22,14 @@ function run(command, ...args) {
   children.set(child, done);
   return { child, done, output: () => output };
 }
+// Setup registers the pairing host only for installed browsers. These make Chromium and Vivaldi count
+// as installed with `homeDir` as HOME, whatever the machine has: apps in ~/Applications on macOS,
+// commands in `fakeBrowsers` on PATH on Linux.
+const FAKE_BROWSERS = { darwin: ["Chromium", "Vivaldi"], linux: ["chromium", "vivaldi"] };
+let fakeBrowsers;
+function installFakeBrowsers(homeDir) {
+  if (process.platform === "darwin") for (const app of FAKE_BROWSERS.darwin) mkdirSync(join(homeDir, "Applications", `${app}.app`), { recursive: true });
+}
 before(async () => {
   port = await freePort();
   copy = browserCopy(port);
@@ -29,13 +37,20 @@ before(async () => {
   home = join(copy.dir, "home");
   installed = join(home, ".local", "share", "bruse");
   cli = join(copy.dir, "bin", "bruse.mjs");
+  fakeBrowsers = join(copy.dir, "fake-browsers");
+  mkdirSync(fakeBrowsers);
+  for (const command of FAKE_BROWSERS.linux) {
+    writeFileSync(join(fakeBrowsers, command), "#!/bin/sh\n");
+    chmodSync(join(fakeBrowsers, command), 0o755);
+  }
+  installFakeBrowsers(home);
   environment = {
     ...process.env,
     HOME: home,
     BRUSE_NO_OPEN: "1",
     CLAUDE_CONFIG_DIR: join(home, "claude"),
     CODEX_HOME: join(home, "codex"),
-    PATH: "/usr/bin:/bin",
+    PATH: `${fakeBrowsers}:/usr/bin:/bin`,
     INSTALL_NODE: process.execPath,
   };
   delete environment.XDG_DATA_HOME;
@@ -269,6 +284,7 @@ test("setup goes on without a browser directory it cannot write", { timeout: 120
     // One directory blocked: the others are written, and setup goes on.
     const oneBlocked = join(home, "one-blocked");
     mkdirSync(join(oneBlocked, appDir), { recursive: true });
+    installFakeBrowsers(oneBlocked);
     writeFileSync(join(oneBlocked, appDir, blockedDir), "");
     environment = { ...plain, HOME: oneBlocked };
     const partial = run("setup");
@@ -280,6 +296,7 @@ test("setup goes on without a browser directory it cannot write", { timeout: 120
     // Every directory blocked: setup stops at once.
     const allBlocked = join(home, "all-blocked");
     mkdirSync(allBlocked);
+    installFakeBrowsers(allBlocked);
     writeFileSync(join(allBlocked, appDir.split("/")[0]), "");
     environment = { ...plain, HOME: allBlocked };
     const none = await run("setup").done;
@@ -287,6 +304,7 @@ test("setup goes on without a browser directory it cannot write", { timeout: 120
     assert.match(none.output, /No browser directory could take the native pairing host/);
     assert.doesNotMatch(none.output, /Waiting for the extension|at async/);
     // A launcher that cannot start: setup stops instead of waiting for an extension that cannot pair.
+    installFakeBrowsers(join(home, "bad-node"));
     environment = { ...plain, HOME: join(home, "bad-node"), INSTALL_NODE: "/nonexistent/node" };
     const badNode = await run("setup").done;
     assert.equal(badNode.code, 1, badNode.output);
