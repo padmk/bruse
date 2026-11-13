@@ -27,9 +27,10 @@ after(() => copy?.remove());
 // A listener on the hub port; `onUpgrade(req, socket)` handles WebSocket upgrades, `onRequest` plain ones.
 async function fakeHub({ onUpgrade, onRequest = (_req, res) => res.writeHead(426).end() }) {
   const server = http.createServer(onRequest);
+  /** @type {{ urls: string[], bytes: Buffer, messages: { type?: string, method?: string }[] }} */
   const seen = { urls: [], bytes: Buffer.alloc(0), messages: [] };
   server.on("upgrade", (req, socket) => {
-    seen.urls.push(req.url);
+    seen.urls.push(req.url ?? "");
     socket.on("data", (chunk) => (seen.bytes = Buffer.concat([seen.bytes, chunk])));
     onUpgrade(req, socket, seen);
   });

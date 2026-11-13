@@ -2,6 +2,7 @@
 // projective mapping between the unit square and a quad, which also covers perspective transforms.
 
 // The mapping of the unit square onto a quad, fixed by its four corners.
+/** @param {number[]} quad The four corners as x, y pairs (a CDP Quad). */
 export function squareToQuad([x0, y0, x1, y1, x2, y2, x3, y3]) {
   const dx3 = x0 - x1 + x2 - x3;
   const dy3 = y0 - y1 + y2 - y3;
@@ -25,6 +26,7 @@ export function squareToQuad([x0, y0, x1, y1, x2, y2, x3, y3]) {
 }
 
 // The inverse: a point of the quad to unit-square coordinates.
+/** @param {number[]} quad The four corners as x, y pairs (a CDP Quad). */
 export function quadToSquare(quad) {
   const [a, b, c, d, e, f, g, h, i] = squareToQuad(quad).matrix;
   // Adjugate of the 3x3 matrix; the common factor cancels in the division.

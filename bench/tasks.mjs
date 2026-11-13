@@ -4,9 +4,11 @@ import { norm, onlyNumber, rules } from "./grading.mjs";
 import { ORIGIN_A, STOCK, chartSales, orders, products, reportCsv } from "./server.mjs";
 
 const refundSum = orders.filter((o) => o.customer === "Nowak Logistics" && o.status === "Zwrot").reduce((a, o) => a + o.amount, 0);
-const cheapest27 = products.filter((p) => p.category === "Monitory" && p.inches >= 27).sort((a, b) => a.price - b.price)[0];
+const cheapest27 = products.filter((p) => p.category === "Monitory" && p.inches !== null && p.inches >= 27).sort((a, b) => a.price - b.price)[0];
 const [bestMonth, bestSales] = chartSales.reduce((best, entry) => (entry[1] > best[1] ? entry : best));
-const septemberRevenue = Number(reportCsv.split("\n").find((l) => l.startsWith("2026-09")).split(";")[1].replace(",", "."));
+const septemberRow = reportCsv.split("\n").find((l) => l.startsWith("2026-09"));
+if (!septemberRow) throw new Error("The sales report has no September row");
+const septemberRevenue = Number(septemberRow.split(";")[1].replace(",", "."));
 
 export const tasks = [
   {

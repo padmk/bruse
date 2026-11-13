@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import { hubClient, lastJson, startEnvironment, startSite, until } from "./harness.mjs";
+import { ignore } from "../browser/extension/shared.js";
 
 // In the default access mode a window is the session's only when every tab in it is: agent tabs open in
 // the user's windows, which the session must not change, move tabs into, switch tabs in or see.
@@ -262,7 +263,7 @@ test("a share stopped while a duplicate of the tab is prepared opens no duplicat
   t.after(() => s.close());
   // Holds the duplicate's lookup of the active tab, after the call's access was checked.
   const hold = await env.holdCall("chrome.tabs.query", `stack.includes("tabs.duplicate")`);
-  t.after(() => hold.release().catch(() => {}));
+  t.after(() => hold.release().catch(ignore("cleanup: a release the test made already fails")));
   const result = s.js(`await m.tabs.duplicate(${user.id});`).then(
     () => null,
     (error) => error,

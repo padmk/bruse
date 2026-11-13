@@ -38,6 +38,7 @@ export const products = Array.from({ length: 120 }, (_, i) => {
   };
 });
 
+/** @type {{ signups: object[], payments: object[], sessions: object[], downloads: number, orders: object[], rejected: number }} */
 const log = { signups: [], payments: [], sessions: [], downloads: 0, orders: [], rejected: 0 };
 
 const css = `body{font-family:system-ui,sans-serif;margin:0;color:#1d2327;background:#f6f7f7}
@@ -94,7 +95,7 @@ function catalogPage(url) {
   const slice = list.slice((pageNo - 1) * 8, pageNo * 8);
   const options = ['<option value="">Wszystkie kategorie</option>', ...categories.map((c) => `<option${c === cat ? " selected" : ""}>${c}</option>`)].join("");
   const items = slice.map((p) => `<div class="card"><a href="/produkt?id=${p.id}">${p.name}</a><div>${p.price} zł</div></div>`).join("") || "<p>Brak wyników.</p>";
-  const nav = Array.from({ length: pages }, (_, i) => (i + 1 === pageNo ? `<strong>${i + 1}</strong>` : `<a href="/katalog?${new URLSearchParams({ q, kategoria: cat, strona: i + 1 })}">${i + 1}</a>`)).join(" ");
+  const nav = Array.from({ length: pages }, (_, i) => (i + 1 === pageNo ? `<strong>${i + 1}</strong>` : `<a href="/katalog?${new URLSearchParams({ q, kategoria: cat, strona: String(i + 1) })}">${i + 1}</a>`)).join(" ");
   return page(
     "Katalog",
     `<h1>Katalog sprzętu</h1><form action="/katalog"><label for=q>Szukaj</label><input id=q name=q value="${q}"><label for=k>Kategoria</label><select id=k name=kategoria>${options}</select> <button>Filtruj</button></form><p>Wyników: ${list.length}. Sortowanie: od najnowszych.</p>${items}<nav aria-label="Strony">Strony: ${nav}</nav>`,
@@ -194,8 +195,9 @@ async function readBody(req) {
   return b;
 }
 
+// Serves the task pages; a failure answers 500 instead of leaving the request open.
 function handler(origin) {
-  return async (req, res) => {
+  const serve = async (req, res) => {
     const url = new URL(req.url, origin);
     const html = (body) => send(res, 200, "text/html; charset=utf-8", body);
     const json = (status, body) => send(res, status, "application/json", JSON.stringify(body));
@@ -243,6 +245,12 @@ function handler(origin) {
       case "/api/reset": Object.assign(log, { signups: [], payments: [], sessions: [], downloads: 0, orders: [], rejected: 0 }); return json(200, {});
       default: return send(res, 404, "text/plain", "not found");
     }
+  };
+  return (req, res) => {
+    serve(req, res).catch((error) => {
+      if (!res.headersSent) send(res, 500, "text/plain", String(error));
+      else res.destroy();
+    });
   };
 }
 

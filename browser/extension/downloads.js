@@ -6,16 +6,57 @@
 // tab. Downloads that no tab reported are never handed out.
 
 import { EXTENSION_WORK, cdp, onCdpEvent, sinceAgentInput } from "./cdp.js";
-import { ALL_TABS, accessMode, sharedTabs, wasSharedWhenClosed } from "./access.js";
+import { ALL_TABS, accessMode, parseSharedTabs, sharedTabs, wasSharedWhenClosed } from "./access.js";
 import { tabOwner } from "./agent-state.js";
 import { agentOpenerChain, onTabOpened, rememberedOwner } from "./sessions.js";
 import { PAUSED_ERROR, isPaused, onPausedChange } from "./pause.js";
-import { AGENT_INPUT_WINDOW_MS } from "./shared.js";
+import { AGENT_INPUT_WINDOW_MS, ignore, logFailure } from "./shared.js";
+
+/** @typedef {import("./shared.js").DownloadInfo} DownloadInfo */
+/** @typedef {"complete" | "interrupted"} FinishedState */
+/**
+ * Why a waiting session may have a file a tab downloaded (see proofOfAccess).
+ * @typedef {"all-tabs" | "share" | "owner"} AccessProof
+ */
+/**
+ * A download's pairing with its source tab (see pairings).
+ * @typedef {{ valid: boolean }} Pairing
+ */
+/**
+ * What entitles a waiting call to the download it claimed.
+ * @typedef {object} Grant
+ * @property {number} source the tab the download came from
+ * @property {AccessProof} proof
+ * @property {Pairing} pairing
+ * @property {boolean} revoked
+ */
+/**
+ * A call waiting for a tab's next download. `claimed` and `grant` are set together, when a download is
+ * matched to the call; until then both are null.
+ * @typedef {object} Waiter
+ * @property {number} tabId
+ * @property {string | null} sessionId
+ * @property {number | null} claimed
+ * @property {Grant | null} grant
+ * @property {(downloadId: number, state: FinishedState) => Promise<void>} settle
+ * @property {(error: Error) => void} fail
+ * @property {() => void} supersede
+ */
+/**
+ * A tab a waiting tab's page opened from the agent's input, judged as a download source by the fallback.
+ * @typedef {{ url: string, at: number, endedAt: number | null, referrer: string | null }} Popup
+ */
+/** @typedef {{ tabId: number, url: string, source: "held" | "debugger", at: number }} DownloadReport */
+/** @typedef {{ id: number, urls: string[], at: number, referrer: string }} UnpairedItem */
 
 const MAX_REMEMBERED = 200;
 
 // The tab waiting for a download from `tabId`: the tab itself or a tab whose agent actions opened it
 // (directly or not; a tab the user opened ends the chain), or null when none of them waits.
+/**
+ * @param {number} tabId
+ * @returns {number | null}
+ */
 function waitingTab(tabId) {
   for (const tab of [tabId, ...agentOpenerChain(tabId)]) {
     for (const waiter of waiters) if (waiter.claimed === null && waiter.tabId === tab) return tab;
@@ -28,26 +69,30 @@ function waitingTab(tabId) {
 // held for a moment instead: when it is a file rather than a page, the tab reports that download itself,
 // like Page.downloadWillBegin does, and the response goes on. Nothing is matched by URL alone.
 const INTERCEPT_MS = 15_000;
+/** @type {Map<number, ReturnType<typeof setTimeout>>} */
 const intercepting = new Map(); // tab id -> timer that ends the interception
 const RENDERED_TYPES = /^(text\/|image\/|audio\/|video\/|application\/(xhtml\+xml|xml|json|pdf|javascript))/i;
 
+/** @param {number} tabId */
 function stopIntercepting(tabId) {
   if (!intercepting.has(tabId)) return;
   clearTimeout(intercepting.get(tabId));
   intercepting.delete(tabId);
-  cdp(tabId, "Fetch.disable", {}, undefined, undefined, EXTENSION_WORK).catch(() => {});
+  cdp(tabId, "Fetch.disable", {}, undefined, undefined, EXTENSION_WORK).catch(ignore("a tab that closed or detached intercepts nothing anymore"));
 }
 
 // Interception starts as early as possible, before it is known whether the agent opened the tab,
 // because the response may come within milliseconds: when the tab is created, if a waiting tab's page
 // just reported an opening after the agent's input, or at the latest when the browser reports the tab
 // with its opener. A tab that turns out to be the user's is let go and its report ignored.
+/** @type {Map<number, number>} */
 const pageOpenedAt = new Map(); // waiting tab id -> when its page last reported an opening
 
-onCdpEvent((tabId, method) => {
+onCdpEvent((...[tabId, method]) => {
   if (method === "Page.windowOpen" && waitingTab(tabId) !== null) pageOpenedAt.set(tabId, Date.now());
 });
 
+/** @param {number} tabId */
 function intercept(tabId) {
   if (intercepting.has(tabId)) return;
   undecided.set(tabId, undecided.get(tabId) ?? []);
@@ -59,39 +104,48 @@ function intercept(tabId) {
 chrome.tabs.onCreated.addListener((tab) => {
   if (tab.openerTabId === undefined) return;
   const opening = [...pageOpenedAt].some(([source, at]) => Date.now() - at < AGENT_INPUT_WINDOW_MS && sinceAgentInput(source) < AGENT_INPUT_WINDOW_MS);
-  if (opening) intercept(tab.id);
+  if (opening && tab.id !== undefined) intercept(tab.id);
 });
 
 chrome.webNavigation.onCreatedNavigationTarget.addListener(({ sourceTabId, tabId, url }) => {
   // The page's reported opening has its tab now.
   pageOpenedAt.delete(sourceTabId);
   if (waitingTab(sourceTabId) === null || sinceAgentInput(sourceTabId) > AGENT_INPUT_WINDOW_MS) return;
+  /** @type {Popup} */
   const popup = { url, at: Date.now(), endedAt: null, referrer: null };
   popups.set(tabId, popup);
-  chrome.tabs.get(sourceTabId).then((source) => (popup.referrer = source.url), () => {});
+  chrome.tabs.get(sourceTabId).then(
+    (source) => (popup.referrer = source.url ?? null),
+    ignore("without the opener's address the fallback matches no download to the popup"),
+  );
   intercept(tabId);
 });
 
+/** @type {Map<number, boolean>} */
 const agentOpened = new Map(); // tab id -> whether the agent opened it, once known
+/** @type {Map<number, number[]>} */
 const undecided = new Map(); // new tab id -> download ids that wait for that decision
 onTabOpened((openerTabId, tabId, url, byAgent) => {
   agentOpened.set(tabId, byAgent);
   const held = undecided.get(tabId) ?? [];
   undecided.delete(tabId);
-  if (byAgent) for (const downloadId of held) assign(downloadId, tabId);
+  if (byAgent) for (const downloadId of held) assign(downloadId, tabId).catch(logFailure("Assigning a download to the tab that opened it"));
   if (!byAgent) {
     stopIntercepting(tabId);
     for (let i = reports.length - 1; i >= 0; i--) if (reports[i].tabId === tabId) reports.splice(i, 1);
   }
 });
 
-onCdpEvent((tabId, method, params) => {
+onCdpEvent((...[tabId, method, params]) => {
   if (method !== "Fetch.requestPaused" || !intercepting.has(tabId)) return;
+  /** @param {string} name */
   const header = (name) => params.responseHeaders?.find((h) => h.name.toLowerCase() === name)?.value ?? "";
-  const isFile = /attachment/i.test(header("content-disposition")) || (params.responseStatusCode < 300 && !RENDERED_TYPES.test(header("content-type")));
-  const redirect = params.responseStatusCode >= 300 && params.responseStatusCode < 400;
+  // Paused at the response stage, a request has a status code.
+  const status = params.responseStatusCode;
+  const isFile = /attachment/i.test(header("content-disposition")) || (status !== undefined && status < 300 && !RENDERED_TYPES.test(header("content-type")));
+  const redirect = status !== undefined && status >= 300 && status < 400;
   if (isFile && agentOpened.get(tabId) !== false) reportDownload(tabId, params.request.url, "held");
-  cdp(tabId, "Fetch.continueResponse", { requestId: params.requestId }, undefined, undefined, EXTENSION_WORK).catch(() => {});
+  cdp(tabId, "Fetch.continueResponse", { requestId: params.requestId }, undefined, undefined, EXTENSION_WORK).catch(ignore("a tab that closed or detached releases its held response"));
   // A redirect is followed by the response that decides.
   if (!redirect) stopIntercepting(tabId);
 });
@@ -103,19 +157,26 @@ onCdpEvent((tabId, method, params) => {
 // exactly one download and one popup fit.
 // Anything ambiguous stays unassigned.
 const FALLBACK_MATCH_MS = 1_000;
-const popups = new Map(); // popup tab id -> { url, at, endedAt, referrer }
+/** @type {Map<number, Popup>} */
+const popups = new Map(); // popup tab id -> popup
+/** @type {{ popup: Popup, endedAt: number }[]} */
 const endedPopups = []; // popups whose navigation ended, kept for a while to judge ambiguity
 
+/** @param {number} tabId */
 function popupEnded(tabId) {
   const popup = popups.get(tabId);
   if (!popup || popup.endedAt !== null) return;
-  popup.endedAt = Date.now();
-  endedPopups.push(popup);
+  const endedAt = (popup.endedAt = Date.now());
+  endedPopups.push({ popup, endedAt });
   // Wait a moment for a download item that comes right after the navigation ended.
-  setTimeout(() => matchPopup(tabId), FALLBACK_MATCH_MS);
+  setTimeout(() => matchPopup(tabId, endedAt), FALLBACK_MATCH_MS);
 }
 
-// A referrer may be cut to the origin by the page's referrer policy.
+/**
+ * A referrer may be cut to the origin by the page's referrer policy.
+ * @param {string | null} referrer
+ * @param {string | null} page
+ */
 function referredBy(referrer, page) {
   if (!referrer || !page) return false;
   try {
@@ -125,19 +186,23 @@ function referredBy(referrer, page) {
   }
 }
 
-function matchPopup(tabId) {
+/**
+ * @param {number} tabId
+ * @param {number} endedAt when the popup's navigation ended
+ */
+function matchPopup(tabId, endedAt) {
   const popup = popups.get(tabId);
   popups.delete(tabId);
   for (let i = endedPopups.length - 1; i >= 0; i--) if (Date.now() - endedPopups[i].endedAt > 3 * FALLBACK_MATCH_MS) endedPopups.splice(i, 1);
   if (!popup || agentOpened.get(tabId) === false) return;
   // The download was asked for by the page that opened the popup.
   const items = unpairedItems.filter(
-    (item) => item.urls.includes(popup.url) && item.at >= popup.at && Math.abs(item.at - popup.endedAt) < FALLBACK_MATCH_MS && referredBy(item.referrer, popup.referrer),
+    (item) => item.urls.includes(popup.url) && item.at >= popup.at && Math.abs(item.at - endedAt) < FALLBACK_MATCH_MS && referredBy(item.referrer, popup.referrer),
   );
-  const rivals = endedPopups.filter((other) => other !== popup && other.url === popup.url && Math.abs(other.endedAt - popup.endedAt) < FALLBACK_MATCH_MS);
+  const rivals = endedPopups.filter((other) => other.popup !== popup && other.popup.url === popup.url && Math.abs(other.endedAt - endedAt) < FALLBACK_MATCH_MS);
   if (items.length !== 1 || rivals.length) return;
   unpairedItems.splice(unpairedItems.indexOf(items[0]), 1);
-  assign(items[0].id, tabId);
+  assign(items[0].id, tabId).catch(logFailure("Assigning a download to its popup"));
 }
 
 chrome.webNavigation.onCommitted.addListener(({ tabId, frameId }) => frameId === 0 && popups.delete(tabId));
@@ -152,19 +217,32 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   undecided.delete(tabId);
 });
 
+/**
+ * @template K, V
+ * @param {Map<K, V>} map
+ * @param {K} key
+ * @param {V} value
+ */
 function remember(map, key, value) {
   map.set(key, value);
-  if (map.size > MAX_REMEMBERED) map.delete(map.keys().next().value);
+  const oldest = map.keys().next();
+  if (map.size > MAX_REMEMBERED && !oldest.done) map.delete(oldest.value);
 }
 
 const PAIRING_WINDOW_MS = 30_000;
 const REPORT_MATCH_MS = 2_000;
-const reports = []; // { tabId, url, source: "held" | "debugger", at } not yet paired with an item
-const unpairedItems = []; // { id, urls, at }
+/** @type {DownloadReport[]} */
+const reports = []; // reports not yet paired with an item
+/** @type {UnpairedItem[]} */
+const unpairedItems = [];
+/** @type {Map<number, number>} */
 const owners = new Map(); // download id -> tab id
-const finished = new Map(); // download id -> "complete" | "interrupted"
-const waiters = new Set(); // { tabId, claimed: download id | null, settle, fail, supersede }
+/** @type {Map<number, FinishedState>} */
+const finished = new Map(); // download id -> how it finished
+/** @type {Set<Waiter>} */
+const waiters = new Set();
 
+/** @param {{ at: number }[]} list */
 function expire(list) {
   const now = Date.now();
   for (let i = list.length - 1; i >= 0; i--) if (now - list[i].at > PAIRING_WINDOW_MS) list.splice(i, 1);
@@ -176,6 +254,11 @@ function expire(list) {
 let revocations = 0;
 const PROOF_READS = 3;
 
+/**
+ * @param {string | null} sessionId
+ * @param {number} tabId
+ * @returns {Promise<AccessProof | null>}
+ */
 async function currentProof(sessionId, tabId) {
   for (let read = 0; read < PROOF_READS; read++) {
     const generation = revocations;
@@ -190,6 +273,10 @@ async function currentProof(sessionId, tabId) {
 // user's click). A shared tab that is gone took its share along, which is no revocation; one that is
 // still open and no longer shared was stopped. A reading during which a revocation's event came is
 // taken again, as in currentProof.
+/**
+ * @param {Grant} grant
+ * @returns {Promise<boolean>}
+ */
 async function grantHolds(grant) {
   for (let read = 0; read < PROOF_READS; read++) {
     const generation = revocations;
@@ -206,6 +293,11 @@ async function grantHolds(grant) {
 // it use every tab), "share" (the user shares the tab, also one that closed as it turned into the
 // download) or "owner" (the session owns the tab, also a popup that closed and was opened for it). A wait
 // in one tab never receives a file from a tab of another session that its tab opened.
+/**
+ * @param {string | null} sessionId
+ * @param {number} tabId
+ * @returns {Promise<AccessProof | null>}
+ */
 async function proofOfAccess(sessionId, tabId) {
   if ((await accessMode()) === ALL_TABS) return "all-tabs";
   // The tab may close during this check; tab IDs are not reused, so a share it closed with still counts.
@@ -218,11 +310,21 @@ async function proofOfAccess(sessionId, tabId) {
 // A download's pairing with its source tab, made when the download is matched and withdrawn when that
 // match proves ambiguous (also before a deferred match is made); a grant that a waiting call holds
 // refers to it.
-const pairings = new Map(); // download id -> { valid }
+/** @type {Map<number, Pairing>} */
+const pairings = new Map(); // download id -> pairing
 
+/**
+ * @param {number} downloadId
+ * @param {number} sourceTabId
+ * @returns {Promise<void>}
+ */
 async function assign(downloadId, sourceTabId) {
   // A new tab whose opening is still being judged gets its downloads once that is decided.
-  if (undecided.has(sourceTabId)) return undecided.get(sourceTabId).push(downloadId);
+  const held = undecided.get(sourceTabId);
+  if (held) {
+    held.push(downloadId);
+    return;
+  }
   const pairing = pairings.get(downloadId) ?? { valid: true };
   if (!pairing.valid) return;
   remember(pairings, downloadId, pairing);
@@ -248,6 +350,7 @@ async function assign(downloadId, sourceTabId) {
 // Decided at once, so a download that completes meanwhile cannot slip past the revocation; a proof being
 // read meanwhile is read again (see currentProof).
 chrome.storage.onChanged.addListener((changes, area) => {
+  /** @param {(grant: Grant) => boolean} matches */
   const revoke = (matches) => {
     revocations++;
     for (const waiter of waiters) {
@@ -259,34 +362,45 @@ chrome.storage.onChanged.addListener((changes, area) => {
   if (area === "local" && changes.accessMode?.newValue !== undefined && changes.accessMode.newValue !== ALL_TABS) revoke((grant) => grant.proof === "all-tabs");
   if (area === "session" && "sharedTabs" in changes) {
     // Only shares this change removed; a tab that closed is marked before its share is removed (access.js).
-    const now = new Set(changes.sharedTabs.newValue ?? []);
-    const stopped = new Set((changes.sharedTabs.oldValue ?? []).filter((tabId) => !now.has(tabId) && !wasSharedWhenClosed(tabId)));
+    const now = new Set(parseSharedTabs(changes.sharedTabs.newValue));
+    const stopped = new Set(parseSharedTabs(changes.sharedTabs.oldValue).filter((tabId) => !now.has(tabId) && !wasSharedWhenClosed(tabId)));
     if (stopped.size) revoke((grant) => grant.proof === "share" && stopped.has(grant.source));
   }
 });
 
 // Pausing ends every wait, so no file reaches an agent after the user paused.
-onPausedChange((paused) => {
+onPausedChange((/** @type {boolean} */ paused) => {
   if (paused) for (const waiter of [...waiters]) waiter.fail(new Error(PAUSED_ERROR));
 });
 
+/** @type {Map<number, number>} */
 const pairedAt = new Map(); // download id -> when a report paired it
 
+/** @param {number} downloadId */
 function update(downloadId) {
   const wait = (pairedAt.get(downloadId) ?? 0) + AMBIGUITY_MS - Date.now();
   if (wait > 0) return void setTimeout(() => update(downloadId), wait);
   pairedAt.delete(downloadId);
-  for (const waiter of waiters) if (waiter.claimed === downloadId && finished.has(downloadId)) waiter.settle(downloadId, finished.get(downloadId));
+  for (const waiter of waiters) {
+    // Settling forgets the download's state at once, so it settles one waiter.
+    const state = finished.get(downloadId);
+    if (waiter.claimed === downloadId && state !== undefined) waiter.settle(downloadId, state).catch(logFailure("Handing out a download"));
+  }
 }
 
 // A tab's own report that it downloads a URL. The browser reports a download (Page.downloadWillBegin,
 // or a response the extension holds) before it creates the item, so a report only pairs with an item
 // created after it; an item that already exists is someone else's, however close in time.
+/**
+ * @param {number} tabId
+ * @param {string} url
+ * @param {DownloadReport["source"]} source
+ */
 function reportDownload(tabId, url, source) {
   reports.push({ tabId, url, source, at: Date.now() });
 }
 
-onCdpEvent((tabId, method, params) => {
+onCdpEvent((...[tabId, method, params]) => {
   if (method === "Page.downloadWillBegin") reportDownload(tabId, params.url, "debugger");
 });
 
@@ -295,9 +409,15 @@ onCdpEvent((tabId, method, params) => {
 // of its own, either could be the tab's: the pairing is withdrawn and the waiting call fails instead of
 // returning someone else's file. Paired downloads are handed out only after that window.
 const AMBIGUITY_MS = 150;
-const recentPairs = []; // { urls, at, itemId } report pairings still open to doubt
+/** @type {{ urls: string[], at: number, itemId: number }[]} */
+const recentPairs = []; // report pairings still open to doubt
 
 chrome.downloads.onCreated.addListener((item) => {
+  pairNewItem(item);
+});
+
+/** @param {chrome.downloads.DownloadItem} item */
+function pairNewItem(item) {
   expire(reports);
   // The popup fallback looks only at items from the last moments, so older ones can go.
   expire(unpairedItems);
@@ -313,16 +433,19 @@ chrome.downloads.onCreated.addListener((item) => {
     if (twin >= 0) reports.splice(twin, 1);
     recentPairs.push({ urls, at: report.at, itemId: item.id });
     pairedAt.set(item.id, report.at);
-    return assign(item.id, report.tabId);
+    assign(item.id, report.tabId).catch(logFailure("Assigning a download to the tab that reported it"));
+    return;
   }
   const doubted = recentPairs.find((pair) => pair.urls.some((url) => urls.includes(url)));
   if (doubted) withdraw(doubted.itemId);
   unpairedItems.push({ id: item.id, urls, at: now, referrer: item.referrer });
-});
+}
 
+/** @param {number} downloadId */
 function withdraw(downloadId) {
   owners.delete(downloadId);
-  if (pairings.has(downloadId)) pairings.get(downloadId).valid = false;
+  const pairing = pairings.get(downloadId);
+  if (pairing) pairing.valid = false;
   else remember(pairings, downloadId, { valid: false });
   for (const waiter of waiters) {
     if (waiter.claimed === downloadId) waiter.fail(new Error("Another download of the same URL started at the same moment, so it is unclear which file came from this tab; check the downloads folder"));
@@ -330,8 +453,9 @@ function withdraw(downloadId) {
 }
 
 chrome.downloads.onChanged.addListener((delta) => {
-  if (delta.state?.current !== "complete" && delta.state?.current !== "interrupted") return;
-  remember(finished, delta.id, delta.state.current);
+  const current = delta.state?.current;
+  if (current !== "complete" && current !== "interrupted") return;
+  remember(finished, delta.id, current);
   if (owners.has(delta.id)) update(delta.id);
 });
 
@@ -339,10 +463,17 @@ chrome.downloads.onChanged.addListener((delta) => {
 // replaces an older one that got nothing (for example one left by an earlier call), so the newer one
 // gets the next download.
 // `caller` is the agent request's { session }; the file goes to it only from a tab it may use.
+/**
+ * @param {number} tabId
+ * @param {number} timeoutMs
+ * @param {{ session: string | null }} caller
+ * @returns {Promise<DownloadInfo>}
+ */
 export function waitForDownload(tabId, timeoutMs, caller) {
   // Attaching makes sure the tab reports downloads; the waiter is registered first so nothing is missed.
-  cdp(tabId, "Page.enable", {}, undefined, undefined, caller).catch(() => {});
+  cdp(tabId, "Page.enable", {}, undefined, undefined, caller).catch(ignore("a tab that cannot report downloads leaves the wait to end on its timeout"));
   return new Promise((resolve, reject) => {
+    /** @type {Waiter} */
     const waiter = {
       tabId,
       sessionId: caller?.session ?? null,
@@ -363,7 +494,10 @@ export function waitForDownload(tabId, timeoutMs, caller) {
           const [item] = await chrome.downloads.search({ id: downloadId });
           if (!granted()) throw withdrawn();
           if (!item) throw new Error("The download is no longer in the browser's list of downloads");
-          const holds = await grantHolds(waiter.grant);
+          // Set, as granted() just checked.
+          const { grant } = waiter;
+          if (!grant) throw withdrawn();
+          const holds = await grantHolds(grant);
           // Nothing awaits between this check and the result going out.
           if (!holds || !granted()) throw withdrawn();
           resolve({ path: item.filename, url: item.finalUrl ?? item.url, mime: item.mime });
@@ -374,20 +508,22 @@ export function waitForDownload(tabId, timeoutMs, caller) {
           pairings.delete(downloadId);
         }
       },
+      fail: (error) => {
+        clearTimeout(timer);
+        waiters.delete(waiter);
+        reject(error);
+      },
+      supersede: () => waiter.fail(new Error("A newer wait for a download on this tab replaced this one")),
     };
     const timer = setTimeout(() => {
       waiters.delete(waiter);
       reject(new Error("The tab started no download that completed in time"));
     }, timeoutMs);
     for (const older of waiters) if (older.tabId === tabId && older.claimed === null) older.supersede();
-    waiter.fail = (error) => {
-      clearTimeout(timer);
-      waiters.delete(waiter);
-      reject(error);
-    };
-    waiter.supersede = () => waiter.fail(new Error("A newer wait for a download on this tab replaced this one"));
     waiters.add(waiter);
     // The user may have paused while the request was checked; pausing later ends the wait (above).
-    isPaused().then((paused) => paused && waiter.fail(new Error(PAUSED_ERROR)));
+    isPaused()
+      .then((paused) => paused && waiter.fail(new Error(PAUSED_ERROR)))
+      .catch(logFailure("Checking whether agents are paused for a download wait"));
   });
 }

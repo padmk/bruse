@@ -8,6 +8,11 @@
 // storage of any origin (Storage, DOMStorage, IndexedDB, CacheStorage), certificate checks (Security)
 // or the machine (SystemInfo) are not on the list.
 
+import { isRecord } from "./sender.js";
+import { actsOn } from "./shared.js";
+
+/** @typedef {import("./shared.js").Method} Method */
+
 const name = chrome.runtime.getManifest().name;
 
 const AGENT_SCHEMES = new Set(["http:", "https:", "about:", "data:", "file:", "blob:"]);
@@ -19,14 +24,13 @@ const ALLOWED_CDP_METHODS = new Set([
   ...["enable", "disable", "navigate", "reload", "stopLoading", "getNavigationHistory", "navigateToHistoryEntry", "getFrameTree", "getResourceTree", "getResourceContent", "searchInResource", "getLayoutMetrics", "captureScreenshot", "captureSnapshot", "printToPDF", "startScreencast", "stopScreencast", "screencastFrameAck", "handleJavaScriptDialog", "setInterceptFileChooserDialog", "setLifecycleEventsEnabled", "setBypassCSP", "setDocumentContent", "getAppManifest", "removeScriptToEvaluateOnNewDocument", "close", "crash"].map((m) => `Page.${m}`),
 ]);
 
+/** @param {unknown} method */
 function cdpAllowed(method) {
   return typeof method === "string" && (ALLOWED_CDP_DOMAINS.has(method.split(".")[0]) || ALLOWED_CDP_METHODS.has(method));
 }
 
-// Requests that read or act on the page of params.tabId.
-const PAGE_METHODS = new Set(["cdp", "page.state", "page.console", "page.network", "tabs.history", "tabs.navigate", "downloads.wait"]);
-
 // A relative address would open inside the extension, so only absolute ones pass.
+/** @param {unknown} url */
 function checkUrl(url) {
   if (url === undefined || url === null || url === "") return;
   let scheme;
@@ -40,7 +44,9 @@ function checkUrl(url) {
   if (scheme === "about:" && !ABOUT_PAGES.has(new URL(String(url)).pathname)) throw new Error(`${name} lets agents open only about:blank and about:srcdoc, not ${JSON.stringify(url)}`);
 }
 
+/** @param {unknown} tabId */
 async function checkTab(tabId) {
+  if (typeof tabId !== "number") throw new Error(`${name} needs the ID of the tab, not ${JSON.stringify(tabId)}`);
   const tab = await chrome.tabs.get(tabId).catch(() => null);
   if (!tab) return;
   checkUrl(tab.url);
@@ -49,20 +55,26 @@ async function checkTab(tabId) {
 
 // Management methods that take addresses: windows.create({ url }) opens them, and a bookmark's address
 // opens when the user clicks it.
+/** @param {Record<string, unknown>} params */
 function checkManagement({ namespace, method, args = [] }) {
-  const [first, second] = args;
-  if (namespace === "windows" && method === "create") for (const url of [first?.url ?? []].flat()) checkUrl(url);
-  if (namespace === "bookmarks" && method === "create") checkUrl(first?.url);
-  if (namespace === "bookmarks" && method === "update") checkUrl(second?.url);
+  if (!Array.isArray(args)) throw new Error("browser.manage takes the method's arguments as an array");
+  /** @type {unknown[]} */
+  const list = args;
+  const [first, second] = list.map((arg) => (isRecord(arg) ? arg.url : undefined));
+  if (namespace === "windows" && method === "create") for (const url of [first ?? []].flat()) checkUrl(url);
+  if (namespace === "bookmarks" && method === "create") checkUrl(first);
+  if (namespace === "bookmarks" && method === "update") checkUrl(second);
 }
 
-// Throws when the request must not run.
+// Throws when the request must not run. It reads `params` as the hub sent them, each field unknown.
+/** @param {Method} method @param {Record<string, unknown>} params */
 export async function checkRequest(method, params) {
   if (method === "tabs.create" || method === "tabs.navigate") checkUrl(params.url);
   if (method === "cdp") {
-    if (!cdpAllowed(params.method)) throw new Error(`${name} does not let agents send ${params.method}`);
-    if (params.method === "Page.navigate") checkUrl(params.params?.url);
+    if (!cdpAllowed(params.method)) throw new Error(`${name} does not let agents send ${String(params.method)}`);
+    if (params.method === "Page.navigate") checkUrl(isRecord(params.params) ? params.params.url : undefined);
   }
-  if (PAGE_METHODS.has(method)) await checkTab(params.tabId);
+  // Requests that read or act on the page of params.tabId.
+  if (actsOn(method, "page")) await checkTab(params.tabId);
   if (method === "browser.manage") checkManagement(params);
 }

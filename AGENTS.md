@@ -7,7 +7,11 @@ This file is for agents changing the code. To install Bruse for a user, follow [
 ## Commands
 
 ```sh
-node scripts/check.mjs        # what the CI checks job runs: every module parses, versions agree, the server lists its tools
+npm ci                        # the development tools: TypeScript, ESLint and type packages (nothing the product loads)
+node scripts/check.mjs        # what the CI checks job runs: every module parses, versions agree, the server lists its tools, types check, lint passes
+npx tsc -p browser/extension  # one TypeScript project; each tsconfig.json is one, check.mjs runs them all
+npx eslint browser/mcp        # lint part of the tree
+git config core.hooksPath .githooks   # run check.mjs before each commit in this checkout
 npm test                      # unit and end-to-end tests in headless Chrome for Testing, four files at a time
 npx playwright install chromium   # the browser the tests find in Playwright's cache; or set BRUSE_TEST_CHROME
 node --test test/<file>.test.mjs  # one test file
@@ -19,8 +23,11 @@ CI (`.github/workflows/ci.yml`, Linux, Node.js 26) runs `node scripts/check.mjs`
 ## Constraints
 
 - Never test against the user's browser or installed Bruse: the tests start their own Chrome for Testing, hub port, state directory and native host manifest. Do not run `bruse setup` or `bruse uninstall` on the owner's machine to try a change; a checkout's server is registered by hand, as described in [Working on the code](docs/development.md#working-on-the-code).
-- Keep the server and the extension free of npm dependencies and code loaded at run time; [SECURITY.md](SECURITY.md) and the README promise it.
-- `browser/extension/shared.js` is the one owner of what the server and the extension must agree on (hub port, management allow-list, password manager names, the code fingerprint). It may use no browser or Node APIs beyond Web Crypto, since the server imports it from the extension directory.
+- Keep the server and the extension free of npm dependencies and code loaded at run time; [SECURITY.md](SECURITY.md) and the README promise it. `devDependencies` hold only the type checker, the linter and type packages, installed at exact versions at least a day old (`.npmrc`), and nothing of them may be imported at run time or copied into the package.
+- Types are JSDoc in the `.js` and `.mjs` files, checked by `tsc` (`checkJs`); there is no build step. `browser/extension` is checked with `strict`, the rest of the tree with `strictNullChecks` for now (see [Type checking and lint](docs/development.md#type-checking-and-lint)). Do not silence the checker with `any`, casts or `@ts-` comments, or the linter with disable comments; fix the type or the code.
+- A promise nobody awaits ends in `.catch(ignore("why it does not matter"))` or `.catch(logFailure("what failed"))` from `browser/extension/shared.js`; ESLint refuses empty rejection and error handlers and empty `catch` blocks (a comment inside that gives the reason is enough).
+- The requests the extension takes are listed once, in `PROTOCOL` in `browser/extension/shared.js`, with what each acts on and how it is checked, and their parameter and result types in `Protocol`. The service worker's handlers, the guard and the server's resend rule read it; a request without an entry or a handler is a type error.
+- `browser/extension/shared.js` is the one owner of what the server and the extension must agree on (hub port, the request protocol table, management allow-list, password manager names, the code fingerprint). It may use no browser or Node APIs beyond Web Crypto, since the server imports it from the extension directory.
 - The extension enforces tab isolation and the raw DevTools limits in `guard.js` and `access.js`, using the session the hub names. A change to what agents can reach must keep [SECURITY.md](SECURITY.md) and the README's security section true.
 - The manifest `key` pins the extension ID `dcebpfjehgpkddgcdaipjemnndbdpmpc`, which the native host manifests allow; do not change it. Old paired extensions and hubs must keep working; see [Pairing compatibility](docs/development.md#pairing-compatibility).
 - The release version is the `version` in `browser/extension/manifest.json`, and `package.json` carries the same value; `scripts/check.mjs` fails when they differ.
