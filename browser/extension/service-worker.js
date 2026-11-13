@@ -230,7 +230,7 @@ const handlers = {
 
   // Browser organization through the WebExtensions APIs; only listed methods can be called.
   "browser.manage": async ({ namespace, method, args = [] }, session) => {
-    if (!MANAGEMENT_METHODS[namespace]?.includes(method)) throw new Error(`${namespace}.${method} is not available`);
+    if (!(Object.hasOwn(MANAGEMENT_METHODS, namespace) && MANAGEMENT_METHODS[namespace].includes(method))) throw new Error(`${namespace}.${method} is not available`);
     if (namespace === "bookmarks") await requirePermission("bookmarks", "the bookmarks");
     checkManagementArguments(namespace, method, args);
     const call = await withDefaults(namespace, method, args);
@@ -553,7 +553,8 @@ async function handle(gen, text) {
   const storageProblem = await storageRestriction;
   if (storageProblem && !SESSIONLESS_METHODS.has(method)) return JSON.stringify({ id, error: storageProblem });
   try {
-    const handler = handlers[method];
+    // Only the handlers' own methods: a name such as "constructor" must not reach Object.prototype.
+    const handler = typeof method === "string" && Object.hasOwn(handlers, method) ? handlers[method] : null;
     if (!handler) throw new Error(`Unknown method ${method}`);
     if (!PAUSE_EXEMPT.has(method) && (await isPaused())) throw new Error(PAUSED_ERROR);
     if (!SESSIONLESS_METHODS.has(method) && !("session" in message)) throw new Error(OUTDATED_HUB);
