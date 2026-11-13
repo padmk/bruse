@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.24.0
 
 - **A stopped share, a pause or a change of access that comes while a request is under way now stops it.** The extension checks the pause switch and the session's access once more right before each action takes effect, instead of only when the request arrives. Before, such a change in that moment did not stop: a download wait could hand the session the file's path although the user had stopped sharing the tab or switched off "all tabs"; closing a tab (`tab.close()`, the management calls `tabs.remove` and `windows.remove`) attached the debugger and closed it after the user paused agents; `tabs.duplicate` copied a tab whose share had just ended into a new agent tab; and back, forward, reload, navigating a crashed tab, opening tabs, other management calls and debugger commands to a tab that was already attached went ahead after the pause or the end of the share.
 - **Session ends report what closed.** When a tab does not close at the end of a session (for example while the user drags a tab), the end says which tabs stayed open and why, and they stay the session's, so the next end closes them; a session that ended while absent from the hub tries again a few times. Before, the end reported every tab as closed, and a tab that stayed open had no owner. A tab that a page opened for a session that had just ended is handled the same way.
