@@ -13,7 +13,8 @@ import { platform } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { HUB_VERSION_MISMATCH, PORT, UPDATE_SOURCE_FILE } from "../browser/mcp/config.mjs";
-import { agentClients, clientId, installedBrowser, showPage, extensionDir, fail, failureReason, installRoot, installed, manifest, note, onPath, problemMessage, product, requireNode, serverPath, source, step, moveToTrash } from "./lib.mjs";
+import { agentClients, clientId, installedBrowser, showPage, extensionDir, fail, failureReason, installRoot, installed, isDevelopmentFile, manifest, note, onPath, problemMessage, product, requireNode, serverPath, source, step, moveToTrash } from "./lib.mjs";
+import { ignore } from "../browser/extension/shared.js";
 
 const PAIR_WAIT_MS = 10 * 60_000;
 const PAIR_HINT_MS = 45_000;
@@ -33,7 +34,7 @@ export function installFiles({ rename = renameSync, trash = moveToTrash } = {}) 
   }
   mkdirSync(installRoot, { recursive: true });
   const staged = join(installRoot, `browser.new-${process.pid}`);
-  cpSync(source, staged, { recursive: true, filter: (path) => !path.endsWith(".DS_Store") });
+  cpSync(source, staged, { recursive: true, filter: (path) => !isDevelopmentFile(path) });
   // INSTALL_SOURCE names a path that later versions replace in place, such as Homebrew's opt path; the
   // server compares its version with the one there (see update-notice.mjs).
   writeFileSync(join(staged, UPDATE_SOURCE_FILE), `${JSON.stringify({ browserDir: process.env.INSTALL_SOURCE || source })}\n`);
@@ -222,7 +223,9 @@ const pausedMessage = (info, consequence) =>
 async function reloadExtension(callBrowser, connected, build) {
   step("Updating the extension");
   if (connected.paused) fail(pausedMessage(connected, "so the extension cannot be updated"));
-  await callBrowser("extension.reload").catch(() => {});
+  // The reload ends the extension's connection, so the call may fail although the reload happened;
+  // the wait below decides by what the extension reports afterwards.
+  await callBrowser("extension.reload").catch(ignore("the wait below checks the reload"));
   const deadline = Date.now() + RELOAD_WAIT_MS;
   await new Promise((resolve) => setTimeout(resolve, 1_000));
   let info = null;
@@ -268,6 +271,7 @@ function portTaken(error) {
 // fingerprint (`build`, see shared.js) to count as updated.
 const runsThisCode = (info, build) => info?.version === manifest.version && Boolean(build) && info.build === build;
 
+/** @param {{ clients?: string }} [options] `clients`: the comma-separated client IDs of --clients. */
 export async function setup({ clients } = {}) {
   requireNode();
   const firstInstall = !existsSync(installed);

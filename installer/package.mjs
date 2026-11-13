@@ -6,12 +6,13 @@ import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, wr
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { isDevelopmentFile } from "./lib.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const { name, version, homepage_url: homepage } = JSON.parse(readFileSync(join(root, "browser", "extension", "manifest.json"), "utf8"));
 const bundleName = `${name}-${version}`;
 const stage = join(tmpdir(), `package-${process.pid}`, bundleName);
-const skip = (path) => !path.endsWith(".DS_Store") && !path.endsWith("icon-source.png");
+const skip = (path) => !isDevelopmentFile(path) && !path.endsWith("icon-source.png");
 
 mkdirSync(stage, { recursive: true });
 cpSync(join(root, "browser"), join(stage, "browser"), { recursive: true, filter: skip });

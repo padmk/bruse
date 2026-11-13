@@ -12,6 +12,7 @@ import { homedir, platform, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
+import { ignore } from "../browser/extension/shared.js";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -41,11 +42,18 @@ const trashStandIn = tempDir("trash");
 process.env.BROWSER_CONTROL_TRASH_DIR = trashStandIn;
 process.on("exit", () => removeTemp(trashStandIn));
 
+// The TCP port a listening server got.
+export function listeningPort(server) {
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("The server is not listening on a TCP port");
+  return address.port;
+}
+
 export async function freePort() {
   const server = http.createServer();
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
-  const { port } = server.address();
+  const port = listeningPort(server);
   server.close();
   return port;
 }
@@ -81,6 +89,7 @@ function setConstant(file, name, value) {
 
 // A copy of browser/ whose extension and servers use `port` for the hub. `absentSessionGraceMs`
 // shortens how long the extension waits before it ends a session the hub no longer reports.
+/** @param {number} port @param {{ absentSessionGraceMs?: number }} [options] */
 export function browserCopy(port, { absentSessionGraceMs } = {}) {
   const dir = tempDir("browser");
   cpSync(join(root, "browser"), join(dir, "browser"), { recursive: true, filter: (path) => !path.endsWith(".DS_Store") });
@@ -141,6 +150,7 @@ async function connectCdp(url) {
 
 // Headless Chromium with the extension from `extensionDir` loaded, in a fresh profile with Developer mode on
 // (without it Chromium disables an unpacked extension that reloads itself).
+/** @param {string} extensionDir @param {{ pairing?: { browserDir: string, stateDir?: string } }} [options] */
 export async function launchBrowser(extensionDir, { pairing } = {}) {
   const executable = findChromium();
   if (!executable) throw new Error("No Chromium for tests found; install one with `npx playwright install chromium` or set BRUSE_TEST_CHROME");
@@ -169,7 +179,7 @@ export async function launchBrowser(extensionDir, { pairing } = {}) {
   const exited = once(child, "exit");
   let cdp = null;
   const stop = async () => {
-    cdp?.send("Browser.close").catch(() => {});
+    cdp?.send("Browser.close").catch(ignore("the browser closes its connection while it exits; the process exit is what stop waits for"));
     cdp?.close();
     const timer = setTimeout(() => child.kill("SIGKILL"), 10_000);
     if (child.exitCode === null && child.signalCode === null) await exited;
@@ -231,6 +241,7 @@ export async function launchBrowser(extensionDir, { pairing } = {}) {
 }
 
 // An agent session: the MCP server over stdio, with the js tool as `js(code)`.
+/** @param {string} serverPath @param {{ stateDir?: string, env?: NodeJS.ProcessEnv }} [options] */
 export async function startSession(serverPath, { stateDir, env = {} } = {}) {
   const child = spawn(process.execPath, [serverPath], {
     stdio: ["pipe", "pipe", "pipe"],
@@ -291,7 +302,9 @@ export function lastJson(text) {
   for (let i = lines.length - 1; i >= 0; i--) {
     try {
       return JSON.parse(lines[i]);
-    } catch {}
+    } catch {
+      // Not the JSON line; an earlier one may be.
+    }
   }
   throw new Error(`No JSON in output:\n${text}`);
 }
@@ -314,7 +327,7 @@ export async function hubClient(port, stateDir, { sessionId = randomUUID() } = {
         hubNonce = message.nonce;
         socket.send(JSON.stringify({ type: "auth", nonce, mac: hmac(`client:${hubNonce}:${nonce}`) }));
       } else if (message.type === "auth-ok") {
-        if (message.mac === hmac(`hub:${nonce}:${hubNonce}`)) resolve();
+        if (message.mac === hmac(`hub:${nonce}:${hubNonce}`)) resolve(undefined);
         else reject(new Error("The hub did not prove the token"));
       } else if (message.id !== undefined) {
         pending.get(message.id)?.(message);
@@ -377,12 +390,12 @@ export function offerPairing(port, extensionId, secret) {
           sendFrame(socket, { type: "pair", secret, nonce: "x" });
         }
       };
-      socket.on("data", (chunk) => {
+      socket.on("data", (/** @type {Buffer} */ chunk) => {
         data = Buffer.concat([data, chunk]);
         onData();
       });
       socket.on("close", () => resolve(false));
-      socket.on("error", () => {});
+      socket.on("error", ignore("a reset ends the probe, which then resolves false on close"));
       onData();
     });
     req.on("response", (response) => {
@@ -397,14 +410,14 @@ export function offerPairing(port, extensionId, secret) {
 // A local site serving `routes` ({ "/path": html string or (req, res) => void }) on 127.0.0.1 or localhost.
 export async function startSite(routes, host = "127.0.0.1") {
   const server = http.createServer((req, res) => {
-    const route = routes[new URL(req.url, "http://x").pathname];
+    const route = routes[new URL(req.url ?? "", "http://x").pathname];
     if (typeof route === "function") return route(req, res);
     if (route === undefined) return res.writeHead(404).end("not found");
     res.writeHead(200, { "content-type": "text/html; charset=utf-8" }).end(route);
   });
   server.listen(0, host);
   await once(server, "listening");
-  return { origin: `http://${host}:${server.address().port}`, close: () => new Promise((resolve) => server.close(resolve)) };
+  return { origin: `http://${host}:${listeningPort(server)}`, close: () => new Promise((resolve) => server.close(resolve)) };
 }
 
 // Everything one test file needs: a browser copy on a free port, Chromium with its extension, a state

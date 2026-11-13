@@ -29,6 +29,8 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 26
+      # The type checker and linter that check.mjs runs; nothing of them goes into the package.
+      - run: npm ci --ignore-scripts
       - run: node scripts/check.mjs
       - name: The tag matches the release version
         if: env.PUBLISH == 'true'

@@ -8,7 +8,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, unlinkSync,
 import http from "node:http";
 import { EXTENSION_ORIGINS, EXTENSION_SECRET_PATH, HUB_VERSION_MISMATCH, PORT, PRODUCT_NAME, STATE_DIR, TOKEN_PATH, VERSION } from "./config.mjs";
 import { acceptUpgrade, rejectUpgrade } from "./websocket.mjs";
-import { PAIRING_FAILURES } from "../extension/shared.js";
+import { PAIRING_FAILURES, ignore, isReadOnly, logFailure } from "../extension/shared.js";
 
 const REQUEST_TIMEOUT_MS = 90_000;
 // The extension's offscreen document retries every 0.5 s; this also covers pairing and a slow worker start.
@@ -94,14 +94,6 @@ let draining = false;
 const HUB_GONE = "The browser hub went away while the request was in flight, so it may or may not have taken effect; check the page before repeating an action";
 // The extension reconnects within half a second after a restart of its service worker or a reload.
 const EXTENSION_GONE = "The browser extension disconnected while the request was in flight (it restarted or was reloaded), so the request may or may not have taken effect. It reconnects within moments: check the page, then repeat the call if needed";
-// Requests that only read state; they are resent when the hub exits or the extension disconnects mid-call.
-const READ_ONLY_METHODS = new Set(["browser.info", "tabs.list", "tabs.get", "tabs.selected", "tabs.agent", "tabs.waitForLoad", "page.state", "page.console", "page.network", "history.search"]);
-const READ_ONLY_CDP = /^(DOM\.(getDocument|describeNode|getContentQuads|getBoxModel|getFrameOwner|resolveNode)|Accessibility\.|Page\.(getFrameTree|getLayoutMetrics|captureScreenshot)|Runtime\.(getProperties|releaseObject|releaseObjectGroup))$/;
-
-function isReadOnly(method, params) {
-  return READ_ONLY_METHODS.has(method) || (method === "cdp" && READ_ONLY_CDP.test(params?.method ?? ""));
-}
-
 // The state directory and the secrets in it are the user's only, also when they existed with wider
 // permissions before.
 function ensureStateDir() {
@@ -119,7 +111,9 @@ function writePrivate(path, value) {
   } catch (error) {
     try {
       unlinkSync(temp);
-    } catch {}
+    } catch {
+      // The write failed before it created the file; the write's error is the one to report.
+    }
     throw error;
   }
 }
@@ -135,6 +129,12 @@ function link() {
   });
 }
 
+/**
+ * @template {import("../extension/shared.js").Method} M
+ * @param {M} method
+ * @param {import("../extension/shared.js").Params<M>} [params]
+ * @returns {Promise<import("../extension/shared.js").Result<M>>}
+ */
 export async function callBrowser(method, params = {}) {
   const closingDeadline = Date.now() + DRAIN_MS + 1_000;
   for (let attempt = 0; ; ) {
@@ -157,7 +157,7 @@ export async function callBrowser(method, params = {}) {
 // requests of other sessions finish before the process exits.
 export async function endSession() {
   sessionEnding = true;
-  if (sessionUsed) await Promise.race([callBrowser("session.end", { sessionId }).catch(() => {}), new Promise((r) => setTimeout(r, 2_000))]);
+  if (sessionUsed) await Promise.race([callBrowser("session.end", { sessionId }).catch(ignore("the extension also ends a session the hub stops reporting")), new Promise((r) => setTimeout(r, 2_000))]);
   draining = true;
   const deadline = Date.now() + DRAIN_MS;
   while (hubPending && hubPending.size && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50));
@@ -199,7 +199,7 @@ function becomeHub() {
         const waiter = () => {
           clearTimeout(timer);
           extensionWaiters.delete(waiter);
-          resolveWait();
+          resolveWait(undefined);
         };
         const timer = setTimeout(() => {
           extensionWaiters.delete(waiter);
@@ -218,14 +218,13 @@ function becomeHub() {
       extension?.send(JSON.stringify({ type: "live-sessions", sessionIds: [...sessionIds] }));
     }
 
-    async function request(method, params, settle, session) {
+    // Settles with the reply, or with the error that kept the request from the extension.
+    function request(method, params, settle, session) {
       if (draining) return settle({ error: HUB_CLOSING });
-      try {
-        await whenExtensionConnected();
-        forward(method, params, settle, session);
-      } catch (error) {
-        settle({ error: error.message, code: error.code });
-      }
+      whenExtensionConnected()
+        .then(() => forward(method, params, settle, session))
+        .catch((error) => settle({ error: error.message, code: error.code }))
+        .catch(logFailure("Answering a browser request"));
     }
 
     // A connection that has not authenticated yet takes only small messages, is closed after
@@ -292,7 +291,9 @@ function becomeHub() {
           let secret = null;
           try {
             secret = readFileSync(EXTENSION_SECRET_PATH, "utf8").trim();
-          } catch {}
+          } catch {
+            // No pairing secret yet: the proof below cannot match, and the cause is reported.
+          }
           if (message.type === "auth" && secret && HEX_NONCE.test(message.nonce) && sameHex(message.mac, hmac(secret, `extension:${nonce}`))) activate(secret, message.nonce);
           else {
             if (message.type === "auth") pairingFailure = { cause: secret ? OTHER_SECRET : NO_HUB_SECRET, at: Date.now() };
@@ -361,23 +362,23 @@ function becomeHub() {
       });
       peer.on("close", () => {
         if (!clients.delete(peer)) return;
-        if (clientSession) request("session.end", { sessionId: clientSession }, () => {}, clientSession);
+        if (clientSession) request("session.end", { sessionId: clientSession }, ignore("nobody waits for the reply of a client that is gone"), clientSession);
         reportSessions();
       });
     }
 
     const server = http.createServer((_, response) => response.writeHead(426, { [PROTOCOL_HEADER]: String(CLIENT_PROTOCOL) }).end());
     server.on("upgrade", (req, socket) => {
-      socket.on("error", () => {});
+      socket.on("error", ignore("a socket that fails is closed, which ends its connection"));
       let url;
       try {
-        url = new URL(req.url, "http://localhost");
+        url = new URL(req.url ?? "", "http://localhost");
       } catch {
         return rejectUpgrade(socket, "400 Bad Request");
       }
       // A web page that points its own host name at 127.0.0.1 (DNS rebinding) still sends that name.
-      if (!LOCAL_HOSTS.has(req.headers.host)) return rejectUpgrade(socket);
-      if (url.pathname === "/extension" && EXTENSION_ORIGINS.has(req.headers.origin)) acceptExtension(req, socket);
+      if (!LOCAL_HOSTS.has(req.headers.host ?? "")) return rejectUpgrade(socket);
+      if (url.pathname === "/extension" && EXTENSION_ORIGINS.has(req.headers.origin ?? "")) acceptExtension(req, socket);
       else if (url.pathname === "/client" && !req.headers.origin) {
         const legacyToken = url.searchParams.get("token");
         if (legacyToken === null) acceptClient(req, socket, { legacy: false });
@@ -504,12 +505,13 @@ function connectClient() {
       pending.get(message.id)?.(message);
       pending.delete(message.id);
     });
-    socket.addEventListener("close", async () => {
+    socket.addEventListener("close", () => {
       clearTimeout(authTimer);
       if (!verified) {
         // A refused upgrade may come from a hub of another version, which the probe tells. A hub that
         // closes during authentication may have written a new token since it was read; becomeClient retries.
-        reject(opened ? new Error("The browser hub closed the connection during authentication") : await refusalReason());
+        if (opened) reject(new Error("The browser hub closed the connection during authentication"));
+        else refusalReason().then(reject, reject);
         return;
       }
       // The hub exited; the next call elects a new one, or the reconnect below does.

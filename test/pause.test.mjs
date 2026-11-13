@@ -3,6 +3,7 @@
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import { hubClient, startEnvironment, startSite, until } from "./harness.mjs";
+import { ignore } from "../browser/extension/shared.js";
 
 const GRACE_MS = 2_000;
 let env;
@@ -135,7 +136,7 @@ test("a session whose end is under way when the user pauses keeps its tabs until
   const tab = await client.call("tabs.create", { url });
   // Holds the write that forgets this session's tab, the last step before the extension closes it.
   const hold = await holdSessionEnd("set", `keys.agentState && !keys.agentState.tabs[${tab.id}]`);
-  t.after(() => hold.release().catch(() => {}));
+  t.after(() => hold.release().catch(ignore("cleanup: a release the test made already fails")));
   const ending = client.call("session.end");
   await hold.held();
   await setPaused(true);
@@ -196,7 +197,7 @@ test("a session that reconnects while its end for its absence is under way and t
   const next = await env.session();
   await next.js("await cua.getState();");
   const hold = await holdSessionEnd("get", `keys === "agentState"`);
-  t.after(() => hold.release().catch(() => {}));
+  t.after(() => hold.release().catch(ignore("cleanup: a release the test made already fails")));
   // The next session becomes the hub and reports only itself, so the first one is absent.
   nextHub.kill();
   // The grace period passes while agents run, so the extension starts ending the session.

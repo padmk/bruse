@@ -8,6 +8,7 @@ import http from "node:http";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { browserCopy, freePort, startSession, until } from "./harness.mjs";
+import { ignore } from "../browser/extension/shared.js";
 
 let port, copy, stateDir, session, pending;
 const tokenPath = () => join(stateDir, "hub-token");
@@ -21,7 +22,7 @@ before(async () => {
   writeFileSync(tokenPath(), "0".repeat(64), { mode: 0o644 });
   session = await startSession(copy.serverPath, { stateDir });
   // Without a browser the call fails once the extension wait ends; it only makes the session the hub.
-  pending = session.js("await cua.getState();", 60_000).catch(() => {});
+  pending = session.js("await cua.getState();", 60_000).catch(ignore("the call fails without a browser; it only makes the session the hub"));
   await until(() => readFileSync(tokenPath(), "utf8").trim() !== "0".repeat(64), { message: "the hub to write its token" });
 });
 after(async () => {
@@ -41,7 +42,9 @@ function connect() {
     const headers = { Connection: "Upgrade", Upgrade: "websocket", "Sec-WebSocket-Version": "13", "Sec-WebSocket-Key": randomBytes(16).toString("base64") };
     const req = http.request({ host: "127.0.0.1", port, path: "/client", headers });
     req.on("upgrade", (_response, socket, head) => {
-      const peer = { socket, opcodes: [], closed: false };
+      /** @type {number[]} */
+      const opcodes = [];
+      const peer = { socket, opcodes, closed: false };
       let data = head;
       const parse = () => {
         while (data.length >= 2) {
@@ -57,12 +60,12 @@ function connect() {
           data = data.subarray(offset + length);
         }
       };
-      socket.on("data", (chunk) => {
+      socket.on("data", (/** @type {Buffer} */ chunk) => {
         data = Buffer.concat([data, chunk]);
         parse();
       });
       socket.on("close", () => (peer.closed = true));
-      socket.on("error", () => {});
+      socket.on("error", ignore("a reset ends the peer, which the test reads from closed"));
       parse();
       resolve(peer);
     });
