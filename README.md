@@ -395,6 +395,9 @@ Report vulnerabilities as described in [SECURITY.md](SECURITY.md).
 - A `js` call that the client cancels (the user interrupts the agent) stops at once, like one that runs
   into its timeout: the REPL worker is replaced, so its code acts on no page afterwards, and the next
   call says that the REPL was reset. A cancelled call that was still waiting for its turn never runs.
+  Browser requests that the stopped code had already sent are cancelled in the extension as well: one
+  that has not reached its last check before acting takes no effect. The reply says when the extension
+  could not confirm that (it is unreachable or older than the server).
 - The REPL has Node.js's usual globals (`process`, `require`, `fetch`, `AbortController`, `crypto` and
   others). What its code prints to standard output goes to the server's log, not into the MCP stream.
 - A tab whose page crashed fails calls at once with a message to load it again; `tab.reload()` and

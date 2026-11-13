@@ -272,6 +272,11 @@ export async function startSession(serverPath, { stateDir, env = {} } = {}) {
 
   return {
     request,
+    // The id the next request() gets, so that a test can name it in a notification.
+    get nextRequestId() {
+      return nextId;
+    },
+    notify: (method, params = {}) => child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method, params })}\n`),
     get stderr() {
       return stderr;
     },

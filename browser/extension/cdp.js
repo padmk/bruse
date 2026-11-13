@@ -4,6 +4,7 @@
 // network requests, out-of-process frames) and when the agent last pressed a button or key in a tab.
 
 import { PAUSED_ERROR, isPaused, onPausedChange, setPaused } from "./pause.js";
+import { requireNotCancelled } from "./requests.js";
 import { LOAD_PAGE_HINT, PASSWORD_MANAGER_ELEMENTS, ignore, isPressInput, logFailure, unresponsivePageError } from "./shared.js";
 
 /** @typedef {import("./shared.js").PageDialog} PageDialog */
@@ -278,16 +279,17 @@ export function attachedTabIds() {
 
 // Whether the agent session behind a command may use the tab now, or, for the extension's own work,
 // whether any session may (see access.js); the service worker sets it. Every command names its caller:
-// { session } for an agent's request ({ session, rearranges: true } for one that ends the tab's page,
-// which only a session that may close the tab sends), or EXTENSION_WORK (download interception); a
-// missing caller is a programming error, not a fallback. It is asked, together with the pause switch,
-// before the debugger attaches, again once an attach completes, before every command and before each
-// recovery step that changes the page, so a pause, a share the user stops or an access setting the user
-// changes while a command, an attach or a recovery is in flight ends it instead of letting it reach the
-// tab. (The pause also detaches every tab, but its change event arrives a moment after the switch.)
+// the agent's request ({ ...request, rearranges: true } for one that ends the tab's page, which only a
+// session that may close the tab sends), or EXTENSION_WORK (download interception); a missing caller is
+// a programming error, not a fallback. It is asked, together with the pause switch and whether the
+// request was cancelled, before the debugger attaches, again once an attach completes, before every
+// command and before each recovery step that changes the page, so a pause, a cancel, a share the user
+// stops or an access setting the user changes while a command, an attach or a recovery is in flight
+// ends it instead of letting it reach the tab. (The pause also detaches every tab, but its change event
+// arrives a moment after the switch.)
 /**
- * Who a debugger command is for: an agent session's request, or the extension's own work.
- * @typedef {{ session: string | null, rearranges?: boolean } | typeof EXTENSION_WORK} Caller
+ * Who a debugger command is for: an agent session's request (see requests.js), or the extension's own work.
+ * @typedef {import("./requests.js").AgentRequest & { rearranges?: boolean } | typeof EXTENSION_WORK} Caller
  */
 /** @typedef {(tabId: number, caller: Caller) => Promise<boolean>} DebugGate */
 /** @type {DebugGate} */
@@ -306,6 +308,7 @@ async function requireDebugAccess(tabId, caller) {
   if (caller !== EXTENSION_WORK && !(caller && "session" in caller)) throw new Error("A debugger command was sent without its caller");
   const [paused, allowed] = await Promise.all([isPaused(), mayDebug(tabId, caller)]);
   if (paused) throw new Error(PAUSED_ERROR);
+  if ("session" in caller) requireNotCancelled(caller);
   if (!allowed) throw new Error(NO_ACCESS);
 }
 

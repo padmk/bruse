@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- **A call that timed out or was cancelled no longer acts afterwards.** Replacing the REPL stopped its code, but a browser request it had already sent went on in the extension: a `tab.close()` waiting for its last access check closed the tab after the call had returned "timed out" and said its code was stopped. The server now has the extension cancel the session's requests in flight before it replies (the new `session.cancel` request), and every check right before an effect refuses a cancelled request. When the extension does not confirm the cancel (it is unreachable or older than the server), the reply says that a request may still take effect. A crashed REPL's requests are cancelled the same way.
+- **Tab groups are read again right before a management call acts.** `tabs.group` into an existing group, `tabGroups.update` and `tabGroups.move` checked the tabs a group held when the call was prepared. A tab the user put into the group meanwhile, such as a tab the session may not reach, was moved or changed with it. The final check now lists the group's tabs itself.
+
 ## 0.24.0
 
 - **A stopped share, a pause or a change of access that comes while a request is under way now stops it.** The extension checks the pause switch and the session's access once more right before each action takes effect, instead of only when the request arrives. Before, such a change in that moment did not stop: a download wait could hand the session the file's path although the user had stopped sharing the tab or switched off "all tabs"; closing a tab (`tab.close()`, the management calls `tabs.remove` and `windows.remove`) attached the debugger and closed it after the user paused agents; `tabs.duplicate` copied a tab whose share had just ended into a new agent tab; and back, forward, reload, navigating a crashed tab, opening tabs, other management calls and debugger commands to a tab that was already attached went ahead after the pause or the end of the share.

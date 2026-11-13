@@ -8,6 +8,7 @@ import { waitForDownload } from "./downloads.js";
 import { PAUSED_ERROR, isPaused } from "./pause.js";
 import { agentTabs, createAgentTab, createAgentTabs, endSession, markTab, noteAgentInput, onTabOpened, openingSession, setLiveSessions } from "./sessions.js";
 import { checkRequest } from "./guard.js";
+import { beginRequest, cancelSessionRequests } from "./requests.js";
 import { fromExtensionPage, isRecord } from "./sender.js";
 import { LOAD_PAGE_HINT, PAIRING_HOST, MANAGEMENT_METHODS, actsOn, extensionBuild, ignore, isPressInput, logFailure, methodRules } from "./shared.js";
 
@@ -15,8 +16,9 @@ import { LOAD_PAGE_HINT, PAIRING_HOST, MANAGEMENT_METHODS, actsOn, extensionBuil
 /** @template {Method} M @typedef {import("./shared.js").Params<M>} Params */
 /** @template {Method} M @typedef {import("./shared.js").Result<M>} Result */
 /** @typedef {import("./shared.js").TabInfo} TabInfo */
-// The agent session the hub says a request comes from; null for a request without one.
-/** @typedef {string | null} Session */
+// One agent request: the session the hub says it comes from (null for a request without one) and its
+// cancellation (see requests.js).
+/** @typedef {import("./requests.js").AgentRequest} AgentRequest */
 
 // The message of an error or rejection reason of any kind.
 /** @param {unknown} error */
@@ -109,9 +111,9 @@ function waitForLoad(tabId, timeoutMs = LOAD_TIMEOUT_MS) {
 // (beforeunload, after input); only an attached debugger learns of that dialog and can answer it, and
 // without one the tab stays on a page that answers nothing. A tab the debugger cannot attach to
 // navigates as it is.
-/** @param {number} tabId @param {Session} session */
-function attachBeforeLeaving(tabId, session) {
-  return cdp(tabId, "Page.enable", {}, undefined, undefined, { session }).catch(ignore("a tab the debugger cannot attach to navigates as it is"));
+/** @param {number} tabId @param {AgentRequest} request */
+function attachBeforeLeaving(tabId, request) {
+  return cdp(tabId, "Page.enable", {}, undefined, undefined, request).catch(ignore("a tab the debugger cannot attach to navigates as it is"));
 }
 
 const DOWNLOAD_HINT = 'The file is in the browser\'s downloads folder. To learn the path of such a download, call tab.playwright.waitForEvent("download") in a tab with a page before the tab.goto(url) that starts it (the goto fails with this message), then read the download\'s path().';
@@ -143,20 +145,19 @@ const withoutFragment = (url) => url.split("#")[0];
 /**
  * @param {number} tabId
  * @param {{ url?: unknown, frameId?: unknown } | undefined} params Of Page.navigate, as the agent sent them.
- * @param {Session} session
+ * @param {AgentRequest} request
  * @returns {Promise<{ frameId: string } | null>}
  */
-async function navigateWithinBlankPage(tabId, params, session) {
+async function navigateWithinBlankPage(tabId, params, request) {
   // As the browser reads the address: with the scheme in lower case and without surrounding spaces.
   const given = String(params?.url ?? "");
   const url = URL.canParse(given) ? new URL(given).href : "";
   if (!url.startsWith("about:blank") || !url.includes("#")) return null;
   const tab = await chrome.tabs.get(tabId);
   if (withoutFragment(tab.url || "about:blank") !== withoutFragment(url)) return null;
-  const caller = { session };
-  const { frameTree } = await cdp(tabId, "Page.getFrameTree", {}, undefined, undefined, caller);
+  const { frameTree } = await cdp(tabId, "Page.getFrameTree", {}, undefined, undefined, request);
   if (params?.frameId !== undefined && params.frameId !== frameTree.frame.id) return null;
-  const { exceptionDetails } = await cdp(tabId, "Runtime.evaluate", { expression: `location.href = ${JSON.stringify(url)}`, returnByValue: true, userGesture: true }, undefined, undefined, caller);
+  const { exceptionDetails } = await cdp(tabId, "Runtime.evaluate", { expression: `location.href = ${JSON.stringify(url)}`, returnByValue: true, userGesture: true }, undefined, undefined, request);
   if (exceptionDetails) throw new Error(`Navigation to ${url} failed: ${exceptionDetails.exception?.description ?? exceptionDetails.text}`);
   return { frameId: frameTree.frame.id };
 }
@@ -176,15 +177,15 @@ const build = extensionBuild((file) => fetch(chrome.runtime.getURL(file)).then((
 // Raw DevTools commands that end a tab's page, which only a tab's owner may do (see requireOwnTab).
 const TAB_ENDING_CDP = new Set(["Page.close", "Page.crash"]);
 
-// Each handler gets the request's parameters and `session`, the agent session the hub says the request
-// comes from. Tab methods check access first (see access.js). A handler that prepares its action with
-// awaits checks again with requireAgentEffect right before the action takes effect, since the user may
+// Each handler gets the request's parameters and the request itself (`request.session` is the agent
+// session the hub says it comes from). Tab methods check access first (see access.js). A handler that
+// prepares its action with awaits checks again with requireAgentEffect right before the action takes effect, since the user may
 // have paused agents or stopped a share meanwhile; debugger commands are checked as they are sent
 // (cdp.js) and closes in closeTab. There is one handler for each method of the protocol (shared.js), and
 // each takes and returns what the protocol gives for its method.
-/** @type {{ [M in Method]: (params: Params<M>, session: Session) => Result<M> | Promise<Result<M>> }} */
+/** @type {{ [M in Method]: (params: Params<M>, request: AgentRequest) => Result<M> | Promise<Result<M>> }} */
 const handlers = {
-  "browser.info": async (_, session) => {
+  "browser.info": async (_, { session }) => {
     const mode = await accessMode();
     const { hidden } = await visibleTabs(session, await chrome.tabs.query({}));
     const problem = await storageRestriction;
@@ -200,19 +201,19 @@ const handlers = {
     };
   },
 
-  "tabs.list": async (_, session) => (await visibleTabs(session, await chrome.tabs.query({}))).shown.map(tabInfo),
+  "tabs.list": async (_, { session }) => (await visibleTabs(session, await chrome.tabs.query({}))).shown.map(tabInfo),
 
   "tabs.get": async ({ tabId }) => tabInfo(await chrome.tabs.get(tabId)),
 
   // The active tab of the window the user used last, when the session may use it.
-  "tabs.selected": async (_, session) => {
+  "tabs.selected": async (_, { session }) => {
     const window = await chrome.windows.getLastFocused({ windowTypes: ["normal"] }).catch(() => null);
     const [tab] = window ? await chrome.tabs.query({ windowId: window.id, active: true }) : [];
     return tab?.id !== undefined && (await mayAccess(session, tab.id)) ? tabInfo(tab) : null;
   },
 
-  "tabs.create": async ({ url }, session) => {
-    const tabId = idOf(await createAgentTab(session, () => openBackgroundTab(url ?? "about:blank", () => requireAgentEffect(session))));
+  "tabs.create": async ({ url }, request) => {
+    const tabId = idOf(await createAgentTab(request.session, () => openBackgroundTab(url ?? "about:blank", () => requireAgentEffect(request))));
     if (url) await waitForLoad(tabId);
     const opened = await chrome.tabs.get(tabId).catch(() => null);
     // The browser closes a new tab whose address turns out to be a file to download.
@@ -224,13 +225,13 @@ const handlers = {
   // browser lets an extension open a data: address only in a new tab: it aborts the navigation of an
   // existing one, also through the tabs API.
   // A tab without a page (its renderer crashed) takes no debugger command; the browser loads the address.
-  "tabs.navigate": async ({ tabId, url }, session) => {
+  "tabs.navigate": async ({ tabId, url }, request) => {
     if (await hasNoPage(tabId)) {
-      await requireAgentEffect(session, { reach: [tabId] });
+      await requireAgentEffect(request, { reach: [tabId] });
       await chrome.tabs.update(tabId, { url });
     }
-    else if (!(await navigateWithinBlankPage(tabId, { url }, session))) {
-      const { errorText, isDownload } = await cdp(tabId, "Page.navigate", { url }, undefined, undefined, { session });
+    else if (!(await navigateWithinBlankPage(tabId, { url }, request))) {
+      const { errorText, isDownload } = await cdp(tabId, "Page.navigate", { url }, undefined, undefined, request);
       if (isDownload) throw new Error(`${url} is a file, which the browser downloaded instead of showing, so the tab keeps its page. ${DOWNLOAD_HINT}`);
       if (errorText && /^data:/i.test(url)) throw new Error(`Navigation to a data: address failed (${errorText}): the browser opens such an address only in a new tab. Use cua.createBrowserTab("1", url) instead.`);
       if (errorText) throw new Error(`Navigation to ${url} failed: ${errorText}`);
@@ -239,9 +240,9 @@ const handlers = {
     return tabInfo(await chrome.tabs.get(tabId));
   },
 
-  "tabs.history": async ({ tabId, direction }, session) => {
-    await attachBeforeLeaving(tabId, session);
-    await requireAgentEffect(session, { reach: [tabId] });
+  "tabs.history": async ({ tabId, direction }, request) => {
+    await attachBeforeLeaving(tabId, request);
+    await requireAgentEffect(request, { reach: [tabId] });
     if (direction === "back") await chrome.tabs.goBack(tabId);
     else if (direction === "forward") await chrome.tabs.goForward(tabId);
     else await chrome.tabs.reload(tabId);
@@ -251,29 +252,30 @@ const handlers = {
 
   "tabs.waitForLoad": async ({ tabId, timeoutMs }) => ({ loaded: await waitForLoad(tabId, timeoutMs) }),
 
-  "tabs.close": async ({ tabId }, session) => {
-    await closeTab(tabId, { check: closeCheck(session, tabId) });
+  "tabs.close": async ({ tabId }, request) => {
+    await closeTab(tabId, { check: closeCheck(request, tabId) });
     return null;
   },
 
   "tabs.mark": ({ tabId, mark }) => markTab(tabId, mark),
   // The session's own tabs and their marks.
-  "tabs.agent": async (_, session) => Object.fromEntries(Object.entries(await agentTabs()).filter(([, entry]) => entry.sessionId === session)),
-  "session.end": (_, session) => endSession(session),
+  "tabs.agent": async (_, { session }) => Object.fromEntries(Object.entries(await agentTabs()).filter(([, entry]) => entry.sessionId === session)),
+  "session.end": (_, { session }) => endSession(session),
+  "session.cancel": (_, request) => ({ cancelled: cancelSessionRequests(request) }),
 
-  cdp: async ({ tabId, method, params, sessionId, timeoutMs }, session) => {
+  cdp: async ({ tabId, method, params, sessionId, timeoutMs }, request) => {
     if (params !== undefined && !isRecord(params)) throw new Error(`${method} takes its parameters as an object`);
     // The debugger gate asks again as the command is sent (see setDebugGate below).
     const ends = TAB_ENDING_CDP.has(method);
-    if (ends) await requireOwnTab(session, tabId);
-    if (isPressInput(method, params)) noteAgentInput(tabId, session);
+    if (ends) await requireOwnTab(request, tabId);
+    if (isPressInput(method, params)) noteAgentInput(tabId, request.session);
     if (method === "Page.navigate" && !sessionId) {
-      const withinBlankPage = await navigateWithinBlankPage(tabId, params, session);
+      const withinBlankPage = await navigateWithinBlankPage(tabId, params, request);
       if (withinBlankPage) return withinBlankPage;
     }
-    return cdp(tabId, method, params, sessionId, timeoutMs, ends ? { session, rearranges: true } : { session });
+    return cdp(tabId, method, params, sessionId, timeoutMs, ends ? { ...request, rearranges: true } : request);
   },
-  "page.state": ({ tabId }, session) => tabState(tabId, { session }),
+  "page.state": ({ tabId }, request) => tabState(tabId, request),
   "page.console": ({ tabId }) => consoleLogs(tabId),
   "page.network": ({ tabId }) => networkRequests(tabId),
 
@@ -282,21 +284,21 @@ const handlers = {
     return chrome.history.search({ text, startTime, endTime, maxResults });
   },
 
-  "downloads.wait": ({ tabId, timeoutMs = 120_000 }, session) => waitForDownload(tabId, timeoutMs, { session }),
+  "downloads.wait": ({ tabId, timeoutMs = 120_000 }, request) => waitForDownload(tabId, timeoutMs, request),
 
   // Browser organization through the WebExtensions APIs; only listed methods can be called.
-  "browser.manage": async ({ namespace, method, args = [] }, session) => {
+  "browser.manage": async ({ namespace, method, args = [] }, request) => {
     if (!(isManagementNamespace(namespace) && MANAGEMENT_METHODS[namespace].includes(method))) throw new Error(`${namespace}.${method} is not available`);
     if (namespace === "bookmarks") await requirePermission("bookmarks", "the bookmarks");
     checkManagementArguments(namespace, method, args);
     const call = await withDefaults(namespace, method, args);
     const needs = await managementNeeds(namespace, method, call);
-    const gate = () => requireAgentEffect(session, needs);
+    const gate = () => requireAgentEffect(request, needs);
     // Refused before any of its own preparation, and checked again right before it takes effect.
     await gate();
     const own = OPENING_METHODS[`${namespace}.${method}`] ?? CLOSING_METHODS[`${namespace}.${method}`] ?? LEAVING_METHODS[`${namespace}.${method}`];
-    const result = own ? own(session, call, gate) : gate().then(() => managementCall(namespace, method)(...call));
-    return withoutHiddenTabs(session, namespace, await result);
+    const result = own ? own(request, call, gate) : gate().then(() => managementCall(namespace, method)(...call));
+    return withoutHiddenTabs(request.session, namespace, await result);
   },
 
   // Picks up edited extension files without visiting the extensions page.
@@ -404,14 +406,13 @@ async function withDefaults(namespace, method, args) {
  * @typedef {object} ManagementNeeds
  * @property {number[]} reach
  * @property {number[]} rearrange
+ * @property {number[]} groups tab groups whose every tab, as requireAgentEffect lists them, the session must own
  * @property {unknown[]} windows window IDs as the agent named them, which requireAgentEffect checks
  */
 /** @param {ManagementNamespace} namespace @param {string} method @param {unknown[]} args @returns {Promise<ManagementNeeds>} */
 async function managementNeeds(namespace, method, args) {
   /** @type {ManagementNeeds} */
-  const needs = { reach: [], rearrange: [], windows: [] };
-  /** @param {unknown} groupId */
-  const groupTabs = async (groupId) => (await chrome.tabs.query({ groupId: groupIdOf(groupId) })).map(idOf);
+  const needs = { reach: [], rearrange: [], groups: [], windows: [] };
   // Tabs that leave their window for `windowId` move into it, which must be the session's.
   /** @param {number[]} tabIds @param {unknown} windowId */
   const moveInto = async (tabIds, windowId) => {
@@ -429,8 +430,8 @@ async function managementNeeds(namespace, method, args) {
   if (namespace === "tabs" && method === "move" && changes?.windowId !== undefined) await moveInto(tabIdsOf(method, args), changes.windowId);
   if (namespace === "tabs" && method === "group") {
     if (options?.groupId !== undefined) {
-      // Joining a group changes it, so the session must reach every tab in it.
-      needs.rearrange.push(...(await groupTabs(options.groupId)));
+      // Joining a group changes it, so the session must own every tab in it.
+      needs.groups.push(groupIdOf(options.groupId));
       await moveInto(tabIdsOf(method, args), (await chrome.tabGroups.get(groupIdOf(options.groupId))).windowId);
     } else {
       await moveInto(tabIdsOf(method, args), isRecord(options?.createProperties) ? options.createProperties.windowId : undefined);
@@ -442,31 +443,31 @@ async function managementNeeds(namespace, method, args) {
     needs.rearrange.push(options.tabId);
   }
   if (namespace === "windows" && (method === "update" || method === "remove")) needs.windows.push(first);
-  if (namespace === "tabGroups" && (method === "update" || method === "move")) needs.rearrange.push(...(await groupTabs(first)));
+  if (namespace === "tabGroups" && (method === "update" || method === "move")) needs.groups.push(groupIdOf(first));
   if (namespace === "tabGroups" && method === "move" && changes?.windowId !== undefined && changes.windowId !== (await chrome.tabGroups.get(groupIdOf(first))).windowId) needs.windows.push(changes.windowId);
   return needs;
 }
 
 // The check an agent's close of one tab passes right before the tab goes (see closeTab).
-/** @param {Session} session @param {number} tabId @returns {() => Promise<void>} */
-const closeCheck = (session, tabId) => () => requireAgentEffect(session, { rearrange: [tabId] });
+/** @param {AgentRequest} request @param {number} tabId @returns {() => Promise<void>} */
+const closeCheck = (request, tabId) => () => requireAgentEffect(request, { rearrange: [tabId] });
 
 // A management call that this module carries out itself instead of the browser method of its name. The
 // arguments are those checkManagementArguments, withDefaults and managementNeeds have passed; `gate` is
 // the call's check, which it passes right before its action takes effect.
-/** @typedef {(session: Session, args: unknown[], gate: () => Promise<void>) => Promise<unknown>} OwnManagementCall */
+/** @typedef {(request: AgentRequest, args: unknown[], gate: () => Promise<void>) => Promise<unknown>} OwnManagementCall */
 
 // Management calls that close tabs close each one with closeTab, so that a page asking whether to leave
 // does not keep its tab open. Each tab is checked on its own as it goes, so the tabs of the same call that
-// close first do not count against it. These, and the methods below, get the session, the call's
+// close first do not count against it. These, and the methods below, get the request, the call's
 // arguments and `gate`, the call's check, which they pass right before their action takes effect.
 /** @type {Partial<Record<string, OwnManagementCall>>} */
 const CLOSING_METHODS = {
-  "tabs.remove": async (session, args) => {
-    await Promise.all(tabIdsOf("remove", args).map((tabId) => closeTab(tabId, { check: closeCheck(session, tabId) })));
+  "tabs.remove": async (request, args) => {
+    await Promise.all(tabIdsOf("remove", args).map((tabId) => closeTab(tabId, { check: closeCheck(request, tabId) })));
   },
   // A window goes with its last tab.
-  "windows.remove": async (_session, [windowId], gate) => {
+  "windows.remove": async (_request, [windowId], gate) => {
     if (typeof windowId !== "number") throw new Error(`Name the window by its ID, not ${JSON.stringify(windowId)}`);
     const tabs = await chrome.tabs.query({ windowId });
     if (!tabs.length) {
@@ -480,8 +481,8 @@ const CLOSING_METHODS = {
 // Management calls that make a tab leave its page.
 /** @type {Partial<Record<string, OwnManagementCall>>} */
 const LEAVING_METHODS = {
-  "tabs.reload": async (session, args, gate) => {
-    await attachBeforeLeaving(tabIdsOf("reload", args)[0], session);
+  "tabs.reload": async (request, args, gate) => {
+    await attachBeforeLeaving(tabIdsOf("reload", args)[0], request);
     await gate();
     return managementCall("tabs", "reload")(...args);
   },
@@ -495,7 +496,7 @@ const OPENING_METHODS = {
   // duplicate, so the tab that was active in its window becomes active again, unless the user has
   // switched tabs since.
   // The duplicate copies the original's page, so the session must still reach it as the copy is made.
-  "tabs.duplicate": async (session, args, gate) => {
+  "tabs.duplicate": async ({ session }, args, gate) => {
     const [tabId] = tabIdsOf("duplicate", args);
     const { windowId } = await chrome.tabs.get(tabId);
     const [active] = await chrome.tabs.query({ windowId, active: true });
@@ -511,7 +512,7 @@ const OPENING_METHODS = {
     return chrome.tabs.get(duplicateId);
   },
   // A tab moved into the new window with `tabId` keeps its owner or share; the others are new.
-  "windows.create": async (session, [options], gate) => {
+  "windows.create": async ({ session }, [options], gate) => {
     /** @type {{ windowId?: number }} */
     const created = {};
     await createAgentTabs(session, async () => {
@@ -529,7 +530,7 @@ const OPENING_METHODS = {
 
 // Tabs the session may not reach are left out of management results, and so are windows and groups
 // without any tab it may reach. `result` is what a method of `namespace` resolved with.
-/** @param {Session} session @param {ManagementNamespace} namespace @param {unknown} result */
+/** @param {string | null} session @param {ManagementNamespace} namespace @param {unknown} result */
 async function withoutHiddenTabs(session, namespace, result) {
   if ((await accessMode()) === ALL_TABS) return result;
   /** @param {chrome.tabs.Tab[]} tabs */
@@ -699,11 +700,11 @@ const isMethod = (value) => methodRules(value) !== undefined;
  * @template {Method} M
  * @param {M} method
  * @param {Params<M>} params
- * @param {Session} session
+ * @param {AgentRequest} request
  * @returns {Promise<Result<M>>}
  */
-async function run(method, params, session) {
-  return handlers[method](params, session);
+async function run(method, params, request) {
+  return handlers[method](params, request);
 }
 
 // Handles one message of the hub connection of generation `gen`, resolving with the reply to send, if any.
@@ -744,13 +745,26 @@ async function handle(gen, text) {
   }
   if (id === undefined) return null; // keepalive
   if (!hub.verified) return JSON.stringify({ id, error: "The browser connection is being authenticated again; retry the call" });
+  // The hub sends a string or null (browser-link.mjs); a hub too old to send any sends no session.
+  // The request registers before its first await, so a session.cancel that arrives after it reaches it
+  // and one that arrived before does not (see requests.js).
+  const { request, end } = beginRequest(typeof message.session === "string" ? message.session : null);
+  try {
+    return await runRequest(id, method, message, request);
+  } finally {
+    end();
+  }
+}
+
+// Checks and runs one agent request of the authenticated hub, resolving with the reply.
+/** @param {unknown} id @param {unknown} method @param {Record<string, unknown>} message @param {AgentRequest} request @returns {Promise<string>} */
+async function runRequest(id, method, message, request) {
+  const { session } = request;
   const rules = methodRules(method);
   const storageProblem = await storageRestriction;
   if (storageProblem && !rules?.sessionless) return JSON.stringify({ id, error: storageProblem });
   try {
     if (!rules || !isMethod(method)) throw new Error(`Unknown method ${String(method)}`);
-    // The hub sends a string or null (browser-link.mjs); a hub too old to send any sends no session.
-    const session = typeof message.session === "string" ? message.session : null;
     const params = message.params ?? {};
     if (!isRecord(params)) throw new Error(`The parameters of ${method} are not an object`);
     if (!rules.pauseExempt && (await isPaused())) throw new Error(PAUSED_ERROR);
@@ -768,7 +782,7 @@ async function handle(gen, text) {
     if (tabId !== undefined && actsOn(method, "loaded-page") && (await chrome.tabs.get(tabId).catch(() => null))?.discarded) throw new Error(DISCARDED);
     // The authenticated hub sends each method the parameters PROTOCOL gives it (browser-link.mjs);
     // guard.js and the checks above read the fields they depend on as unknown.
-    return JSON.stringify({ id, result: (await run(method, /** @type {Params<Method>} */ (params), session)) ?? null });
+    return JSON.stringify({ id, result: (await run(method, /** @type {Params<Method>} */ (params), request)) ?? null });
   } catch (error) {
     return JSON.stringify({ id, error: errorText(error) });
   }

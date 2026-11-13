@@ -13,6 +13,9 @@
 
 import { loadAgentState, tabOwner } from "./agent-state.js";
 import { PAUSED_ERROR, isPaused } from "./pause.js";
+import { requireNotCancelled } from "./requests.js";
+
+/** @typedef {import("./requests.js").AgentRequest} AgentRequest */
 
 const AGENT_TABS = "agent-tabs";
 export const ALL_TABS = "all-tabs";
@@ -230,26 +233,35 @@ export async function requireAccess(sessionId, tabId) {
   if (!(await mayAccess(sessionId, tabId))) throw notSharedError(tabId);
 }
 
-// The check right before an agent's action takes effect: agents are not paused, and the session may use
-// the tabs in `reach`, rearrange those in `rearrange` (close, discard, pin, move or group them) and change
-// the windows in `windows`. It takes one new reading, so a pause, a share the user stopped or a change of
-// the access mode while the action was being prepared stops it. The caller acts right after it resolves,
-// with no other await in between: a check made before an await may no longer hold after it. Window IDs
-// may come from agents and are checked here.
+// The check right before an agent's action takes effect: agents are not paused, the request was not
+// cancelled (see requests.js), and its session may use the tabs in `reach`, rearrange those in
+// `rearrange` (close, discard, pin, move or group them) and those in the tab groups `groups`, and change
+// the windows in `windows`. It takes one new reading, which also lists the groups' tabs now, so a pause,
+// a cancel, a share the user stopped, a tab that joined a group or a change of the access mode while the
+// action was being prepared stops it. The caller acts right after it resolves, with no other await in
+// between: a check made before an await may no longer hold after it. Window IDs may come from agents and
+// are checked here; group IDs are checked by the caller.
 /**
- * @param {string | null} sessionId
- * @param {{ reach?: number[], rearrange?: number[], windows?: unknown[] }} [effect]
+ * @param {AgentRequest} request
+ * @param {{ reach?: number[], rearrange?: number[], groups?: number[], windows?: unknown[] }} [effect]
  * @returns {Promise<void>}
  */
-export async function requireAgentEffect(sessionId, { reach = [], rearrange = [], windows = [] } = {}) {
+export async function requireAgentEffect(request, { reach = [], rearrange = [], groups = [], windows = [] } = {}) {
+  const sessionId = request.session;
   /** @type {number[]} */
   const windowIds = [];
   for (const windowId of windows) {
     if (typeof windowId !== "number" || !Number.isInteger(windowId) || windowId < 0) throw new Error(`Name the window by its ID, not ${JSON.stringify(windowId)}`);
     windowIds.push(windowId);
   }
-  const [paused, reading, windowTabs] = await Promise.all([isPaused(), accessReading(), Promise.all(windowIds.map((windowId) => chrome.tabs.query({ windowId })))]);
+  const [paused, reading, windowTabs, groupTabs] = await Promise.all([
+    isPaused(),
+    accessReading(),
+    Promise.all(windowIds.map((windowId) => chrome.tabs.query({ windowId }))),
+    Promise.all(groups.map((groupId) => chrome.tabs.query({ groupId }))),
+  ]);
   if (paused) throw new Error(PAUSED_ERROR);
+  requireNotCancelled(request);
   // A refused tab that closed meanwhile is reported as gone.
   /**
    * @param {number} tabId
@@ -260,7 +272,7 @@ export async function requireAgentEffect(sessionId, { reach = [], rearrange = []
     return error;
   };
   for (const tabId of reach) if (!reading.reaches(sessionId, tabId)) throw await refuse(tabId, notSharedError(tabId));
-  for (const tabId of rearrange) {
+  for (const tabId of [...rearrange, ...groupTabs.flat().flatMap((tab) => (tab.id === undefined ? [] : [tab.id]))]) {
     if (!reading.rearranges(sessionId, tabId)) throw await refuse(tabId, reading.reaches(sessionId, tabId) ? sharedNotOwnError(tabId) : notSharedError(tabId));
   }
   windowIds.forEach((windowId, i) => {
@@ -270,12 +282,12 @@ export async function requireAgentEffect(sessionId, { reach = [], rearrange = []
 
 // A request that closes, discards, pins, moves or groups the tab is refused early when the session may not.
 /**
- * @param {string | null} sessionId
+ * @param {AgentRequest} request
  * @param {number} tabId
  * @returns {Promise<void>}
  */
-export function requireOwnTab(sessionId, tabId) {
-  return requireAgentEffect(sessionId, { rearrange: [tabId] });
+export function requireOwnTab(request, tabId) {
+  return requireAgentEffect(request, { rearrange: [tabId] });
 }
 
 /**
