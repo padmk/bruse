@@ -253,3 +253,21 @@ test("the selected tab is undefined in a user window and found once shared", asy
   await env.share(focused.id, false);
   await s.close();
 });
+
+// A peer MCP server names its session in a hello; one that does not acts for no session, so the tabs
+// that no session owns (such as those the user shares) are not its own to close.
+test("a hub client that names no session is refused", async () => {
+  // A session's first call starts the hub, which the client joins.
+  await (await env.session()).js("await cua.getState();");
+  const shared = await userTab(url("/page?sessionless-client"));
+  await env.share(shared.id);
+  const client = await hubClient(env.port, env.stateDir, { hello: false });
+  try {
+    await assert.rejects(client.call("tabs.close", { tabId: shared.id }), /names no agent session/);
+    await assert.rejects(client.call("tabs.list"), /names no agent session/);
+    assert.ok(await present(url("/page?sessionless-client")), "the shared tab stays open");
+    assert.ok((await client.call("browser.info")).version, "a request without a session still runs");
+  } finally {
+    client.close();
+  }
+});

@@ -563,6 +563,9 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 });
 
 // A hub of a version before tab ownership sends requests without the session they come from.
+// A hub client that did not name its session (no hello) acts for no session. Tabs that no session owns,
+// such as the ones the user shares, would count as its own, so it may use none.
+const NO_SESSION = "This request names no agent session: the MCP server that relays it did not say which session it comes from, so it may use no tab.";
 const OUTDATED_HUB = `The ${chrome.runtime.getManifest().name} MCP server that relays this request is older than the browser extension and does not say which agent session it comes from. Ask the user to run \`bruse setup\` and start new agent sessions.`;
 
 // Native messaging supplies the secret locally. Only HMAC proofs cross the hub port.
@@ -718,6 +721,7 @@ async function handle(gen, text) {
     if (!isRecord(params)) throw new Error(`The parameters of ${method} are not an object`);
     if (!rules.pauseExempt && (await isPaused())) throw new Error(PAUSED_ERROR);
     if (!rules.sessionless && !("session" in message)) throw new Error(OUTDATED_HUB);
+    if (!rules.sessionless && session === null) throw new Error(NO_SESSION);
     // Access comes first, so a request for a hidden tab learns nothing about the tab's page.
     /** @type {number | undefined} */
     let tabId;
