@@ -66,6 +66,7 @@ export function findChromium() {
     ["chrome-mac-arm64", "Google Chrome for Testing.app", "Contents", "MacOS", "Google Chrome for Testing"],
     ["chrome-mac", "Chromium.app", "Contents", "MacOS", "Chromium"],
     ["chrome-linux64", "chrome"],
+    ["chrome-linux-arm64", "chrome"],
     ["chrome-linux", "chrome"],
   ];
   const versions = existsSync(cache) ? readdirSync(cache).filter((name) => /^chromium-\d+$/.test(name)) : [];
