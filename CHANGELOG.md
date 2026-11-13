@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- `bruse setup` registers the native pairing host only for the browsers installed on this machine (an app in `/Applications` or `~/Applications` on macOS, a command on `PATH` on Linux; Chrome for Testing once it ran), instead of creating folders for all supported browsers. It moves the manifests it wrote earlier for browsers that are not installed to the Trash, and stops when no supported browser is installed. After installing another browser, run setup again; `bruse doctor` checks only the installed browsers.
 - The README and the message for an extension that did not connect said that a browser without windows stops its extensions on macOS. That holds for Chrome (seen in Chrome for Testing 156); Brave 156 keeps them running, and `createBrowserTab` opens its unfocused window there.
 - `docs/development.md` said that Brave reads native hosts from Chrome's folder and fails the pairing tests. Brave 156 reads them from its own user data directory, and the pairing tests pass in it.
 

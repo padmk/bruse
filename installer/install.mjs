@@ -3,7 +3,8 @@
 // step (Load unpacked), and waits until the extension connects and pairs. An extension that is already
 // connected is reloaded and must come back with this version.
 
-import { installPairingHost, pairingHostProblems } from "./native-host.mjs";
+import { installPairingHost, installedPairingHosts, pairingHostProblems } from "./native-host.mjs";
+import { installedBrowserDataDirs, supportedBrowserNames } from "./browsers.mjs";
 import { spawnSync } from "node:child_process";
 import { createInterface } from "node:readline/promises";
 import { cpSync, existsSync, mkdirSync, realpathSync, renameSync, writeFileSync } from "node:fs";
@@ -164,12 +165,23 @@ function openExtensionsPage() {
   if (browser) showPage(browser.app, page);
 }
 
-// Registers the pairing host. Setup goes on without a browser directory it cannot write, which may belong
-// to a browser that is not installed, but not when no extension could pair.
+// Registers the pairing host with the installed browsers and moves this installation's manifests of
+// browsers that are no longer installed to the Trash. Setup goes on without a browser directory it
+// cannot write, but not when no extension could pair.
 async function registerPairingHost() {
-  const { written, failed } = await installPairingHost({ browserDir: installed, node: nodePath() }).catch((error) => fail(`Could not set up the native pairing host: ${error.message}`));
-  // A directory that does not exist belongs to a browser that never ran here; nothing to report.
-  for (const { dataDir, path, reason } of failed) if (existsSync(dataDir)) note(`Could not register the native pairing host at ${path}: ${reason}`);
+  const dataDirs = installedBrowserDataDirs();
+  if (!dataDirs.length) fail(`No supported browser is installed (${supportedBrowserNames().join(", ")}). Install one and run setup again.`);
+  const { written, failed } = await installPairingHost({ browserDir: installed, node: nodePath(), dataDirs }).catch((error) => fail(`Could not set up the native pairing host: ${error.message}`));
+  for (const { path, reason } of failed) note(`Could not register the native pairing host at ${path}: ${reason}`);
+  for (const host of installedPairingHosts(installed)) {
+    if (dataDirs.includes(host.dataDir)) continue;
+    try {
+      moveToTrash(host.path);
+      note(`Moved ${host.path} to the Trash: its browser is not installed`);
+    } catch (error) {
+      note(`Could not move ${host.path} to the Trash: ${error.message}`);
+    }
+  }
   if (!written.length) fail("No browser directory could take the native pairing host (see above), so the extension could not pair. Fix these directories and run setup again.");
   const [problem] = pairingHostProblems(installed, written);
   if (problem) fail(`The native pairing host would not start, so the extension could not pair: ${problem}`);

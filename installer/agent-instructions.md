@@ -72,8 +72,9 @@ Use a stable Node path such as `/opt/homebrew/bin/node`, not a versioned one.
 ## Troubleshooting
 
 - **The extension does not connect.** Run `bruse doctor`, then `bruse setup` to repair the native
-  pairing host. Setup registers hosts for all supported browsers with a stable Node path. Reinstalling
-  the extension retrieves the existing secret automatically; no pairing reset is needed. An older
+  pairing host. Setup registers hosts for the installed supported browsers with a stable Node path;
+  after installing another browser, run setup again. Reinstalling the extension retrieves the
+  existing secret automatically; no pairing reset is needed. An older
   unpaired extension must be updated. If a permission change disabled it, the user enables it on the
   extensions page and runs setup again.
 - **"Load unpacked" fails.** Check that the selected folder contains `manifest.json`.

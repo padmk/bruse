@@ -75,7 +75,8 @@ Setup:
 
 - copies the extension and the MCP server to `~/.local/share/bruse/browser`, replacing a previous
   version (`~/.local/share/bruse` holds the program and pairing state; native host manifests live
-  in each browser's `NativeMessagingHosts` directory). When the
+  in the `NativeMessagingHosts` directory of each installed browser; run setup again after installing
+  another one). When the
   new copy cannot take the place of the previous one, setup puts the previous one back and stops; if
   that fails too, it keeps it next to the installed path and prints the command that restores it;
 - on a first install, says what agents can reach through Bruse (your user account's permissions and

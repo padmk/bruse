@@ -10,6 +10,8 @@ import { fileURLToPath } from "node:url";
 import { moreClients, runClient } from "./clients.mjs";
 import { DATA_DIR } from "../browser/mcp/config.mjs";
 
+export { installedBrowser } from "./browsers.mjs";
+
 export const MIN_NODE_MAJOR = 26;
 const MCP_NAME = "bruse";
 
@@ -31,21 +33,6 @@ export function installedVersion() {
   } catch {
     return null;
   }
-}
-
-// Chromium browsers in the order they are offered; the first installed one gets its extensions page opened.
-const BROWSERS = [
-  { name: "Brave", app: "Brave Browser", page: "brave://extensions" },
-  { name: "Chrome", app: "Google Chrome", page: "chrome://extensions" },
-  { name: "Edge", app: "Microsoft Edge", page: "edge://extensions" },
-  { name: "Chromium", app: "Chromium", page: "chrome://extensions" },
-  { name: "Vivaldi", app: "Vivaldi", page: "vivaldi://extensions" },
-];
-
-// The first supported browser on this Mac, whose extensions page setup and uninstall open.
-export function installedBrowser() {
-  if (platform() !== "darwin") return null;
-  return BROWSERS.find((b) => existsSync(`/Applications/${b.app}.app`) || existsSync(join(homedir(), "Applications", `${b.app}.app`))) ?? null;
 }
 
 // Browsers ignore internal pages passed by `open`, but accept them from AppleScript. The first run asks

@@ -127,14 +127,19 @@ yet installed the native host. Reinstalls obtain the host's secret without reset
 secret before it reloads the extension, because a still-running 0.18 hub stores a `pair` secret from any
 local process while no secret file exists.
 
-Setup registers hosts for the five supported browsers and Chrome for Testing, including ones installed
-later. A directory that cannot be written gets a line in the output, unless it does not exist (the
-browser never ran for this user; macOS refuses to create some of these with EPERM); setup fails when none could be
-written or the written hosts would not start. On macOS these
-live under `~/Library/Application Support/<browser>/NativeMessagingHosts`; on Linux under the browser's
-XDG config directory. Uninstall moves manifests belonging to this installation to the Trash once the
-installation itself has moved. Doctor
-checks the manifests of the browsers whose data directory exists, allowed origins, the launcher, Node executable and host module; repair with `bruse setup`.
+`installer/browsers.mjs` owns the supported browsers, their data directories and how to tell that one
+is installed: on macOS its app is in `/Applications` or `~/Applications`, on Linux its command is on
+`PATH`. Chrome for Testing has neither, so it counts once its data directory exists. A data directory
+alone does not count for the others, because other programs (1Password, agent CLIs) create them for
+browsers that are not installed. Setup registers hosts only for the installed browsers, so a browser
+installed later needs another setup, and moves this installation's manifests of browsers that are no
+longer installed to the Trash. A directory that cannot be written gets a line in the output; setup
+fails when no supported browser is installed, none could be written or the written hosts would not
+start. On macOS these live under `~/Library/Application Support/<browser>/NativeMessagingHosts`; on
+Linux under the browser's XDG config directory. Uninstall moves manifests belonging to this
+installation to the Trash, from every supported browser's directory, once the installation itself
+has moved. Doctor checks the manifests of the installed browsers, allowed origins, the launcher, Node
+executable and host module; repair with `bruse setup`.
 
 Adding `nativeMessaging` and reloading an existing unpacked extension stayed enabled in Chrome for
 Testing 153.0.8010.12 and in Brave 156 on macOS. The pairing tests cover this update path. Other browser builds may
