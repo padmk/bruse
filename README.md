@@ -322,7 +322,7 @@ The `js` tool repeats these rules in its documentation, which the first call ret
   servers, and newer extensions use the same HMAC handshake with older servers. An older unpaired
   extension must be updated; the hub no longer accepts secrets over the port. A newer extension with
   a saved pairing can connect before the native host is installed. With no saved pairing and no host
-  it stays disconnected; run setup. If the browser disables the extension after adding the
+  it stays disconnected, and agents, `bruse doctor` and setup say why it could not pair; run setup. If the browser disables the extension after adding the
   `nativeMessaging` permission, enable it on its extensions page and run setup again.
 
 - **No independent audit yet.** No external security audit of Bruse has been published. The changes

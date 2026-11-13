@@ -8,6 +8,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, unlinkSync,
 import http from "node:http";
 import { EXTENSION_ORIGINS, EXTENSION_SECRET_PATH, HUB_VERSION_MISMATCH, PORT, PRODUCT_NAME, STATE_DIR, TOKEN_PATH, VERSION } from "./config.mjs";
 import { acceptUpgrade, rejectUpgrade } from "./websocket.mjs";
+import { PAIRING_FAILURES } from "../extension/shared.js";
 
 const REQUEST_TIMEOUT_MS = 90_000;
 // The extension's offscreen document retries every 0.5 s; this also covers pairing and a slow worker start.
@@ -18,6 +19,13 @@ const MAX_UNAUTHENTICATED = 32;
 const KEEPALIVE_MS = 20_000;
 const NOT_CONNECTED_START = "The browser extension did not connect.";
 const NOT_CONNECTED = `${NOT_CONNECTED_START} Make sure the browser is running (on macOS, Chrome with no window open stops its extensions: open a window) and the ${PRODUCT_NAME} extension is enabled, and run \`bruse doctor\`. If it is enabled but stays disconnected, its process may have crashed, which it cannot recover from alone: the user clicks Reload on it on the extensions page. If the extension was reinstalled, the user runs \`bruse setup\` in a terminal.`;
+// An extension reached the hub but did not authenticate. The hub words every cause itself: the
+// connection is not authenticated, so whatever it says may come from a process posing as the extension.
+const PAIRING_FAILED = (cause) =>
+  `${NOT_CONNECTED_START} The ${PRODUCT_NAME} extension reached the browser hub but could not pair with it: ${cause}. The user runs \`bruse setup\` in a terminal, which registers the native pairing host for each installed browser; \`bruse doctor\` checks the pairing.`;
+const UNKNOWN_PAIRING_FAILURE = "the extension could not get the pairing secret";
+const NO_HUB_SECRET = "this computer has no pairing secret yet";
+const OTHER_SECRET = "the extension proved a pairing secret other than this computer's";
 // How MCP servers authenticate to the hub and the hub to them (see connectClient). The hub announces it
 // in its challenge and on plain HTTP requests, so that servers of different versions can tell why they
 // cannot connect.
@@ -164,6 +172,10 @@ function becomeHub() {
     const pending = new Map(); // hub request id -> settle(reply)
     hubPending = pending;
     let nextId = 1;
+    // Why an extension last failed to authenticate, and when: { cause, at }. A failing extension tries
+    // again at least once every AUTH_TIMEOUT_MS plus its retry delay, which is within EXTENSION_WAIT_MS,
+    // so an older report no longer describes a browser that is running.
+    let pairingFailure = null;
 
     // `session` is the agent session the request comes from: the hub's own, or the one a client named in
     // its hello. The extension decides tab access by it, so it travels outside the request's parameters,
@@ -191,7 +203,8 @@ function becomeHub() {
         };
         const timer = setTimeout(() => {
           extensionWaiters.delete(waiter);
-          rejectWait(new Error(NOT_CONNECTED));
+          const failed = pairingFailure && Date.now() - pairingFailure.at <= EXTENSION_WAIT_MS;
+          rejectWait(new Error(failed ? PAIRING_FAILED(pairingFailure.cause) : NOT_CONNECTED));
         }, EXTENSION_WAIT_MS);
         extensionWaiters.add(waiter);
       });
@@ -255,6 +268,7 @@ function becomeHub() {
 
       const activate = (secret, extensionNonce) => {
         authenticated = true;
+        pairingFailure = null;
         admitted.authenticated();
         peer.send(JSON.stringify({ type: "auth-ok", mac: hmac(secret, `hub:${extensionNonce}`) }));
         const previous = extension;
@@ -268,12 +282,22 @@ function becomeHub() {
         const message = parse(text);
         if (!message) return;
         if (!authenticated) {
+          // The extension says why it has no answer. The connection stays open until its authentication
+          // deadline, so that the extension starts the native host again only at that pace.
+          if (message.type === "pairing-failed") {
+            const known = typeof message.reason === "string" && Object.hasOwn(PAIRING_FAILURES, message.reason);
+            pairingFailure = { cause: known ? PAIRING_FAILURES[message.reason] : UNKNOWN_PAIRING_FAILURE, at: Date.now() };
+            return;
+          }
           let secret = null;
           try {
             secret = readFileSync(EXTENSION_SECRET_PATH, "utf8").trim();
           } catch {}
           if (message.type === "auth" && secret && HEX_NONCE.test(message.nonce) && sameHex(message.mac, hmac(secret, `extension:${nonce}`))) activate(secret, message.nonce);
-          else peer.close();
+          else {
+            if (message.type === "auth") pairingFailure = { cause: secret ? OTHER_SECRET : NO_HUB_SECRET, at: Date.now() };
+            peer.close();
+          }
           return;
         }
         // An event names the sessions that may see it (`audience`), or none to reach every session.
