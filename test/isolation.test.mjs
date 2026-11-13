@@ -111,6 +111,26 @@ test("a user tab that joins a group while the session moves the group stays in i
   assert.equal((await env.inPopup(`chrome.tabs.get(${user.id})`)).windowId, from.id, "the user's tab stays in its window");
 });
 
+test("an own tab the user moves out of a user window while the session moves it there stays out", async (t) => {
+  await userTab(url("/page?enter-user"));
+  const { s, ownTab } = await sessionWithTab(url("/page?enter-own"));
+  t.after(() => s.close());
+  const own = await ownWindow(s, url("/page?enter-window"));
+  // Holds the move at a check of the session's access, after the call was prepared with the tab already in
+  // the user's window.
+  const hold = await env.holdCall("chrome.storage.local.get", `args[0] === "agentState" && stack.includes("requireAgentEffect")`);
+  t.after(() => hold.release().catch(ignore("cleanup: a release the test made already fails")));
+  const result = s.js(`await m.tabs.move(${ownTab.id}, { windowId: ${ownTab.windowId}, index: -1 });`).then(
+    () => null,
+    (error) => error,
+  );
+  await hold.held();
+  await env.inPopup(`chrome.tabs.move(${ownTab.id}, { windowId: ${own.id}, index: -1 })`);
+  await hold.release();
+  assert.match(String((await result)?.message), /holds tabs that are not this session's/);
+  assert.equal((await env.inPopup(`chrome.tabs.get(${ownTab.id})`)).windowId, own.id, "the tab stays in the session's window");
+});
+
 test("an own tab in a user window cannot become the active tab", async () => {
   await userTab(url("/page?active-user"));
   const { s, ownTab } = await sessionWithTab(url("/page?active-own"));

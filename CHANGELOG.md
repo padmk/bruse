@@ -4,6 +4,7 @@
 
 - **A call that timed out or was cancelled no longer acts afterwards.** Replacing the REPL stopped its code, but a browser request it had already sent went on in the extension: a `tab.close()` waiting for its last access check closed the tab after the call had returned "timed out" and said its code was stopped. The server now has the extension cancel the session's requests in flight before it replies (the new `session.cancel` request), and every check right before an effect refuses a cancelled request. When the extension does not confirm the cancel (it is unreachable or older than the server), the reply says that a request may still take effect. A crashed REPL's requests are cancelled the same way.
 - **Tab groups are read again right before a management call acts.** `tabs.group` into an existing group, `tabGroups.update` and `tabGroups.move` checked the tabs a group held when the call was prepared. A tab the user put into the group meanwhile, such as a tab the session may not reach, was moved or changed with it. The final check now lists the group's tabs itself.
+- **Windows are read again right before a tab moves or becomes active.** `tabs.move` and `tabs.group` with a window or a group, `tabGroups.move` and `tabs.update` with `active` or `highlighted` checked which window the tabs were in when the call was prepared. A tab the user moved meanwhile could then be moved into, or made active in, a window the session does not own. The final check now reads where the tabs and the group are.
 
 ## 0.24.0
 

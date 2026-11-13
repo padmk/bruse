@@ -408,17 +408,23 @@ async function withDefaults(namespace, method, args) {
  * @property {number[]} rearrange
  * @property {number[]} groups tab groups whose every tab, as requireAgentEffect lists them, the session must own
  * @property {unknown[]} windows window IDs as the agent named them, which requireAgentEffect checks
+ * @property {(() => Promise<unknown[]>)[]} entering reads, at requireAgentEffect's check, the windows the call moves something into or changes the active tab of
  */
 /** @param {ManagementNamespace} namespace @param {string} method @param {unknown[]} args @returns {Promise<ManagementNeeds>} */
 async function managementNeeds(namespace, method, args) {
   /** @type {ManagementNeeds} */
-  const needs = { reach: [], rearrange: [], groups: [], windows: [] };
-  // Tabs that leave their window for `windowId` move into it, which must be the session's.
-  /** @param {number[]} tabIds @param {unknown} windowId */
-  const moveInto = async (tabIds, windowId) => {
-    const tabs = await Promise.all(tabIds.map(existingTab));
-    if (tabs.some((tab) => tab.windowId !== windowId)) needs.windows.push(windowId);
+  const needs = { reach: [], rearrange: [], groups: [], windows: [], entering: [] };
+  // Tabs that leave their window for the target window move into it, which must be the session's. Where
+  // the tabs and the target are is read at the check, as the user may move them meanwhile.
+  /** @param {number[]} tabIds @param {() => Promise<unknown>} target */
+  const moveInto = (tabIds, target) => {
+    needs.entering.push(async () => {
+      const [windowId, tabs] = await Promise.all([target(), Promise.all(tabIds.map(existingTab))]);
+      return tabs.some((tab) => tab.windowId !== windowId) ? [windowId] : [];
+    });
   };
+  /** @param {number} groupId */
+  const groupWindow = async (groupId) => (await chrome.tabGroups.get(groupId)).windowId;
   const [first, second] = args;
   const options = isRecord(first) ? first : undefined;
   const changes = isRecord(second) ? second : undefined;
@@ -426,15 +432,20 @@ async function managementNeeds(namespace, method, args) {
   if (namespace === "tabs" && (["move", "group", "ungroup", "remove", "discard"].includes(method) || (method === "update" && changes?.pinned !== undefined))) needs.rearrange.push(...tabIdsOf(method, args));
   // Activating or highlighting a tab switches what the user sees in its window, and so can unhighlighting
   // the active tab, which activates another highlighted one.
-  if (namespace === "tabs" && method === "update" && ["active", "highlighted", "selected"].some((key) => changes?.[key] !== undefined)) needs.windows.push((await existingTab(tabIdsOf(method, args)[0])).windowId);
-  if (namespace === "tabs" && method === "move" && changes?.windowId !== undefined) await moveInto(tabIdsOf(method, args), changes.windowId);
+  if (namespace === "tabs" && method === "update" && ["active", "highlighted", "selected"].some((key) => changes?.[key] !== undefined)) {
+    const [tabId] = tabIdsOf(method, args);
+    needs.entering.push(async () => [(await existingTab(tabId)).windowId]);
+  }
+  if (namespace === "tabs" && method === "move" && changes?.windowId !== undefined) moveInto(tabIdsOf(method, args), async () => changes.windowId);
   if (namespace === "tabs" && method === "group") {
     if (options?.groupId !== undefined) {
       // Joining a group changes it, so the session must own every tab in it.
       needs.groups.push(groupIdOf(options.groupId));
-      await moveInto(tabIdsOf(method, args), (await chrome.tabGroups.get(groupIdOf(options.groupId))).windowId);
+      const groupId = groupIdOf(options.groupId);
+      moveInto(tabIdsOf(method, args), () => groupWindow(groupId));
     } else {
-      await moveInto(tabIdsOf(method, args), isRecord(options?.createProperties) ? options.createProperties.windowId : undefined);
+      const windowId = isRecord(options?.createProperties) ? options.createProperties.windowId : undefined;
+      moveInto(tabIdsOf(method, args), async () => windowId);
     }
   }
   // A new window may take an existing tab, which moves it.
@@ -444,7 +455,10 @@ async function managementNeeds(namespace, method, args) {
   }
   if (namespace === "windows" && (method === "update" || method === "remove")) needs.windows.push(first);
   if (namespace === "tabGroups" && (method === "update" || method === "move")) needs.groups.push(groupIdOf(first));
-  if (namespace === "tabGroups" && method === "move" && changes?.windowId !== undefined && changes.windowId !== (await chrome.tabGroups.get(groupIdOf(first))).windowId) needs.windows.push(changes.windowId);
+  if (namespace === "tabGroups" && method === "move" && changes?.windowId !== undefined) {
+    const groupId = groupIdOf(first);
+    needs.entering.push(async () => ((await groupWindow(groupId)) !== changes.windowId ? [changes.windowId] : []));
+  }
   return needs;
 }
 
