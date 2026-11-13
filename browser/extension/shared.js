@@ -77,3 +77,12 @@ export async function extensionBuild(readText) {
 
 // Native host name shared by setup and the extension.
 export const PAIRING_HOST = "org.bruse.pairing";
+
+// Why the extension could not answer the hub's challenge: the codes it sends in a `pairing-failed`
+// message before it authenticates, and what each means. The hub words its error from this list only,
+// so a process posing as the extension cannot put text of its own into an agent's error.
+export const PAIRING_FAILURES = {
+  "host-missing": "the browser did not find the native pairing host",
+  "host-forbidden": "the browser does not let the extension start the native pairing host",
+  "host-failed": "the native pairing host did not provide the pairing secret",
+};

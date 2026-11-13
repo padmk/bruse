@@ -127,6 +127,15 @@ yet installed the native host. Reinstalls obtain the host's secret without reset
 secret before it reloads the extension, because a still-running 0.18 hub stores a `pair` secret from any
 local process while no secret file exists.
 
+An extension that has no secret to answer the hub's challenge with (no host and none saved) sends
+`{"type": "pairing-failed", "reason": <code>}` instead, with a code from `PAIRING_FAILURES` in
+`shared.js`. The hub keeps the connection until its authentication deadline, so the extension starts
+the native host at most once per connection attempt, and names the cause in the "did not connect" error
+it gives agents, `bruse doctor` and setup; it also names a missing secret file or a proof of another
+secret. Older hubs close the connection on that message, as on any other before `auth`, and older
+extensions never send it, so both pairings keep their behavior. A newer hub falls back to a generic
+cause for codes it does not know.
+
 `installer/browsers.mjs` owns the supported browsers, their data directories and how to tell that one
 is installed: on macOS its app is in `/Applications` or `~/Applications`, on Linux its command is on
 `PATH`. Chrome for Testing has neither, so it counts once its data directory exists. A data directory

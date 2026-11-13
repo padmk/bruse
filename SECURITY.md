@@ -44,6 +44,10 @@ obtain the secret or have browser requests executed. Existing secrets remain val
 The host allow-list is not proof of publisher identity: another unpacked extension can copy a public
 manifest key, and programs running as the user can invoke the host directly or read the secret. These
 are outside the threat model above. Native messaging does not protect a compromised user account.
+Before it authenticates, the extension may tell the hub why it could not pair, as a code from a
+fixed list in `shared.js`; the hub words the resulting "did not connect" error itself, from that list
+or from what it saw (no secret file, a proof of another secret). A process posing as the extension can
+at most make that error name a wrong cause; it cannot put text of its own into an agent's context.
 Older extensions without an existing pairing must be updated; port-based first pairing and reset
 approval are removed. See [Security in the README](README.md#security-and-privacy).
 

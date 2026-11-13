@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **Why the extension cannot pair:** when the extension finds no native pairing host and has no saved pairing, or its saved pairing does not match this computer's, the "did not connect" error that agents, `bruse doctor` and `bruse setup` show says so (for example that the browser did not find the native pairing host) and points to `bruse setup`. Before, the service worker dropped the cause as an unhandled error, and the hub only timed out with the generic message.
 - `bruse setup` registers the native pairing host only for the browsers installed on this machine (an app in `/Applications` or `~/Applications` on macOS, a command on `PATH` on Linux; Chrome for Testing once it ran), instead of creating folders for all supported browsers. It moves the manifests it wrote earlier for browsers that are not installed to the Trash, and stops when no supported browser is installed. After installing another browser, run setup again; `bruse doctor` checks only the installed browsers.
 - The README and the message for an extension that did not connect said that a browser without windows stops its extensions on macOS. That holds for Chrome (seen in Chrome for Testing 156); Brave 156 keeps them running, and `createBrowserTab` opens its unfocused window there.
 - `tab.scroll(target, direction, null)` scrolls one page, as it does without the third argument. Before, it failed with a `TypeError`.

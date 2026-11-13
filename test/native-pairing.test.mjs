@@ -163,6 +163,26 @@ test("a saved pairing works without a host and an unpacked permission update sta
   } finally { client?.close(); await session?.close(); await browser?.close(); copy.remove(); }
 });
 
+test("an extension that cannot pair tells the agent why", { timeout: 60_000 }, async () => {
+  const port = await freePort();
+  const copy = browserCopy(port);
+  const stateDir = join(copy.dir, "state");
+  let browser, session;
+  try {
+    // No native host is registered and no secret is saved, so the extension has no answer to a challenge.
+    browser = await launchBrowser(copy.extensionDir);
+    const { cdp, extensionId } = browser;
+    const worker = await until(async () => (await cdp.send("Target.getTargets")).targetInfos.find((target) => target.type === "service_worker" && target.url.startsWith(`chrome-extension://${extensionId}/`)));
+    const { sessionId } = await cdp.send("Target.attachToTarget", { targetId: worker.targetId, flatten: true });
+    const evaluate = async (expression) => (await cdp.send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true }, sessionId)).result.value;
+    await until(() => evaluate("typeof chrome !== 'undefined'"));
+    await evaluate("globalThis.rejections = []; self.addEventListener('unhandledrejection', (event) => rejections.push(String(event.reason?.message ?? event.reason)))");
+    session = await startSession(copy.serverPath, { stateDir });
+    await assert.rejects(session.js("await cua.getState()"), /could not pair with it: the browser did not find the native pairing host\. The user runs `bruse setup`/);
+    assert.deepEqual(await evaluate("rejections"), []);
+  } finally { await session?.close(); await browser?.close(); copy.remove(); }
+});
+
 test("a native reply from an old connection cannot replace the current hub proof", { timeout: 60_000 }, async () => {
   const port = await freePort();
   const copy = browserCopy(port);

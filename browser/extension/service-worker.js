@@ -470,8 +470,19 @@ async function hmac(secret, message) {
   return hex(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(message)));
 }
 
+// The code in PAIRING_FAILURES for an error of the native host call. Chrome for Testing 156 words them
+// "Specified native messaging host not found.", "Access to the specified native messaging host is
+// forbidden." (allowed_origins without this extension), "Native host has exited." and "Error when
+// communicating with the native messaging host." (output that is not a native message).
+function pairingFailure(error) {
+  const message = String(error?.message ?? error);
+  if (/not found/i.test(message)) return "host-missing";
+  if (/forbidden/i.test(message)) return "host-forbidden";
+  return "host-failed";
+}
+
+// The answer to a hub's challenge: proof of the pairing secret, or why the extension has none.
 async function answerChallenge(nonce, connection) {
-  if (!/^[0-9a-f]{64}$/.test(nonce)) throw new Error("Invalid hub challenge");
   // Always consult the host: a reinstall or a restored browser profile may retain a stale secret.
   // An existing pairing can still connect before setup installs the host during an upgrade.
   let { hubSecret } = await chrome.storage.local.get("hubSecret");
@@ -482,7 +493,10 @@ async function answerChallenge(nonce, connection) {
     await chrome.storage.local.set({ hubSecret });
     await chrome.storage.local.remove("pendingHubSecret");
   } catch (error) {
-    if (!hubSecret) throw new Error(`Native pairing unavailable. Run bruse setup: ${error.message}`);
+    if (!hubSecret) {
+      console.warn(`Native pairing unavailable: ${error?.message ?? error}`);
+      return { type: "pairing-failed", reason: pairingFailure(error) };
+    }
   }
   const ownNonce = randomHex();
   connection.expectedHubMac = await hmac(hubSecret, `hub:${ownNonce}`);
@@ -515,8 +529,11 @@ async function handle(gen, text) {
     // Each answer starts the native host, so whatever holds the port gets one per connection.
     if (hub.challenged) return null;
     hub.challenged = true;
+    // A hub's nonce is 32 random bytes; whatever sends another holds the port without being a hub.
+    const nonce = String(message.nonce);
+    if (!/^[0-9a-f]{64}$/.test(nonce)) return null;
     const connection = hub;
-    const reply = await answerChallenge(String(message.nonce), connection);
+    const reply = await answerChallenge(nonce, connection);
     return hub === connection ? JSON.stringify(reply) : null;
   }
   if (message.type === "auth-ok") {
@@ -557,7 +574,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return false;
   }
   if (message.type !== "hub-message") return false;
-  handle(message.gen, message.data).then(sendResponse);
+  handle(message.gen, message.data).then(sendResponse, (error) => {
+    // The hub gets no answer and drops the connection after its authentication deadline.
+    console.error("Hub message failed:", error);
+    sendResponse(null);
+  });
   return true;
 });
 
