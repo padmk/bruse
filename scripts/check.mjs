@@ -4,7 +4,8 @@
 // development dependencies that `npm ci` installs.
 
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { once } from "node:events";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
@@ -47,8 +48,9 @@ const cli = spawnSync(process.execPath, [join(root, "bin/bruse.mjs"), "version"]
 check(cli.status === 0 && cli.stdout.trim() === `bruse ${version}`, `bruse version prints ${version}`);
 
 // The server must survive a line that is not a request and answer the ones that follow.
+const stateDir = mkdtempSync(join(tmpdir(), "bruse-check-"));
 const server = spawn(process.execPath, [join(root, "browser/mcp/server.mjs")], {
-  env: { ...process.env, BROWSER_CONTROL_STATE_DIR: mkdtempSync(join(tmpdir(), "bruse-check-")) },
+  env: { ...process.env, BROWSER_CONTROL_STATE_DIR: stateDir },
   stdio: ["pipe", "pipe", "inherit"],
 });
 const replies = new Map();
@@ -76,6 +78,15 @@ try {
   check(false, `MCP server: ${error.message}`);
 }
 server.stdin.end();
+// The server exits once its input closes; its state directory goes after it.
+const exited = once(server, "exit");
+const exitedInTime = await Promise.race([exited.then(() => true), new Promise((resolve) => setTimeout(() => resolve(false), 5_000))]);
+if (!exitedInTime) {
+  server.kill();
+  await exited;
+}
+check(exitedInTime, "MCP server exits when its input closes");
+rmSync(stateDir, { recursive: true, force: true });
 
 console.log(failures ? `\n${failures} check${failures === 1 ? "" : "s"} failed` : "\nall checks passed");
 process.exit(failures ? 1 : 0);
