@@ -88,6 +88,7 @@ function emitEvent(event) {
   for (const listener of eventListeners) listener(event);
 }
 
+const DROPPED = "The request was not sent: the REPL that made it was replaced";
 // A hub that is shutting down takes no new requests; they were not run, so every one is resent.
 const HUB_CLOSING = "The browser hub is shutting down";
 let draining = false;
@@ -129,16 +130,21 @@ function link() {
   });
 }
 
+// `wanted` is asked before the request is sent, also before each resend: a request of a REPL that was
+// replaced meanwhile is dropped instead of reaching the browser after the replacement cancelled the
+// session's requests in flight.
 /**
  * @template {import("../extension/shared.js").Method} M
  * @param {M} method
  * @param {import("../extension/shared.js").Params<M>} [params]
+ * @param {{ wanted?: () => boolean }} [options]
  * @returns {Promise<import("../extension/shared.js").Result<M>>}
  */
-export async function callBrowser(method, params = {}) {
+export async function callBrowser(method, params = {}, { wanted = () => true } = {}) {
   const closingDeadline = Date.now() + DRAIN_MS + 1_000;
   for (let attempt = 0; ; ) {
     const current = await link();
+    if (!wanted()) throw new Error(DROPPED);
     sessionUsed = true;
     try {
       return await current.send(method, params);

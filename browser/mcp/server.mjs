@@ -66,8 +66,27 @@ function callTimeout(value) {
   return Math.min(value, MAX_TIMEOUT_MS);
 }
 
-const TIMED_OUT_NOTE = "The REPL was reset because the call timed out: code still running from it was stopped. Bind tabs again with cua.getTab(id).";
-const CANCELLED_NOTE = "The REPL was reset because the previous call was cancelled: its code was stopped. Bind tabs again with cua.getTab(id).";
+// How long a replaced REPL waits for the extension to confirm that it cancelled the session's requests in flight.
+const CANCEL_WAIT_MS = 3_000;
+// What the agent is told about the browser requests of code that was stopped, by whether the extension
+// confirmed their cancellation (see requests.js in the extension).
+const REQUESTS_CANCELLED = "browser requests it had in flight were cancelled and take no effect";
+const REQUESTS_UNCONFIRMED = "the browser extension did not confirm that browser requests it had in flight were cancelled (it is unreachable or older than this server), so one of them may still take effect: check the pages before repeating an action";
+const timedOutNote = (confirmed) => `The REPL was reset because the call timed out: code still running from it was stopped, and ${confirmed ? REQUESTS_CANCELLED : REQUESTS_UNCONFIRMED}. Bind tabs again with cua.getTab(id).`;
+const cancelledNote = (confirmed) => `The REPL was reset because the previous call was cancelled: its code was stopped, and ${confirmed ? REQUESTS_CANCELLED : REQUESTS_UNCONFIRMED}. Bind tabs again with cua.getTab(id).`;
+
+// Has the extension cancel this session's requests in flight, those of a REPL that was just replaced.
+// Resolves with whether it confirmed. Sent after the replacement starts and before it gets any code, so
+// the extension receives it before any request of the new REPL.
+async function cancelInFlight() {
+  let timer;
+  const confirmed = await Promise.race([
+    callBrowser("session.cancel").then(() => true, () => false),
+    new Promise((resolve) => (timer = setTimeout(() => resolve(false), CANCEL_WAIT_MS))),
+  ]);
+  clearTimeout(timer);
+  return confirmed;
+}
 // What a call the client cancelled resolves with; such a call gets no reply.
 const CANCELLED = Symbol("cancelled");
 
@@ -144,9 +163,11 @@ class ReplHost {
       this.pending.clear();
       this.pressed.releaseAll();
       this.start();
-      for (const resolve of settle) {
-        resolve({ content: [{ type: "text", text: `The REPL crashed (${reason}) and was started again; its state is gone. Bind tabs again with cua.getTab(id).` }], isError: true });
-      }
+      cancelInFlight().then((confirmed) => {
+        for (const resolve of settle) {
+          resolve({ content: [{ type: "text", text: `The REPL crashed (${reason}) and was started again; its state is gone, and ${confirmed ? REQUESTS_CANCELLED : REQUESTS_UNCONFIRMED}. Bind tabs again with cua.getTab(id).` }], isError: true });
+        }
+      }, logFailure("Cancelling the browser requests of a crashed REPL"));
     });
   }
 
@@ -161,19 +182,22 @@ class ReplHost {
         if (worker !== this.worker) return;
       }
       this.pressed.note(method, params);
-      reply = { type: "browser-reply", callId, result: await callBrowser(method, params) };
+      reply = { type: "browser-reply", callId, result: await callBrowser(method, params, { wanted: () => worker === this.worker }) };
     } catch (error) {
       reply = { type: "browser-reply", callId, error: error?.message ?? String(error) };
     }
     if (worker === this.worker) worker.postMessage(reply);
   }
 
+  // Replaces the worker and has the extension cancel the browser requests the old one left in flight.
+  // Resolves with whether the extension confirmed that.
   async restart() {
     const old = this.worker;
     this.pending.clear();
     this.pressed.releaseAll();
     this.start();
-    await old.terminate();
+    const [confirmed] = await Promise.all([cancelInFlight(), old.terminate()]);
+    return confirmed;
   }
 
   // Waits for the worker's answer, or `waitMs` (undefined when it does not answer in time).
@@ -190,19 +214,17 @@ class ReplHost {
     });
   }
 
-  // Resolves with the call's result, or with CANCELLED when cancelRun() ended it. A call that timed out
-  // or was cancelled ends with the worker replaced, so nothing of it runs on.
+  // Resolves with the call's result, or with { cancelled: whether the extension confirmed the cancel of
+  // its browser requests } when cancelRun() ended it. A call that timed out or was cancelled ends with the
+  // worker replaced and its browser requests cancelled, so nothing of it runs on.
   async run(code, timeoutMs) {
     const result = await this.request({ type: "run", code, timeoutMs }, timeoutMs + TERMINATE_GRACE_MS);
     this.runId = null;
-    if (result === CANCELLED) {
-      await this.restart();
-      return CANCELLED;
-    }
+    if (result === CANCELLED) return { cancelled: await this.restart() };
     if (result !== undefined && !result.timedOut) return result;
-    await this.restart();
+    const confirmed = await this.restart();
     const content = result?.content ?? [{ type: "text", text: `Execution timed out after ${timeoutMs} ms` }];
-    return { content: [...content, { type: "text", text: TIMED_OUT_NOTE }], isError: true };
+    return { content: [...content, { type: "text", text: timedOutNote(confirmed) }], isError: true };
   }
 
   // Ends the js call that is running, if any, without waiting for its code.
@@ -231,8 +253,10 @@ function serialized(task) {
 // (notifications/cancelled, sent when the user interrupts the agent): a waiting call is skipped, and a
 // running one is stopped at once instead of acting on pages until its code or timeout ends.
 const jsCalls = new Map(); // request id -> { cancelled, running }
-// Set when a cancelled call took the REPL's state with it, until the next call has told the agent.
-let cancelledNotePending = false;
+// Set when a cancelled call took the REPL's state with it, until the next call has told the agent: the
+// note to add, which says whether the extension confirmed the cancel of the call's browser requests.
+/** @type {string | null} */
+let pendingCancelNote = null;
 
 function cancelCall(requestId) {
   const call = jsCalls.get(requestId);
@@ -245,12 +269,14 @@ async function runJs(call, code, timeoutMs) {
   if (call.cancelled) return CANCELLED;
   call.running = true;
   const result = await repl.run(code, timeoutMs);
-  if (result === CANCELLED || call.cancelled) {
-    cancelledNotePending = true;
+  if ("cancelled" in result) {
+    pendingCancelNote = cancelledNote(result.cancelled);
     return CANCELLED;
   }
-  const notes = [cancelledNotePending ? CANCELLED_NOTE : null, updateNotice()].filter(Boolean);
-  cancelledNotePending = false;
+  // Cancelled after its code finished: its result is dropped, but nothing of it was stopped.
+  if (call.cancelled) return CANCELLED;
+  const notes = [pendingCancelNote, updateNotice()].filter(Boolean);
+  pendingCancelNote = null;
   return notes.length ? { ...result, content: [...result.content, ...notes.map((text) => ({ type: "text", text }))] } : result;
 }
 
@@ -279,7 +305,7 @@ async function handle(message) {
       if (name === "js_reset") {
         return serialized(async () => {
           await repl.reset();
-          cancelledNotePending = false;
+          pendingCancelNote = null;
           return { content: [{ type: "text", text: "The REPL was reset." }] };
         });
       }

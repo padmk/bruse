@@ -41,8 +41,11 @@ MCP server (hub) ◀──WebSocket 127.0.0.1:47615──▶ extension ──chr
   - `server.mjs`: the `js` and `js_reset` tools. It runs the REPL in a worker thread (`repl-worker.mjs`)
     and replaces the worker whenever a call times out, the client cancels it (`notifications/cancelled`)
     or the worker crashes, so nothing the call left running (an endless
-    loop, a timer, a pending request) can act on a page later; a command the call had already sent to
-    the browser still completes. The browser connection stays in the main
+    loop, a timer, a pending request) can act on a page later. It then sends `session.cancel`, which
+    aborts the session's requests still in flight in the extension (`browser/extension/requests.js`):
+    each is refused at its next check before an effect (`requireAgentEffect` in `access.js`, the
+    debugger gate in `cdp.js`). A request registers in the extension as it arrives, so the cancel
+    reaches only those sent before it; the server sends it before the new worker gets any code. The browser connection stays in the main
     thread and survives the replacement; the worker reaches it through `browser-port.mjs`. The worker's
     standard output is piped to the server's standard error, because the server's own carries the protocol.
   - `repl.mjs`: the persistent REPL; `hoist.mjs`: turns top-level declarations of a cell into globals so

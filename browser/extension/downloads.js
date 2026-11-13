@@ -462,11 +462,11 @@ chrome.downloads.onChanged.addListener((delta) => {
 // Resolves with the next download the tab starts once it completes. A newer wait for the same tab
 // replaces an older one that got nothing (for example one left by an earlier call), so the newer one
 // gets the next download.
-// `caller` is the agent request's { session }; the file goes to it only from a tab it may use.
+// `caller` is the agent's request (see requests.js); the file goes to its session only from a tab it may use.
 /**
  * @param {number} tabId
  * @param {number} timeoutMs
- * @param {{ session: string | null }} caller
+ * @param {import("./requests.js").AgentRequest} caller
  * @returns {Promise<DownloadInfo>}
  */
 export function waitForDownload(tabId, timeoutMs, caller) {

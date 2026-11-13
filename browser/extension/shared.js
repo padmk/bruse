@@ -112,6 +112,7 @@ export const logFailure = (what) => (error) => {
  *   "tabs.mark": { params: TabParams & { mark: string | null }, result: null },
  *   "tabs.agent": { params: {}, result: Record<string, AgentTabEntry> },
  *   "session.end": { params: { sessionId?: string }, result: { closed: number } },
+ *   "session.cancel": { params: {}, result: { cancelled: number } },
  *   "cdp": { params: TabParams & { method: string, params?: object, sessionId?: string | null, timeoutMs?: number }, result: unknown },
  *   "page.state": { params: TabParams, result: PageState },
  *   "page.console": { params: TabParams, result: ConsoleEntry[] },
@@ -169,7 +170,8 @@ const rules = (scope, { readOnly = false, pauseExempt = false, sessionless = fal
 /**
  * Every request the extension takes and how it is checked. browser.info only reads the state, so it runs
  * while agents are paused; session.end closes no tab while paused (sessions.js closes the session's tabs
- * when the user resumes); extension.reload does not run while paused, because a reload would end the
+ * when the user resumes); session.cancel only stops the session's requests in flight, so it runs while
+ * paused too; extension.reload does not run while paused, because a reload would end the
  * user's tab shares. tabs.navigate and tabs.history load a new page, so they do not need a loaded one.
  * @type {{ readonly [M in Method]: MethodRules }}
  */
@@ -186,6 +188,7 @@ export const PROTOCOL = Object.freeze({
   "tabs.mark": rules("tab"),
   "tabs.agent": rules("browser", { readOnly: true }),
   "session.end": rules("browser", { pauseExempt: true }),
+  "session.cancel": rules("browser", { pauseExempt: true }),
   cdp: rules("loaded-page"),
   "page.state": rules("loaded-page", { readOnly: true }),
   "page.console": rules("loaded-page", { readOnly: true }),
