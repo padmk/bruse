@@ -236,21 +236,24 @@ export async function requireAccess(sessionId, tabId) {
 // The check right before an agent's action takes effect: agents are not paused, the request was not
 // cancelled (see requests.js), and its session may use the tabs in `reach`, rearrange those in
 // `rearrange` (close, discard, pin, move or group them) and those in the tab groups `groups`, and change
-// the windows in `windows`. It takes one new reading, which also lists the groups' tabs now, so a pause,
-// a cancel, a share the user stopped, a tab that joined a group or a change of the access mode while the
-// action was being prepared stops it. The caller acts right after it resolves, with no other await in
+// the windows in `windows` and those that `entering` names. Each `entering` function reads now the
+// windows the action moves something into from another window or whose active tab it changes. It
+// takes one new reading, which also lists the groups' tabs now, so a pause, a cancel, a share the user
+// stopped, a tab that joined a group or changed window, or a change of the access mode while the action
+// was being prepared stops it. The caller acts right after it resolves, with no other await in
 // between: a check made before an await may no longer hold after it. Window IDs may come from agents and
 // are checked here; group IDs are checked by the caller.
 /**
  * @param {AgentRequest} request
- * @param {{ reach?: number[], rearrange?: number[], groups?: number[], windows?: unknown[] }} [effect]
+ * @param {{ reach?: number[], rearrange?: number[], groups?: number[], windows?: unknown[], entering?: (() => Promise<unknown[]>)[] }} [effect]
  * @returns {Promise<void>}
  */
-export async function requireAgentEffect(request, { reach = [], rearrange = [], groups = [], windows = [] } = {}) {
+export async function requireAgentEffect(request, { reach = [], rearrange = [], groups = [], windows = [], entering = [] } = {}) {
   const sessionId = request.session;
+  const entered = await Promise.all(entering.map((read) => read()));
   /** @type {number[]} */
   const windowIds = [];
-  for (const windowId of windows) {
+  for (const windowId of [...windows, ...entered.flat()]) {
     if (typeof windowId !== "number" || !Number.isInteger(windowId) || windowId < 0) throw new Error(`Name the window by its ID, not ${JSON.stringify(windowId)}`);
     windowIds.push(windowId);
   }
