@@ -13,6 +13,10 @@ updates:
       interval: monthly
     cooldown:
       default-days: 7
+    # typescript-eslint supports TypeScript only below 6.1 (its peer dependency); update both together by hand.
+    ignore:
+      - dependency-name: typescript
+        versions: [">=6.1.0"]
     groups:
       development-tools:
         patterns: ["*"]
