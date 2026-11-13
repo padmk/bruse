@@ -91,7 +91,10 @@ Each test file uses its own hub port, state directory, native host manifest and 
 installed Bruse or the browser it is connected to. They look for Chromium in Playwright's cache
 (`npx playwright install chromium`) or take its executable from `BRUSE_TEST_CHROME`. `test/harness.mjs`
 starts the browser, sessions and local test sites, and `hubClient()` connects to the hub as a peer MCP
-server does, to send requests to the extension directly. `test/fixtures/password-manager` is an
+server does, to send requests to the extension directly. `env.holdCall()` holds one browser API call
+of the extension's service worker (a storage read or write, a tab lookup) until the test releases it,
+so a test can pause, stop a share or reconnect a session at a chosen step between the extension's check
+and its action; the race tests use it instead of timing. `test/fixtures/password-manager` is an
 extension that shows a menu frame the way password managers do.
 
 Brave looks for native hosts in its user data directory, as Chrome for Testing does: the pairing tests
