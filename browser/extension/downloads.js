@@ -170,6 +170,38 @@ function expire(list) {
   for (let i = list.length - 1; i >= 0; i--) if (now - list[i].at > PAIRING_WINDOW_MS) list.splice(i, 1);
 }
 
+// The user's revocations (a share stopped, "all tabs" switched off) are counted as their change events
+// arrive (see below). A proof read while one came may rest on the setting before it, and the change event
+// found no grant to end yet; such a proof is read again, a few times at most.
+let revocations = 0;
+const PROOF_READS = 3;
+
+async function currentProof(sessionId, tabId) {
+  for (let read = 0; read < PROOF_READS; read++) {
+    const generation = revocations;
+    const proof = await proofOfAccess(sessionId, tabId);
+    if (generation === revocations) return proof;
+  }
+  return null;
+}
+
+// Whether the grant still holds as its file goes out: not revoked, agents not paused, and the setting it
+// rests on still in storage, read now (the change event that ends a grant comes a moment after the
+// user's click). A shared tab that is gone took its share along, which is no revocation; one that is
+// still open and no longer shared was stopped. A reading during which a revocation's event came is
+// taken again, as in currentProof.
+async function grantHolds(grant) {
+  for (let read = 0; read < PROOF_READS; read++) {
+    const generation = revocations;
+    const [paused, mode, shared, sourceOpen] = await Promise.all([isPaused(), accessMode(), sharedTabs(), chrome.tabs.get(grant.source).then(() => true, () => false)]);
+    if (paused) throw new Error(PAUSED_ERROR);
+    if (generation !== revocations) continue;
+    const rests = grant.proof === "all-tabs" ? mode === ALL_TABS : grant.proof === "share" ? shared.has(grant.source) || !sourceOpen : true;
+    return rests && !grant.revoked;
+  }
+  return false;
+}
+
 // Why the waiting session may have a file that `tabId` downloaded, or null: "all-tabs" (the mode lets
 // it use every tab), "share" (the user shares the tab, also one that closed as it turned into the
 // download) or "owner" (the session owns the tab, also a popup that closed and was opened for it). A wait
@@ -198,7 +230,7 @@ async function assign(downloadId, sourceTabId) {
   remember(owners, downloadId, tabId);
   for (const waiter of [...waiters]) {
     if (waiter.claimed !== null || waiter.tabId !== tabId) continue;
-    const proof = await proofOfAccess(waiter.sessionId, sourceTabId);
+    const proof = await currentProof(waiter.sessionId, sourceTabId);
     // The pairing may have been withdrawn, or the waiter claimed or ended, while access was checked.
     if (!pairing.valid) return;
     if (!proof || waiter.claimed !== null || !waiters.has(waiter)) continue;
@@ -213,9 +245,11 @@ async function assign(downloadId, sourceTabId) {
 
 // The user's explicit changes end grants that rested on them: stopping the share of a tab that is still
 // open (a closed tab's share ends with it, which is no revocation), or switching to agent tabs.
-// Decided at once, so a download that completes meanwhile cannot slip past the revocation.
+// Decided at once, so a download that completes meanwhile cannot slip past the revocation; a proof being
+// read meanwhile is read again (see currentProof).
 chrome.storage.onChanged.addListener((changes, area) => {
   const revoke = (matches) => {
+    revocations++;
     for (const waiter of waiters) {
       if (!waiter.grant || waiter.grant.revoked || !matches(waiter.grant)) continue;
       waiter.grant.revoked = true;
@@ -227,7 +261,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
     // Only shares this change removed; a tab that closed is marked before its share is removed (access.js).
     const now = new Set(changes.sharedTabs.newValue ?? []);
     const stopped = new Set((changes.sharedTabs.oldValue ?? []).filter((tabId) => !now.has(tabId) && !wasSharedWhenClosed(tabId)));
-    revoke((grant) => grant.proof === "share" && stopped.has(grant.source));
+    if (stopped.size) revoke((grant) => grant.proof === "share" && stopped.has(grant.source));
   }
 });
 
@@ -329,6 +363,9 @@ export function waitForDownload(tabId, timeoutMs, caller) {
           const [item] = await chrome.downloads.search({ id: downloadId });
           if (!granted()) throw withdrawn();
           if (!item) throw new Error("The download is no longer in the browser's list of downloads");
+          const holds = await grantHolds(waiter.grant);
+          // Nothing awaits between this check and the result going out.
+          if (!holds || !granted()) throw withdrawn();
           resolve({ path: item.filename, url: item.finalUrl ?? item.url, mime: item.mime });
         } catch (error) {
           reject(error);

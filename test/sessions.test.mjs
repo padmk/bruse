@@ -134,6 +134,33 @@ test("a session that ends while its tab is being created leaves no tab behind", 
   }
 });
 
+test("a session end that cannot close a tab says so, and the tab stays the session's for its next end", async (t) => {
+  const hub = await env.session();
+  await hub.js("await cua.getState();");
+  const client = await hubClient(env.port, env.stateDir);
+  t.after(async () => {
+    client.close();
+    await hub.close();
+  });
+  const u = url("/page?refuses-to-close");
+  const tab = await client.call("tabs.create", { url: u });
+  // The browser refuses to remove the tab, as it does while the user drags a tab.
+  const worker = await env.worker();
+  t.after(() => worker.close());
+  await worker.evaluate(`(() => {
+    const remove = chrome.tabs.remove;
+    globalThis.restoreTabsRemove = () => (chrome.tabs.remove = remove);
+    chrome.tabs.remove = (...args) => (args[0] === ${tab.id} ? Promise.reject(new Error("Tabs cannot be edited right now")) : remove.apply(chrome.tabs, args));
+  })()`);
+  t.after(() => worker.evaluate("restoreTabsRemove()").catch(() => {}));
+  await assert.rejects(client.call("session.end"), new RegExp(`Closed 0 of the session's 1 tabs; tab ${tab.id} stayed open \\(Tabs cannot be edited right now\\)`));
+  assert.equal(await present(u), true);
+  assert.deepEqual(Object.keys(await client.call("tabs.agent")), [String(tab.id)], "the tab is still the session's");
+  await worker.evaluate("restoreTabsRemove()");
+  assert.deepEqual(await client.call("session.end"), { closed: 1 });
+  await waitPage(u, false);
+});
+
 test("agent tabs open in the background", async (t) => {
   // The user's active tabs are visible to agents in "all tabs" mode only.
   await env.setAccessMode("all-tabs");

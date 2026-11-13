@@ -77,42 +77,20 @@ test("download wait times out", async () => {
 
 // Holds chrome.downloads.search in the extension's service worker until `release()`, so that the user can
 // act while the extension looks up a download that completed.
-async function holdDownloadSearch() {
-  const { cdp, extensionId } = env.browser;
-  const { targetInfos } = await cdp.send("Target.getTargets");
-  const worker = targetInfos.find((target) => target.type === "service_worker" && target.url.startsWith(`chrome-extension://${extensionId}/`));
-  const { sessionId } = await cdp.send("Target.attachToTarget", { targetId: worker.targetId, flatten: true });
-  const evaluate = async (expression) => (await cdp.send("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true }, sessionId)).result.value;
-  await evaluate(`(() => {
-    const original = chrome.downloads.search;
-    const held = (globalThis.heldSearch = { original, calls: 0, release: null });
-    chrome.downloads.search = async (query) => {
-      const items = await original.call(chrome.downloads, query);
-      held.calls++;
-      await new Promise((resolve) => (held.release = resolve));
-      return items;
-    };
-  })()`);
-  return {
-    searched: () => until(() => evaluate("globalThis.heldSearch.calls > 0"), { timeoutMs: 15000, message: "the download to be looked up" }),
-    async release() {
-      await evaluate("chrome.downloads.search = globalThis.heldSearch.original; globalThis.heldSearch.release()");
-      await cdp.send("Target.detachFromTarget", { sessionId });
-    },
-  };
-}
-async function sharedUserTab(name) {
+const holdDownloadSearch = () => env.holdCall("chrome.downloads.search", "true", { answered: true, timeoutMs: 15000 });
+// A tab the user opens, shared with agents unless `share` is false, and bound in the session as `name`.
+async function sharedUserTab(name, share = true) {
   const url = `${site.origin}/?${name}`;
   await env.browser.cdp.send("Target.createTarget", { url });
   await until(async () => (await env.browser.pages()).some((page) => page.url === url), { message: `${url} to open` });
   const id = await until(() => env.inPopup(`chrome.tabs.query({}).then((tabs) => tabs.find((tab) => tab.url === ${JSON.stringify(url)})?.id ?? null)`), { message: `${url} in the tabs API` });
-  await env.share(id);
+  if (share) await env.share(id);
   await session.js(`const ${name} = await cua.getTab(${JSON.stringify(String(id))});`);
   return id;
 }
-const downloadFrom = (name) =>
+const downloadFrom = (name, timeoutMs = 15000) =>
   session.js(
-    `const wait_${name} = ${name}.playwright.waitForEvent("download", {timeoutMs: 15000}); await ${name}.playwright.getByRole("link", {name: "Download"}).click(); nodeRepl.write(JSON.stringify(await (await wait_${name}).path()));`,
+    `const wait_${name} = ${name}.playwright.waitForEvent("download", {timeoutMs: ${timeoutMs}}); await ${name}.playwright.getByRole("link", {name: "Download"}).click(); nodeRepl.write(JSON.stringify(await (await wait_${name}).path()));`,
   );
 test("stopping a share while its finished download is looked up withholds the file", async () => {
   const id = await sharedUserTab("stopped");
@@ -121,7 +99,7 @@ test("stopping a share while its finished download is looked up withholds the fi
     () => null,
     (error) => error,
   );
-  await hold.searched();
+  await hold.held();
   await env.share(id, false);
   await hold.release();
   assert.match(String((await result)?.message), /stopped sharing/);
@@ -130,9 +108,45 @@ test("a shared tab that closes while its finished download is looked up still ha
   const id = await sharedUserTab("closing");
   const hold = await holdDownloadSearch();
   const result = downloadFrom("closing");
-  await hold.searched();
+  await hold.held();
   await env.inPopup(`chrome.tabs.remove(${id})`);
   await until(async () => !(await env.browser.pages()).some((page) => page.url.endsWith("/?closing")), { message: "the shared tab to close" });
   await hold.release();
   assert.match(readFileSync(lastJson(await result), "utf8"), /^content \d+$/);
+});
+
+// Holds the read of `key` with which the extension checks whether the waiting session may have the file,
+// answered with what storage held then, until the extension has heard of the user's change of it; so the
+// change comes while access is checked, and its event finds no grant to end yet.
+async function holdAccessCheck(area, key, change) {
+  const hold = await env.holdCall(`chrome.storage.${area}.get`, `args[0] === ${JSON.stringify(key)} && stack.includes("proofOfAccess")`, { answered: true });
+  const storage = await env.watchStorage();
+  try {
+    await hold.held();
+    await change();
+    await storage.seen(key);
+  } finally {
+    await hold.release();
+    await storage.close();
+  }
+}
+test("stopping a share while the download's access is checked withholds the file", async () => {
+  const id = await sharedUserTab("stoppedWhileChecked");
+  const result = downloadFrom("stoppedWhileChecked", 8000).then(
+    () => null,
+    (error) => error,
+  );
+  await holdAccessCheck("session", "sharedTabs", () => env.share(id, false));
+  assert.match(String((await result)?.message), /no download that completed in time/);
+});
+test("switching off all tabs while the download's access is checked withholds the file", async (t) => {
+  await env.setAccessMode("all-tabs");
+  t.after(() => env.setAccessMode("agent-tabs"));
+  await sharedUserTab("allTabsWhileChecked", false);
+  const result = downloadFrom("allTabsWhileChecked", 8000).then(
+    () => null,
+    (error) => error,
+  );
+  await holdAccessCheck("local", "accessMode", () => env.setAccessMode("agent-tabs"));
+  assert.match(String((await result)?.message), /no download that completed in time/);
 });

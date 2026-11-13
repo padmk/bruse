@@ -143,11 +143,7 @@ chrome.webNavigation.onCreatedNavigationTarget.addListener(async ({ sourceTabId,
         // The session may have ended while the opening was judged; its new tab goes the way of a tab
         // still being created then (see groupAgentTabsNow).
         if (endedSessions.has(sessionId)) {
-          if (await isPaused()) {
-            state.tabs[tabId] = { sessionId, mark: null };
-            notePausedEnd(state, sessionId, endedSessions.get(sessionId));
-            await save(state);
-          } else await closeTab(tabId).catch(() => {});
+          await closeTabsOfEndedSession(state, sessionId, [tabId]);
           return null;
         }
         state.tabs[tabId] = { sessionId, mark: null };
@@ -246,6 +242,39 @@ export async function createAgentTabs(sessionId, create) {
   }
 }
 
+// Closes tabs of a session that ended while they were being created (see groupAgentTabsNow). A tab that
+// stays open, because the user paused agents or the close failed, is recorded as the session's, so that
+// it closes when the user resumes or the session ends again (also for its absence). Resolves with
+// { open, paused, error }: the tabs that stayed open, whether agents are paused, and the first failure.
+async function closeTabsOfEndedSession(state, sessionId, tabIds) {
+  const { open, error } = await closeTabs(tabIds);
+  if (!open.length) return { open, paused: false, error: null };
+  const paused = await isPaused();
+  for (const tabId of open) state.tabs[tabId] = { sessionId, mark: null };
+  if (paused) notePausedEnd(state, sessionId, endedSessions.get(sessionId));
+  await save(state);
+  return { open, paused, error };
+}
+
+// Closes the tabs, each on its own with closeTab and asking `check` right before it goes (see closeTab),
+// so that a tab that is already gone or does not close leaves the others to close. Resolves with what was
+// observed: { closed, open, error }, the tabs that closed, those still open afterwards, and the error of
+// the first of those. A tab that was gone already is in neither list.
+async function closeTabs(tabIds, check) {
+  const errors = await Promise.all(tabIds.map((tabId) => closeTab(tabId, { check }).then(() => null, (error) => error)));
+  const closed = [];
+  const open = [];
+  let error = null;
+  for (const [index, tabId] of tabIds.entries()) {
+    if (!errors[index]) closed.push(tabId);
+    else if (await chrome.tabs.get(tabId).then(() => true, () => false)) {
+      open.push(tabId);
+      error ??= errors[index];
+    }
+  }
+  return { closed, open, error };
+}
+
 // createAgentTabs for one tab, which `create()` resolves with.
 export async function createAgentTab(sessionId, create) {
   const [tab] = await createAgentTabs(sessionId, async () => [await create()]);
@@ -255,15 +284,12 @@ export async function createAgentTab(sessionId, create) {
 async function groupAgentTabsNow(tabIds, sessionId) {
   if (!tabIds.length) return;
   const state = await load();
-  if (endedSessions.has(sessionId) && (await isPaused())) {
-    for (const tabId of tabIds) state.tabs[tabId] = { sessionId, mark: null };
-    notePausedEnd(state, sessionId, endedSessions.get(sessionId));
-    await save(state);
-    throw new Error(tabIds.length === 1 ? "The agent session ended while its tab was being created; the tab closes when the user resumes agents" : "The agent session ended while its tabs were being created; the tabs close when the user resumes agents");
-  }
   if (endedSessions.has(sessionId)) {
-    await Promise.all(tabIds.filter((tabId) => !KEPT_MARKS.has(state.tabs[tabId]?.mark)).map((tabId) => closeTab(tabId).catch(() => {})));
-    throw new Error(tabIds.length === 1 ? "The agent session ended while its tab was being created; the tab was closed" : "The agent session ended while its tabs were being created; the tabs were closed");
+    const { open, paused, error } = await closeTabsOfEndedSession(state, sessionId, tabIds.filter((tabId) => !KEPT_MARKS.has(state.tabs[tabId]?.mark)));
+    const ended = tabIds.length === 1 ? "The agent session ended while its tab was being created" : "The agent session ended while its tabs were being created";
+    if (paused) throw new Error(`${ended}; ${open.length === 1 ? "tab" : "tabs"} ${open.join(", ")} ${open.length === 1 ? "closes" : "close"} when the user resumes agents`);
+    if (open.length) throw new Error(`${ended}; ${open.length === 1 ? "tab" : "tabs"} ${open.join(", ")} stayed open (${error.message})`);
+    throw new Error(`${ended}; ${tabIds.length === 1 ? "the tab was" : "the tabs were"} closed`);
   }
   // Ownership is recorded even if grouping fails, so that the session's end still closes the tabs.
   for (const tabId of tabIds) {
@@ -320,17 +346,24 @@ export function endSession(sessionId) {
 }
 
 // Ends the session for `cause`, as in endSession (see endedSessions for the causes). `superseded` tells
-// whether the reason to end it stopped holding while storage was read; then the session stays as it is.
+// whether the reason to end it stopped holding (a newer live report for an end for its absence); it is
+// asked after every await up to each tab's removal, and then the session keeps the tabs that are still
+// open, as it does when the user pauses meanwhile. Resolves with { closed }, the number of tabs that
+// closed; rejects when tabs failed to close, which stay the session's so that its next end closes them.
 async function endSessionNow(sessionId, cause, superseded = () => false) {
   rememberEnded(sessionId, cause);
+  const forget = () => {
+    if (endedSessions.get(sessionId) === cause) endedSessions.delete(sessionId);
+  };
   const state = await load();
   if (await isPaused()) return keepUntilResume(state, sessionId, cause);
   if (superseded()) {
-    if (endedSessions.get(sessionId) === cause) endedSessions.delete(sessionId);
+    forget();
     return { closed: 0 };
   }
-  state.pausedEnds = state.pausedEnds.filter((id) => id !== sessionId);
-  state.absentEnds = state.absentEnds.filter((id) => id !== sessionId);
+  const { pausedEnds, absentEnds } = state;
+  state.pausedEnds = pausedEnds.filter((id) => id !== sessionId);
+  state.absentEnds = absentEnds.filter((id) => id !== sessionId);
   const toClose = [];
   const kept = [];
   const ended = {};
@@ -341,14 +374,40 @@ async function endSessionNow(sessionId, cause, superseded = () => false) {
     ended[tabId] = entry;
     delete state.tabs[tabId];
   }
+  // The session gets back its tabs except those that closed.
+  const restore = (closed) => {
+    for (const [tabId, entry] of Object.entries(ended)) if (!closed.includes(Number(tabId))) state.tabs[tabId] = entry;
+  };
+  // Undoes the end for a newer report: the session's tabs and ends as they were, and it may open tabs again.
+  const undo = async (closed) => {
+    restore(closed);
+    state.pausedEnds = pausedEnds;
+    state.absentEnds = absentEnds;
+    await save(state);
+    forget();
+    return { closed: closed.length };
+  };
   await save(state);
   // The user may have paused agents meanwhile; then the session keeps its tabs after all.
   if (await isPaused()) {
-    Object.assign(state.tabs, ended);
+    restore([]);
     return keepUntilResume(state, sessionId, cause);
   }
-  // One by one, so a tab that is already gone does not keep the others open.
-  await Promise.all(toClose.map((tabId) => closeTab(tabId).catch(() => {})));
+  if (superseded()) return undo([]);
+  const { closed, open, error } = await closeTabs(toClose, () => {
+    if (superseded()) throw new Error("The session was reported live again");
+  });
+  if (superseded()) return undo(closed);
+  if (open.length && (await isPaused())) {
+    restore(closed);
+    await keepUntilResume(state, sessionId, cause);
+    return { closed: closed.length };
+  }
+  if (superseded()) return undo(closed);
+  if (open.length) {
+    for (const tabId of open) state.tabs[tabId] = ended[tabId];
+    await save(state);
+  }
   // A kept tab is the user's again, so the browser may discard it like any other (see keepLoaded).
   await Promise.all(kept.map((tabId) => chrome.tabs.ungroup(tabId).catch(() => {})));
   for (const tabId of kept) chrome.tabs.update(tabId, { autoDiscardable: true }).catch(() => {});
@@ -364,7 +423,12 @@ async function endSessionNow(sessionId, cause, superseded = () => false) {
     const strays = members.filter((id) => !toClose.includes(id));
     if (strays.length) await chrome.tabs.ungroup(strays).catch(() => {});
   }
-  return { closed: toClose.length };
+  if (open.length) {
+    throw new Error(
+      `Closed ${closed.length} of the session's ${toClose.length} tabs; ${open.length === 1 ? "tab" : "tabs"} ${open.join(", ")} stayed open (${error.message}) and ${open.length === 1 ? "stays" : "stay"} the session's, so ending it again closes ${open.length === 1 ? "it" : "them"}`,
+    );
+  }
+  return { closed: closed.length };
 }
 
 // Ends the session while agents are paused: a session that owns tabs is only noted as ended, so they stay
@@ -394,8 +458,14 @@ function notePausedEnd(state, sessionId, cause) {
 // While agents are paused no session ends this way; one still absent when the user resumes ends then, and
 // one that reconnected meanwhile keeps its tabs.
 const ABSENT_SESSION_GRACE_MS = 45_000;
+// Each report is a new `live` object, so a sweep that holds an older one knows that a newer report came.
 let live = null; // { ids: Set of session ids, absentSince: Map session id -> time first found absent }
 let absenceTimer = null;
+// An end for absence that left tabs open is tried again later, a few times, each time after twice the
+// wait before; the session keeps those tabs meanwhile. Its next explicit end or the user's resume also
+// tries again.
+const MAX_ABSENT_END_ATTEMPTS = 4;
+const failedAbsentEnds = new Map(); // session id -> { attempts, retryAt }
 
 export function setLiveSessions(sessionIds) {
   clearTimeout(absenceTimer);
@@ -426,19 +496,35 @@ async function endAbsentSessions() {
   const now = Date.now();
   const paused = await isPaused();
   for (const id of current.absentSince.keys()) if (!owners.has(id) || current.ids.has(id)) current.absentSince.delete(id);
+  for (const id of failedAbsentEnds.keys()) if (!owners.has(id) || current.ids.has(id)) failedAbsentEnds.delete(id);
+  // When the session's end is due: after the grace period, or after the wait of a failed attempt; never
+  // once the attempts are used up.
+  const dueAt = (id) => {
+    const failed = failedAbsentEnds.get(id);
+    if (!failed) return current.absentSince.get(id) + ABSENT_SESSION_GRACE_MS;
+    return failed.attempts >= MAX_ABSENT_END_ATTEMPTS ? Infinity : failed.retryAt;
+  };
   for (const id of owners) {
     if (current.ids.has(id)) continue;
     if (!current.absentSince.has(id)) current.absentSince.set(id, now);
-    if (paused || now - current.absentSince.get(id) < ABSENT_SESSION_GRACE_MS) continue;
+    if (paused || now < dueAt(id)) continue;
     // A newer report (the session may be back) or a lost hub arrived while this sweep read storage or
     // ended another session; the sweep that report queued decides from here.
     if (live !== current) return;
-    await endSessionNow(id, "absent", () => live !== current);
+    try {
+      await endSessionNow(id, "absent", () => live !== current);
+      failedAbsentEnds.delete(id);
+    } catch (error) {
+      // The session keeps the tabs that stayed open (see endSessionNow); a later sweep tries again.
+      const attempts = (failedAbsentEnds.get(id)?.attempts ?? 0) + 1;
+      failedAbsentEnds.set(id, { attempts, retryAt: Date.now() + ABSENT_SESSION_GRACE_MS * 2 ** (attempts - 1) });
+      console.warn(`Ending absent agent session ${id} left tabs open (attempt ${attempts} of ${MAX_ABSENT_END_ATTEMPTS}): ${error?.message ?? error}`);
+    }
     if (live !== current) return;
-    current.absentSince.delete(id);
+    if (!failedAbsentEnds.has(id)) current.absentSince.delete(id);
   }
-  if (paused || live !== current || !current.absentSince.size) return;
-  const due = Math.min(...current.absentSince.values()) + ABSENT_SESSION_GRACE_MS - Date.now();
+  const due = Math.min(...[...current.absentSince.keys()].map(dueAt)) - Date.now();
+  if (paused || live !== current || !Number.isFinite(due)) return;
   clearTimeout(absenceTimer);
   absenceTimer = setTimeout(() => serialized(endAbsentSessions), Math.max(due, 0) + 50);
 }
@@ -448,7 +534,18 @@ async function endAbsentSessions() {
 async function endPausedEnds() {
   if (await isPaused()) return;
   const state = await load();
-  for (const id of state.pausedEnds) await endSessionNow(id, state.absentEnds.includes(id) ? "absent" : "explicit");
+  for (const id of state.pausedEnds) {
+    const absent = state.absentEnds.includes(id);
+    // An end for absence no longer holds once the session is reported live (setLiveSessions forgets it
+    // as ended when a report names it).
+    const superseded = absent ? () => endedSessions.get(id) !== "absent" || Boolean(live?.ids.has(id)) : undefined;
+    try {
+      await endSessionNow(id, absent ? "absent" : "explicit", superseded);
+    } catch (error) {
+      // The session keeps the tabs that stayed open: its next end, or the sweep for its absence, tries again.
+      console.warn(`Ending agent session ${id} after the resume left tabs open: ${error?.message ?? error}`);
+    }
+  }
 }
 onPausedChange((paused) => {
   if (paused) return;

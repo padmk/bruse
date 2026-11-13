@@ -407,6 +407,8 @@ export async function startSite(routes, host = "127.0.0.1") {
   return { origin: `http://${host}:${server.address().port}`, close: () => new Promise((resolve) => server.close(resolve)) };
 }
 
+let holdCount = 0;
+
 // Everything one test file needs: a browser copy on a free port, Chromium with its extension, a state
 // directory, and a way to start sessions. Call `close()` in after(). `options` go to browserCopy.
 export async function startEnvironment(options = {}) {
@@ -441,6 +443,64 @@ export async function startEnvironment(options = {}) {
       } finally {
         await cdp.send("Target.closeTarget", { targetId });
       }
+    },
+    // A DevTools connection to the extension's service worker: `evaluate(expression)` runs an expression
+    // there and resolves with its value (awaiting a promise); `close()` ends the connection.
+    async worker() {
+      const { cdp, extensionId } = browser;
+      const { targetInfos } = await cdp.send("Target.getTargets");
+      const target = targetInfos.find((info) => info.type === "service_worker" && info.url.startsWith(`chrome-extension://${extensionId}/`));
+      const { sessionId } = await cdp.send("Target.attachToTarget", { targetId: target.targetId, flatten: true });
+      return {
+        async evaluate(expression) {
+          const { result, exceptionDetails } = await cdp.send("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true }, sessionId);
+          if (exceptionDetails) throw new Error(exceptionDetails.exception?.description ?? exceptionDetails.text);
+          return result.value;
+        },
+        close: () => cdp.send("Target.detachFromTarget", { sessionId }),
+      };
+    },
+    // Holds the first call of the browser API `api` (such as "chrome.storage.local.get") that the
+    // extension's service worker makes for which `holds` is true, an expression of the call's arguments
+    // `args` and of `stack`, where it was called from; the call waits until `release()`. With `answered`,
+    // the browser answers first and the answer is held, like a reply that comes late with what held when
+    // it was read. So a test can act (pause, stop a share, reconnect) at a chosen step of the extension's
+    // work. `held()` waits for the call.
+    async holdCall(api, holds, { answered = false, timeoutMs = 20_000 } = {}) {
+      const worker = await this.worker();
+      const dot = api.lastIndexOf(".");
+      const key = `held${++holdCount}`;
+      await worker.evaluate(`(() => {
+        const owner = ${api.slice(0, dot)};
+        const original = owner.${api.slice(dot + 1)};
+        const held = (globalThis.${key} = { owner, original, calls: 0, release: null });
+        owner.${api.slice(dot + 1)} = async function (...args) {
+          const stack = new Error().stack;
+          if (held.calls || !(${holds})) return original.apply(this, args);
+          held.calls++;
+          const answer = ${answered} ? await original.apply(this, args) : undefined;
+          await new Promise((resolve) => (held.release = resolve));
+          return ${answered} ? answer : original.apply(this, args);
+        };
+      })()`);
+      return {
+        held: () => until(() => worker.evaluate(`globalThis.${key}.calls > 0`), { timeoutMs, message: `the extension to call ${api}` }),
+        async release() {
+          await worker.evaluate(`globalThis.${key}.owner.${api.slice(dot + 1)} = globalThis.${key}.original; globalThis.${key}.release?.()`);
+          await worker.close();
+        },
+      };
+    },
+    // Counts the storage changes that reach the extension's service worker from now on: `seen(key)` waits
+    // until a change of `key` did, which the extension's own listeners heard first.
+    async watchStorage() {
+      const worker = await this.worker();
+      const key = `changes${++holdCount}`;
+      await worker.evaluate(`chrome.storage.onChanged.addListener((changes) => (globalThis.${key} ??= []).push(...Object.keys(changes)))`);
+      return {
+        seen: (name) => until(() => worker.evaluate(`(globalThis.${key} ?? []).includes(${JSON.stringify(name)})`), { message: `the extension to hear of the change of ${name}` }),
+        close: () => worker.close(),
+      };
     },
     // Shares a tab with agents, as "Share this tab" in the popup does.
     share(tabId, shared = true) {

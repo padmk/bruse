@@ -2,7 +2,7 @@
 // lifecycle, agent tab groups, raw CDP commands, browser management, history and downloads. Page
 // logic lives in the MCP server.
 
-import { ALL_TABS, accessMode, anyoneMayAccess, audienceOf, bothAudiences, endShareOfClosedTab, mayAccess, requireAccess, requireOwnTab, requireOwnWindow, seesWindow, visibleTabs } from "./access.js";
+import { ALL_TABS, accessMode, anyoneMayAccess, audienceOf, bothAudiences, endShareOfClosedTab, existingTab, mayAccess, mayRearrange, requireAccess, requireAgentEffect, requireOwnTab, seesWindow, visibleTabs } from "./access.js";
 import { EXTENSION_WORK, attachedTabIds, cdp, closeTab, consoleLogs, detach, hasNoPage, networkRequests, onCdpEvent, openDialog, setDebugGate, tabState } from "./cdp.js";
 import { waitForDownload } from "./downloads.js";
 import { PAUSED_ERROR, isPaused } from "./pause.js";
@@ -89,8 +89,10 @@ const DOWNLOAD_HINT = 'The file is in the browser\'s downloads folder. To learn 
 
 // Opens a tab without taking the user's focus: in the window the user used last or, when the browser has
 // no normal window (none at all, or only popup and app windows), in a new window that opens unfocused.
-async function openBackgroundTab(url) {
+// `gate` is the session's check right before the tab opens (see requireAgentEffect).
+async function openBackgroundTab(url, gate) {
   const window = await chrome.windows.getLastFocused({ windowTypes: ["normal"] }).catch(() => null);
+  await gate();
   if (window) return chrome.tabs.create({ url, windowId: window.id, active: false });
   const created = await chrome.windows.create({ url, focused: false });
   return created.tabs[0];
@@ -132,7 +134,10 @@ const build = extensionBuild((file) => fetch(chrome.runtime.getURL(file)).then((
 const TAB_ENDING_CDP = new Set(["Page.close", "Page.crash"]);
 
 // Each handler gets the request's parameters and `session`, the agent session the hub says the request
-// comes from. Tab methods check access first (see access.js).
+// comes from. Tab methods check access first (see access.js). A handler that prepares its action with
+// awaits checks again with requireAgentEffect right before the action takes effect, since the user may
+// have paused agents or stopped a share meanwhile; debugger commands are checked as they are sent
+// (cdp.js) and closes in closeTab.
 const handlers = {
   "browser.info": async (_, session) => {
     const mode = await accessMode();
@@ -162,7 +167,7 @@ const handlers = {
   },
 
   "tabs.create": async ({ url }, session) => {
-    const tab = await createAgentTab(session, () => openBackgroundTab(url ?? "about:blank"));
+    const tab = await createAgentTab(session, () => openBackgroundTab(url ?? "about:blank", () => requireAgentEffect(session)));
     if (url) await waitForLoad(tab.id);
     const opened = await chrome.tabs.get(tab.id).catch(() => null);
     // The browser closes a new tab whose address turns out to be a file to download.
@@ -175,7 +180,10 @@ const handlers = {
   // existing one, also through the tabs API.
   // A tab without a page (its renderer crashed) takes no debugger command; the browser loads the address.
   "tabs.navigate": async ({ tabId, url }, session) => {
-    if (await hasNoPage(tabId)) await chrome.tabs.update(tabId, { url });
+    if (await hasNoPage(tabId)) {
+      await requireAgentEffect(session, { reach: [tabId] });
+      await chrome.tabs.update(tabId, { url });
+    }
     else if (!(await navigateWithinBlankPage(tabId, { url }, session))) {
       const { errorText, isDownload } = await cdp(tabId, "Page.navigate", { url }, undefined, undefined, { session });
       if (isDownload) throw new Error(`${url} is a file, which the browser downloaded instead of showing, so the tab keeps its page. ${DOWNLOAD_HINT}`);
@@ -188,6 +196,7 @@ const handlers = {
 
   "tabs.history": async ({ tabId, direction }, session) => {
     await attachBeforeLeaving(tabId, session);
+    await requireAgentEffect(session, { reach: [tabId] });
     if (direction === "back") await chrome.tabs.goBack(tabId);
     else if (direction === "forward") await chrome.tabs.goForward(tabId);
     else await chrome.tabs.reload(tabId);
@@ -198,8 +207,7 @@ const handlers = {
   "tabs.waitForLoad": async ({ tabId, timeoutMs }) => ({ loaded: await waitForLoad(tabId, timeoutMs) }),
 
   "tabs.close": async ({ tabId }, session) => {
-    await requireOwnTab(session, tabId);
-    await closeTab(tabId);
+    await closeTab(tabId, { check: closeCheck(session, tabId) });
     return null;
   },
 
@@ -209,13 +217,15 @@ const handlers = {
   "session.end": (_, session) => endSession(session),
 
   cdp: async ({ tabId, method, params, sessionId, timeoutMs }, session) => {
-    if (TAB_ENDING_CDP.has(method)) await requireOwnTab(session, tabId);
+    // The debugger gate asks again as the command is sent (see setDebugGate below).
+    const ends = TAB_ENDING_CDP.has(method);
+    if (ends) await requireOwnTab(session, tabId);
     if (isPressInput(method, params)) noteAgentInput(tabId, session);
     if (method === "Page.navigate" && !sessionId) {
       const withinBlankPage = await navigateWithinBlankPage(tabId, params, session);
       if (withinBlankPage) return withinBlankPage;
     }
-    return cdp(tabId, method, params, sessionId, timeoutMs, { session });
+    return cdp(tabId, method, params, sessionId, timeoutMs, ends ? { session, rearranges: true } : { session });
   },
   "page.state": ({ tabId }, session) => tabState(tabId, { session }),
   "page.console": ({ tabId }) => consoleLogs(tabId),
@@ -234,9 +244,13 @@ const handlers = {
     if (namespace === "bookmarks") await requirePermission("bookmarks", "the bookmarks");
     checkManagementArguments(namespace, method, args);
     const call = await withDefaults(namespace, method, args);
-    await checkManagementAccess(session, namespace, method, call);
+    const needs = await managementNeeds(namespace, method, call);
+    const gate = () => requireAgentEffect(session, needs);
+    // Refused before any of its own preparation, and checked again right before it takes effect.
+    await gate();
     const own = OPENING_METHODS[`${namespace}.${method}`] ?? CLOSING_METHODS[`${namespace}.${method}`] ?? LEAVING_METHODS[`${namespace}.${method}`];
-    return withoutHiddenTabs(session, namespace, await (own ? own(session, call) : chrome[namespace][method](...call)));
+    const result = own ? own(session, call, gate) : gate().then(() => chrome[namespace][method](...call));
+    return withoutHiddenTabs(session, namespace, await result);
   },
 
   // Picks up edited extension files without visiting the extensions page.
@@ -304,65 +318,69 @@ async function withDefaults(namespace, method, args) {
   return args;
 }
 
-// Management calls may act only on tabs and groups whose tabs the session may reach, and change, switch
-// tabs in or move tabs into only the session's own windows (see access.js).
-async function checkManagementAccess(session, namespace, method, args) {
-  if ((await accessMode()) === ALL_TABS) return;
-  const requireTabs = async (tabs) => {
-    for (const tabId of tabs) await requireAccess(session, tabId);
-  };
-  const requireOwnTabs = async (tabs) => {
-    for (const tabId of tabs) await requireOwnTab(session, tabId);
-  };
+// What a management call needs (see requireAgentEffect): the tabs it acts on must be reachable; those it
+// pins, moves, groups, closes or discards, and those of a group it changes, the session's own; and the
+// windows it changes, switches tabs in or moves tabs into, the session's own (see access.js). This only
+// looks up which tabs and windows are involved; requireAgentEffect decides, in every access mode.
+async function managementNeeds(namespace, method, args) {
+  const needs = { reach: [], rearrange: [], windows: [] };
   const groupTabs = async (groupId) => (await chrome.tabs.query({ groupId })).map((tab) => tab.id);
   // Tabs that leave their window for `windowId` move into it, which must be the session's.
-  const requireMoveInto = async (tabIds, windowId) => {
-    const tabs = await Promise.all(tabIds.map((tabId) => chrome.tabs.get(tabId)));
-    if (tabs.some((tab) => tab.windowId !== windowId)) await requireOwnWindow(session, windowId);
+  const moveInto = async (tabIds, windowId) => {
+    const tabs = await Promise.all(tabIds.map(existingTab));
+    if (tabs.some((tab) => tab.windowId !== windowId)) needs.windows.push(windowId);
   };
   const [first, second] = args;
-  if (namespace === "tabs" && TAB_ARGUMENTS[method]) await requireTabs(tabIdsOf(method, args));
-  if (namespace === "tabs" && (["move", "group", "ungroup", "remove", "discard"].includes(method) || (method === "update" && second?.pinned !== undefined))) await requireOwnTabs(tabIdsOf(method, args));
+  if (namespace === "tabs" && TAB_ARGUMENTS[method]) needs.reach.push(...tabIdsOf(method, args));
+  if (namespace === "tabs" && (["move", "group", "ungroup", "remove", "discard"].includes(method) || (method === "update" && second?.pinned !== undefined))) needs.rearrange.push(...tabIdsOf(method, args));
   // Activating or highlighting a tab switches what the user sees in its window, and so can unhighlighting
   // the active tab, which activates another highlighted one.
-  if (namespace === "tabs" && method === "update" && ["active", "highlighted", "selected"].some((key) => second?.[key] !== undefined)) await requireOwnWindow(session, (await chrome.tabs.get(first)).windowId);
-  if (namespace === "tabs" && method === "move" && second?.windowId !== undefined) await requireMoveInto(tabIdsOf(method, args), second.windowId);
+  if (namespace === "tabs" && method === "update" && ["active", "highlighted", "selected"].some((key) => second?.[key] !== undefined)) needs.windows.push((await existingTab(first)).windowId);
+  if (namespace === "tabs" && method === "move" && second?.windowId !== undefined) await moveInto(tabIdsOf(method, args), second.windowId);
   if (namespace === "tabs" && method === "group") {
     if (first.groupId !== undefined) {
       // Joining a group changes it, so the session must reach every tab in it.
-      await requireOwnTabs(await groupTabs(first.groupId));
-      await requireMoveInto(tabIdsOf(method, args), (await chrome.tabGroups.get(first.groupId)).windowId);
+      needs.rearrange.push(...(await groupTabs(first.groupId)));
+      await moveInto(tabIdsOf(method, args), (await chrome.tabGroups.get(first.groupId)).windowId);
     } else {
-      await requireMoveInto(tabIdsOf(method, args), first.createProperties.windowId);
+      await moveInto(tabIdsOf(method, args), first.createProperties.windowId);
     }
   }
   // A new window may take an existing tab, which moves it.
-  if (namespace === "windows" && method === "create" && first.tabId !== undefined) await requireOwnTabs([first.tabId]);
-  if (namespace === "windows" && (method === "update" || method === "remove")) await requireOwnWindow(session, first);
-  if (namespace === "tabGroups" && (method === "update" || method === "move")) await requireOwnTabs(await groupTabs(first));
-  if (namespace === "tabGroups" && method === "move" && second?.windowId !== undefined && second.windowId !== (await chrome.tabGroups.get(first)).windowId) {
-    await requireOwnWindow(session, second.windowId);
-  }
+  if (namespace === "windows" && method === "create" && first.tabId !== undefined) needs.rearrange.push(first.tabId);
+  if (namespace === "windows" && (method === "update" || method === "remove")) needs.windows.push(first);
+  if (namespace === "tabGroups" && (method === "update" || method === "move")) needs.rearrange.push(...(await groupTabs(first)));
+  if (namespace === "tabGroups" && method === "move" && second?.windowId !== undefined && second.windowId !== (await chrome.tabGroups.get(first)).windowId) needs.windows.push(second.windowId);
+  return needs;
 }
 
+// The check an agent's close of one tab passes right before the tab goes (see closeTab).
+const closeCheck = (session, tabId) => () => requireAgentEffect(session, { rearrange: [tabId] });
+
 // Management calls that close tabs close each one with closeTab, so that a page asking whether to leave
-// does not keep its tab open.
+// does not keep its tab open. Each tab is checked on its own as it goes, so the tabs of the same call that
+// close first do not count against it. These, and the methods below, get the session, the call's
+// arguments and `gate`, the call's check, which they pass right before their action takes effect.
 const CLOSING_METHODS = {
-  "tabs.remove": async (_session, [ids]) => {
-    await Promise.all([ids].flat().map((tabId) => closeTab(tabId)));
+  "tabs.remove": async (session, [ids]) => {
+    await Promise.all([ids].flat().map((tabId) => closeTab(tabId, { check: closeCheck(session, tabId) })));
   },
   // A window goes with its last tab.
-  "windows.remove": async (_session, [windowId]) => {
+  "windows.remove": async (_session, [windowId], gate) => {
     const tabs = await chrome.tabs.query({ windowId });
-    if (!tabs.length) return chrome.windows.remove(windowId);
-    await Promise.all(tabs.map((tab) => closeTab(tab.id)));
+    if (!tabs.length) {
+      await gate();
+      return chrome.windows.remove(windowId);
+    }
+    await Promise.all(tabs.map((tab) => closeTab(tab.id, { check: gate })));
   },
 };
 
 // Management calls that make a tab leave its page.
 const LEAVING_METHODS = {
-  "tabs.reload": async (session, [tabId, ...rest]) => {
+  "tabs.reload": async (session, [tabId, ...rest], gate) => {
     await attachBeforeLeaving(tabId, session);
+    await gate();
     return chrome.tabs.reload(tabId, ...rest);
   },
 };
@@ -373,18 +391,23 @@ const OPENING_METHODS = {
   // The duplicate is the session's; the original keeps its owner or share. The browser activates a
   // duplicate, so the tab that was active in its window becomes active again, unless the user has
   // switched tabs since.
-  "tabs.duplicate": async (session, [tabId]) => {
+  // The duplicate copies the original's page, so the session must still reach it as the copy is made.
+  "tabs.duplicate": async (session, [tabId], gate) => {
     const { windowId } = await chrome.tabs.get(tabId);
     const [active] = await chrome.tabs.query({ windowId, active: true });
-    const [duplicate] = await createAgentTabs(session, async () => [await chrome.tabs.duplicate(tabId)]);
+    const [duplicate] = await createAgentTabs(session, async () => {
+      await gate();
+      return [await chrome.tabs.duplicate(tabId)];
+    });
     const stillActive = (await chrome.tabs.get(duplicate.id).catch(() => null))?.active;
     if (active && active.id !== duplicate.id && stillActive) await chrome.tabs.update(active.id, { active: true }).catch(() => {});
     return chrome.tabs.get(duplicate.id);
   },
   // A tab moved into the new window with `tabId` keeps its owner or share; the others are new.
-  "windows.create": async (session, [options]) => {
+  "windows.create": async (session, [options], gate) => {
     let window;
     await createAgentTabs(session, async () => {
+      await gate();
       window = await chrome.windows.create(options);
       return (await chrome.tabs.query({ windowId: window.id })).filter((tab) => tab.id !== options.tabId);
     });
@@ -425,7 +448,10 @@ async function withoutHiddenTabs(session, namespace, result) {
 
 // The debugger acts for an agent's request only while that request's session may use the tab, and for the
 // extension's own work (downloads) only while some session may.
-setDebugGate((tabId, caller) => (caller === EXTENSION_WORK ? anyoneMayAccess(tabId) : mayAccess(caller.session, tabId)));
+setDebugGate((tabId, caller) => {
+  if (caller === EXTENSION_WORK) return anyoneMayAccess(tabId);
+  return caller.rearranges ? mayRearrange(caller.session, tabId) : mayAccess(caller.session, tabId);
+});
 
 // A tab no session may reach keeps no debugger attached: after the user stops sharing it, switches to
 // "agent tabs" or a session ends, it is detached at once.
