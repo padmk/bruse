@@ -73,7 +73,7 @@ export const sessionId = randomUUID();
 const DRAIN_MS = 5_000;
 const eventListeners = new Set();
 let hubPending = null; // requests in flight while this process is the hub
-let role = null; // Promise<{ send(method, params): Promise<unknown> }>
+let role = null; // Promise<{ send(method, params, generation): Promise<unknown> }>
 // Whether this session ever reached the browser, and so may own tabs to clean up.
 let sessionUsed = false;
 // Set when the session ends: it no longer counts as live and stops reconnecting.
@@ -137,17 +137,18 @@ function link() {
  * @template {import("../extension/shared.js").Method} M
  * @param {M} method
  * @param {import("../extension/shared.js").Params<M>} [params]
- * @param {{ wanted?: () => boolean }} [options]
+ * @param {{ wanted?: () => boolean, generation?: number }} [options] `generation`: that of the REPL whose
+ *   request this relays; requests the host sends on its own have none, and no session.cancel aborts them.
  * @returns {Promise<import("../extension/shared.js").Result<M>>}
  */
-export async function callBrowser(method, params = {}, { wanted = () => true } = {}) {
+export async function callBrowser(method, params = {}, { wanted = () => true, generation } = {}) {
   const closingDeadline = Date.now() + DRAIN_MS + 1_000;
   for (let attempt = 0; ; ) {
     const current = await link();
     if (!wanted()) throw new Error(DROPPED);
     sessionUsed = true;
     try {
-      return await current.send(method, params);
+      return await current.send(method, params, generation);
     } catch (error) {
       // Until the closing hub is gone and a new one is elected.
       if (error.message === HUB_CLOSING && Date.now() < closingDeadline) {
@@ -185,8 +186,8 @@ function becomeHub() {
 
     // `session` is the agent session the request comes from: the hub's own, or the one a client named in
     // its hello. The extension decides tab access by it, so it travels outside the request's parameters,
-    // which the session's code controls.
-    function forward(method, params, settle, session) {
+    // which the session's code controls, like `generation`, the relaying REPL's (see requests.js).
+    function forward(method, params, settle, session, generation) {
       const id = nextId++;
       const timer = setTimeout(() => {
         pending.delete(id);
@@ -196,7 +197,7 @@ function becomeHub() {
         clearTimeout(timer);
         settle(reply);
       });
-      extension.send(JSON.stringify({ id, method, params, session: session ?? null }));
+      extension.send(JSON.stringify({ id, method, params, session: session ?? null, ...(Number.isSafeInteger(generation) ? { generation } : {}) }));
     }
 
     function whenExtensionConnected() {
@@ -225,10 +226,10 @@ function becomeHub() {
     }
 
     // Settles with the reply, or with the error that kept the request from the extension.
-    function request(method, params, settle, session) {
+    function request(method, params, settle, session, generation) {
       if (draining) return settle({ error: HUB_CLOSING });
       whenExtensionConnected()
-        .then(() => forward(method, params, settle, session))
+        .then(() => forward(method, params, settle, session, generation))
         .catch((error) => settle({ error: error.message, code: error.code }))
         .catch(logFailure("Answering a browser request"));
     }
@@ -365,7 +366,7 @@ function becomeHub() {
           reportSessions();
           return;
         }
-        request(message.method, message.params, (reply) => peer.send(JSON.stringify({ ...reply, id: message.id })), clientSession);
+        request(message.method, message.params, (reply) => peer.send(JSON.stringify({ ...reply, id: message.id })), clientSession, message.generation);
       });
       peer.on("close", () => {
         if (!clients.delete(peer)) return;
@@ -399,9 +400,9 @@ function becomeHub() {
       // Messages keep the extension's service worker alive while the hub exists.
       setInterval(() => extension?.send(JSON.stringify({ type: "keepalive" })), KEEPALIVE_MS).unref();
       resolve({
-        send: (method, params) =>
+        send: (method, params, generation) =>
           new Promise((resolveCall, rejectCall) =>
-            request(method, params, (reply) => (reply.error ? rejectCall(replyError(reply)) : resolveCall(reply.result)), sessionId),
+            request(method, params, (reply) => (reply.error ? rejectCall(replyError(reply)) : resolveCall(reply.result)), sessionId, generation),
           ),
       });
     });
@@ -485,7 +486,7 @@ function connectClient() {
         });
         socket.send(JSON.stringify({ id, ...fields }));
       });
-    const send = (method, params) => exchange(method, { method, params }, deadlineFor(params) + 5_000);
+    const send = (method, params, generation) => exchange(method, { method, params, ...(generation === undefined ? {} : { generation }) }, deadlineFor(params) + 5_000);
     socket.addEventListener("open", () => {
       opened = true;
     });

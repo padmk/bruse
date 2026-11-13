@@ -112,7 +112,7 @@ export const logFailure = (what) => (error) => {
  *   "tabs.mark": { params: TabParams & { mark: string | null }, result: null },
  *   "tabs.agent": { params: {}, result: Record<string, AgentTabEntry> },
  *   "session.end": { params: { sessionId?: string }, result: { closed: number } },
- *   "session.cancel": { params: {}, result: { cancelled: number } },
+ *   "session.cancel": { params: { before: number }, result: { cancelled: number } },
  *   "cdp": { params: TabParams & { method: string, params?: object, sessionId?: string | null, timeoutMs?: number }, result: unknown },
  *   "page.state": { params: TabParams, result: PageState },
  *   "page.console": { params: TabParams, result: ConsoleEntry[] },
