@@ -312,7 +312,8 @@ export function lastJson(text) {
 // A connection to the hub the way a peer MCP server makes it (mutual authentication with the token in
 // `stateDir`), for sending requests to the extension directly: `call(method, params)` resolves with the
 // result or rejects with the error.
-export async function hubClient(port, stateDir, { sessionId = randomUUID() } = {}) {
+// A peer MCP server connected to the hub; it names its session with a hello unless `hello` is false.
+export async function hubClient(port, stateDir, { sessionId = randomUUID(), hello = true } = {}) {
   const token = readFileSync(join(stateDir, "hub-token"), "utf8").trim();
   const hmac = (message) => createHmac("sha256", token).update(message).digest("hex");
   const socket = new WebSocket(`ws://127.0.0.1:${port}/client`);
@@ -336,7 +337,7 @@ export async function hubClient(port, stateDir, { sessionId = randomUUID() } = {
     });
     socket.addEventListener("close", () => reject(new Error("The hub closed the connection")));
   });
-  socket.send(JSON.stringify({ type: "hello", sessionId }));
+  if (hello) socket.send(JSON.stringify({ type: "hello", sessionId }));
   return {
     sessionId,
     call: (method, params = {}) =>

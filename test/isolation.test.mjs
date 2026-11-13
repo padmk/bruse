@@ -274,3 +274,27 @@ test("a share stopped while a duplicate of the tab is prepared opens no duplicat
   assert.match(String((await result)?.message), /has not shared it/);
   assert.equal((await pages()).filter((page) => page === u).length, 1, "no duplicate of the tab opened");
 });
+
+// A peer MCP server names its session in a hello; one that does not acts for no session. Tabs that a
+// session marked without owning them (such as a shared tab) are recorded with no owner, so its end would
+// close them.
+test("a hub client that names no session is refused", async () => {
+  // A session's first call starts the hub, which the clients join.
+  await (await env.session()).js("await cua.getState();");
+  const u = url("/page?sessionless-client");
+  const shared = await userTab(u);
+  await env.share(shared.id);
+  const marker = await hubClient(env.port, env.stateDir);
+  const client = await hubClient(env.port, env.stateDir, { hello: false });
+  try {
+    await marker.call("tabs.mark", { tabId: shared.id, mark: "deliverable" });
+    await marker.call("tabs.mark", { tabId: shared.id, mark: null });
+    await assert.rejects(client.call("session.end", {}), /names no agent session/);
+    await assert.rejects(client.call("tabs.list"), /names no agent session/);
+    assert.ok(await present(u), "the shared tab stays open");
+    assert.ok((await client.call("browser.info")).version, "a request without a session still runs");
+  } finally {
+    marker.close();
+    client.close();
+  }
+});
