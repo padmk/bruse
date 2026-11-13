@@ -70,7 +70,7 @@ export function clip(text, max = MAX_TEXT) {
 // The last path segment of a URL as a page name: "/wiki/Free_content" is "Free content".
 function pageNameOf(url) {
   try {
-    const segment = new URL(url).pathname.replace(/\/+$/, "").split("/").pop();
+    const segment = new URL(url).pathname.replace(/\/+$/, "").split("/").pop() ?? "";
     return clip(decodeURIComponent(segment).replaceAll("_", " "), MAX_HELP);
   } catch {
     return "";
@@ -86,7 +86,9 @@ function linkTarget(url, pageHost) {
   try {
     const parsed = new URL(url);
     if (parsed.host === pageHost) return clip(`${parsed.pathname}${parsed.search}${parsed.hash}`, 80);
-  } catch {}
+  } catch {
+    // Not an absolute URL: it is shown as it is.
+  }
   return clip(shortUrl(url), 100);
 }
 
@@ -129,6 +131,7 @@ export async function fetchPageTree(cdpFor, outOfProcessFrames = []) {
   const domNodes = new Set();
   collectAttributes(domRoot, null, attributes, domNodes, "main");
 
+  /** @type {{ id: string, url: string, loaderId?: string }[]} */
   const frames = [];
   const collect = (tree) => {
     frames.push(tree.frame);
@@ -339,7 +342,15 @@ function describe(element, pageHost) {
 // Per-tab snapshot state: stable element numbers and the previous snapshot for diffs.
 export class AXTracker {
   constructor() {
-    this.reset(null);
+    // The fields, as reset() sets them for a new document.
+    this.loaderId = null;
+    this.indexByKey = new Map();
+    this.nextIndex = 1;
+    this.previous = null;
+    this.backendByIndex = new Map();
+    this.departedByIndex = new Map();
+    this.snapshot = 0;
+    this.firstSnapshotOf = new Map();
   }
 
   reset(loaderId) {
@@ -372,7 +383,9 @@ export class AXTracker {
     let pageHost = "";
     try {
       pageHost = new URL(page.url).host;
-    } catch {}
+    } catch {
+      // A page without a URL of its own (about:blank) shortens no link.
+    }
     if (!root) return { text: "The page has no accessibility tree yet.", focusedLine: null };
     const identities = this.recordSnapshot(root, page.domNodes);
 
@@ -464,7 +477,7 @@ export class AXTracker {
 
   reordered(before, now, current) {
     if (before.previousSibling === now.previousSibling) return false;
-    const newNeighbourExisted = now.previousSibling === null || this.previous.has(now.previousSibling);
+    const newNeighbourExisted = now.previousSibling === null || Boolean(this.previous?.has(now.previousSibling));
     const oldNeighbourRemains = before.previousSibling === null || current.has(before.previousSibling);
     return newNeighbourExisted && oldNeighbourRemains;
   }

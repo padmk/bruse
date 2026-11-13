@@ -4,6 +4,7 @@
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import { hubClient, startEnvironment, until } from "./harness.mjs";
+import { ignore } from "../browser/extension/shared.js";
 
 let env, client;
 before(async () => {
@@ -42,7 +43,7 @@ test("a tab the session may not use gives the same error whatever its page", asy
   await env.browser.cdp.send("Target.createTarget", { url: "chrome://version/" });
   const tab = await until(() => env.inPopup(`chrome.tabs.query({}).then((tabs) => tabs.find((tab) => tab.url.startsWith("chrome://version")) ?? null)`), { message: "the user's tab" });
   for (const method of ["page.state", "tabs.get", "cdp"]) {
-    await assert.rejects(client.call(method, { tabId: tab.id, method: "Runtime.evaluate", params: { expression: "1" } }), (error) => {
+    await assert.rejects(client.call(method, { tabId: tab.id, method: "Runtime.evaluate", params: { expression: "1" } }), (/** @type {Error} */ error) => {
       assert.match(error.message, /not one of this session's tabs/);
       assert.doesNotMatch(error.message, /chrome:/);
       return true;
@@ -65,5 +66,5 @@ test("raw Network and Page commands pass only by name", async () => {
   // A domain that is listed whole still passes, a domain that is not stays refused.
   assert.equal((await client.call("cdp", { tabId, method: "Runtime.evaluate", params: { expression: "1 + 1", returnByValue: true } })).result.value, 2);
   await assert.rejects(client.call("cdp", { tabId, method: "Storage.getCookies", params: {} }), refused);
-  await client.call("tabs.close", { tabId }).catch(() => {});
+  await client.call("tabs.close", { tabId }).catch(ignore("cleanup: the environment closes its browser anyway"));
 });

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { after, before, test } from "node:test";
 import { hubClient, lastJson, startEnvironment, startSite, until } from "./harness.mjs";
+import { ignore } from "../browser/extension/shared.js";
 
 let env, site;
 before(async () => {
@@ -152,7 +153,7 @@ test("a session end that cannot close a tab says so, and the tab stays the sessi
     globalThis.restoreTabsRemove = () => (chrome.tabs.remove = remove);
     chrome.tabs.remove = (...args) => (args[0] === ${tab.id} ? Promise.reject(new Error("Tabs cannot be edited right now")) : remove.apply(chrome.tabs, args));
   })()`);
-  t.after(() => worker.evaluate("restoreTabsRemove()").catch(() => {}));
+  t.after(() => worker.evaluate("restoreTabsRemove()").catch(ignore("cleanup: the worker may have restarted, which restores the API anyway")));
   await assert.rejects(client.call("session.end"), new RegExp(`Closed 0 of the session's 1 tabs; tab ${tab.id} stayed open \\(Tabs cannot be edited right now\\)`));
   assert.equal(await present(u), true);
   assert.deepEqual(Object.keys(await client.call("tabs.agent")), [String(tab.id)], "the tab is still the session's");

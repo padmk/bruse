@@ -21,6 +21,7 @@ const shellQuote = (value) => `'${String(value).replace(/'/g, `'\\''`)}'`;
 // A directory that cannot be written does not stop the others. Returns the directories `written` and
 // those `failed`, each with its `dataDir`, `path` and `reason`; throws when the secret or the launcher
 // cannot be written.
+/** @param {{ browserDir: string, node: string, dataDirs?: string[], stateDir?: string, launcher?: string }} options */
 export async function installPairingHost({ browserDir, node, dataDirs = installedBrowserDataDirs(), stateDir, launcher = join(browserDir, "native-host", "pairing-host") }) {
   const { EXTENSION_ORIGINS, STATE_DIR } = await import(join(browserDir, "mcp", "config.mjs"));
   const { ensureExtensionSecret } = await import(join(browserDir, "native-host", "secret.mjs"));
@@ -54,14 +55,15 @@ export async function installPairingHost({ browserDir, node, dataDirs = installe
 // are no longer installed.
 export function installedPairingHosts(launcherDir) {
   return browserDataDirs()
-    .map((dataDir) => {
+    .flatMap((dataDir) => {
       try {
-        return { dataDir, path: hostManifestPath(dataDir), launcher: JSON.parse(readFileSync(hostManifestPath(dataDir), "utf8")).path };
+        return [{ dataDir, path: hostManifestPath(dataDir), launcher: JSON.parse(readFileSync(hostManifestPath(dataDir), "utf8")).path }];
       } catch {
-        return null;
+        // No manifest there, or one that cannot be read: no host of this installation.
+        return [];
       }
     })
-    .filter((host) => host && (!launcherDir || host.launcher === join(launcherDir, "native-host", "pairing-host")));
+    .filter((host) => !launcherDir || host.launcher === join(launcherDir, "native-host", "pairing-host"));
 }
 
 // Validate the host in every given location (by default, of the installed browsers), including malformed

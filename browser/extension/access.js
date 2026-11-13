@@ -16,25 +16,49 @@ import { PAUSED_ERROR, isPaused } from "./pause.js";
 
 const AGENT_TABS = "agent-tabs";
 export const ALL_TABS = "all-tabs";
+/** @typedef {typeof AGENT_TABS | typeof ALL_TABS} AccessMode */
+/**
+ * One reading of the access state (see accessReading). A tab without an ID (chrome.tabs.Tab.id is
+ * optional) is reachable and rearrangeable only in "all tabs" mode.
+ * @typedef {object} AccessReading
+ * @property {(sessionId: string | null, tabId: number | undefined) => boolean} reaches
+ * @property {(sessionId: string | null, tabId: number | undefined) => boolean} rearranges
+ * @property {(sessionId: string | null, windowTabs: chrome.tabs.Tab[]) => boolean} ownsWindow
+ */
 
 const name = chrome.runtime.getManifest().name;
 
 // The mode and the shares are read from storage at every check, not kept in memory: a copy would be
 // renewed only when the change event reaches the service worker, a moment after the popup's write, and
 // a request in that moment would still see a share the user had stopped.
+/** @returns {Promise<AccessMode>} */
 export async function accessMode() {
   const { accessMode: mode } = await chrome.storage.local.get("accessMode");
   return mode === ALL_TABS ? ALL_TABS : AGENT_TABS;
 }
 
+/**
+ * @param {string} mode
+ * @returns {Promise<void>}
+ */
 export function setAccessMode(mode) {
   return chrome.storage.local.set({ accessMode: mode === ALL_TABS ? ALL_TABS : AGENT_TABS });
 }
 
+/**
+ * The shared tab IDs in a stored value of `sharedTabs`; anything else in it is ignored.
+ * @param {unknown} stored
+ * @returns {number[]}
+ */
+export function parseSharedTabs(stored) {
+  return Array.isArray(stored) ? stored.filter((id) => typeof id === "number") : [];
+}
+
 // Shares end when the browser restarts, as tab IDs do.
+/** @returns {Promise<Set<number>>} */
 export async function sharedTabs() {
   const { sharedTabs: ids } = await chrome.storage.session.get("sharedTabs");
-  return new Set(Array.isArray(ids) ? ids : []);
+  return new Set(parseSharedTabs(ids));
 }
 
 // Changes the shares one change at a time. The popups and the service worker change them (a click on
@@ -42,6 +66,10 @@ export async function sharedTabs() {
 // would undo each other and could bring back a share the user stopped. A Web Lock holds across all of
 // the extension's pages and its worker; the browser releases it when the context holding it ends.
 // `change` edits the set of tab IDs and returns false when it left it as it was.
+/**
+ * @param {(ids: Set<number>) => boolean | void} change
+ * @returns {Promise<void>}
+ */
 function changeShares(change) {
   return navigator.locks.request("sharedTabs", async () => {
     const ids = await sharedTabs();
@@ -50,6 +78,10 @@ function changeShares(change) {
   });
 }
 
+/**
+ * @param {number} tabId
+ * @param {boolean} shared
+ */
 export function setShared(tabId, shared) {
   return changeShares((ids) => {
     if (shared) ids.add(tabId);
@@ -60,8 +92,10 @@ export function setShared(tabId, shared) {
 // Shared tabs that closed, for a while: closing a tab is not stopping its share, so a download that the
 // shared tab turned into (and closed for) is still the sharing sessions' (see downloads.js).
 const CLOSED_SHARE_MEMORY_MS = 30_000;
+/** @type {Set<number>} */
 const closedShares = new Set();
 
+/** @param {number} tabId */
 export function endShareOfClosedTab(tabId) {
   return changeShares((ids) => {
     if (!ids.delete(tabId)) return false;
@@ -71,18 +105,24 @@ export function endShareOfClosedTab(tabId) {
   });
 }
 
+/** @param {number} tabId */
 export function wasSharedWhenClosed(tabId) {
   return closedShares.has(tabId);
 }
 
 // One reading of the mode, the shares and the tab owners, with the access rules over it. A listing reads
 // storage once for all of its tabs; a check before an action takes a new reading.
+/** @returns {Promise<AccessReading>} */
 async function accessReading() {
   const [mode, shared, { tabs }] = await Promise.all([accessMode(), sharedTabs(), loadAgentState()]);
-  const owns = (sessionId, tabId) => Boolean(sessionId) && tabs[tabId]?.sessionId === sessionId;
+  /**
+   * @param {string | null} sessionId
+   * @param {number | undefined} tabId
+   */
+  const owns = (sessionId, tabId) => Boolean(sessionId) && tabId !== undefined && tabs[tabId]?.sessionId === sessionId;
   return {
     // Whether the session may use the tab.
-    reaches: (sessionId, tabId) => mode === ALL_TABS || shared.has(tabId) || owns(sessionId, tabId),
+    reaches: (sessionId, tabId) => mode === ALL_TABS || (tabId !== undefined && shared.has(tabId)) || owns(sessionId, tabId),
     // Whether it may also close, discard, pin, move or group it. Those change the user's tab strip or lose
     // what the user has in the tab: a share covers using the tab, not that; "all tabs" mode covers it.
     rearranges: (sessionId, tabId) => mode === ALL_TABS || owns(sessionId, tabId),
@@ -93,17 +133,31 @@ async function accessReading() {
   };
 }
 
-// Whether `sessionId` may reach the tab.
+/**
+ * Whether `sessionId` may reach the tab.
+ * @param {string | null} sessionId
+ * @param {number | undefined} tabId
+ * @returns {Promise<boolean>}
+ */
 export async function mayAccess(sessionId, tabId) {
   return (await accessReading()).reaches(sessionId, tabId);
 }
 
-// Whether `sessionId` may close, discard, pin, move or group the tab.
+/**
+ * Whether `sessionId` may close, discard, pin, move or group the tab.
+ * @param {string | null} sessionId
+ * @param {number} tabId
+ * @returns {Promise<boolean>}
+ */
 export async function mayRearrange(sessionId, tabId) {
   return (await accessReading()).rearranges(sessionId, tabId);
 }
 
-// Whether any session may reach the tab: a tab nobody may reach keeps no debugger attached.
+/**
+ * Whether any session may reach the tab: a tab nobody may reach keeps no debugger attached.
+ * @param {number} tabId
+ * @returns {Promise<boolean>}
+ */
 export async function anyoneMayAccess(tabId) {
   if ((await accessMode()) === ALL_TABS) return true;
   if ((await sharedTabs()).has(tabId)) return true;
@@ -112,29 +166,41 @@ export async function anyoneMayAccess(tabId) {
 
 // The sessions that may use the tab now, for routing the tab's events: null for every session (all tabs
 // mode, or a shared tab), the owner, or nobody.
+/**
+ * @param {number} tabId
+ * @returns {Promise<string[] | null>}
+ */
 export async function audienceOf(tabId) {
   if ((await accessMode()) === ALL_TABS || (await sharedTabs()).has(tabId)) return null;
   const owner = await tabOwner(tabId);
   return owner ? [owner] : [];
 }
 
-// The sessions in both audiences (null meaning every session).
+/**
+ * The sessions in both audiences (null meaning every session).
+ * @param {string[] | null} a
+ * @param {string[] | null} b
+ * @returns {string[] | null}
+ */
 export function bothAudiences(a, b) {
   if (a === null) return b;
   if (b === null) return a;
   return a.filter((sessionId) => b.includes(sessionId));
 }
 
+/** @param {number} tabId */
 function notSharedError(tabId) {
   return new Error(
     `Tab ${tabId} is not one of this session's tabs, and the user has not shared it. ${name} lets agents use the tabs they open and the tabs the user shares. Ask the user to switch to that tab and click "Share this tab" in the ${name} toolbar popup, then retry; or open the page in your own tab with cua.createBrowserTab.`,
   );
 }
 
+/** @param {number} tabId */
 function sharedNotOwnError(tabId) {
   return new Error(`Tab ${tabId} is shared with agents, so its place in the tab strip stays the user's, and so does closing it: agents may not close, discard, pin, move or group it.`);
 }
 
+/** @param {number} windowId */
 function notOwnWindowError(windowId) {
   return new Error(
     `Window ${windowId} holds tabs that are not this session's. Agents may change, focus, switch tabs in and move tabs into only windows whose every tab they opened; a tab the user shares does not share its window. Open your own window with management.windows.create.`,
@@ -144,12 +210,21 @@ function notOwnWindowError(windowId) {
 // A tab that closed is nobody's anymore, so a request for it would read as one for a hidden tab. Sharing
 // cannot bring it back, so in every access mode the agent is told that the tab is gone. Tab IDs are not
 // reused. Resolves with the tab.
+/**
+ * @param {number} tabId
+ * @returns {Promise<chrome.tabs.Tab>}
+ */
 export async function existingTab(tabId) {
   const tab = await chrome.tabs.get(tabId).catch(() => null);
   if (!tab) throw new Error(`Tab ${tabId} does not exist: it was closed (by the agent, the user or its page), or the ID is wrong. List the open tabs with cua.listTabs(), or open the page again with cua.createBrowserTab.`);
   return tab;
 }
 
+/**
+ * @param {string | null} sessionId
+ * @param {number} tabId
+ * @returns {Promise<void>}
+ */
 export async function requireAccess(sessionId, tabId) {
   await existingTab(tabId);
   if (!(await mayAccess(sessionId, tabId))) throw notSharedError(tabId);
@@ -159,12 +234,27 @@ export async function requireAccess(sessionId, tabId) {
 // the tabs in `reach`, rearrange those in `rearrange` (close, discard, pin, move or group them) and change
 // the windows in `windows`. It takes one new reading, so a pause, a share the user stopped or a change of
 // the access mode while the action was being prepared stops it. The caller acts right after it resolves,
-// with no other await in between: a check made before an await may no longer hold after it.
+// with no other await in between: a check made before an await may no longer hold after it. Window IDs
+// may come from agents and are checked here.
+/**
+ * @param {string | null} sessionId
+ * @param {{ reach?: number[], rearrange?: number[], windows?: unknown[] }} [effect]
+ * @returns {Promise<void>}
+ */
 export async function requireAgentEffect(sessionId, { reach = [], rearrange = [], windows = [] } = {}) {
-  for (const windowId of windows) if (!Number.isInteger(windowId) || windowId < 0) throw new Error(`Name the window by its ID, not ${JSON.stringify(windowId)}`);
-  const [paused, reading, windowTabs] = await Promise.all([isPaused(), accessReading(), Promise.all(windows.map((windowId) => chrome.tabs.query({ windowId })))]);
+  /** @type {number[]} */
+  const windowIds = [];
+  for (const windowId of windows) {
+    if (typeof windowId !== "number" || !Number.isInteger(windowId) || windowId < 0) throw new Error(`Name the window by its ID, not ${JSON.stringify(windowId)}`);
+    windowIds.push(windowId);
+  }
+  const [paused, reading, windowTabs] = await Promise.all([isPaused(), accessReading(), Promise.all(windowIds.map((windowId) => chrome.tabs.query({ windowId })))]);
   if (paused) throw new Error(PAUSED_ERROR);
   // A refused tab that closed meanwhile is reported as gone.
+  /**
+   * @param {number} tabId
+   * @param {Error} error
+   */
   const refuse = async (tabId, error) => {
     await existingTab(tabId);
     return error;
@@ -173,23 +263,39 @@ export async function requireAgentEffect(sessionId, { reach = [], rearrange = []
   for (const tabId of rearrange) {
     if (!reading.rearranges(sessionId, tabId)) throw await refuse(tabId, reading.reaches(sessionId, tabId) ? sharedNotOwnError(tabId) : notSharedError(tabId));
   }
-  windows.forEach((windowId, i) => {
+  windowIds.forEach((windowId, i) => {
     if (!reading.ownsWindow(sessionId, windowTabs[i])) throw notOwnWindowError(windowId);
   });
 }
 
 // A request that closes, discards, pins, moves or groups the tab is refused early when the session may not.
+/**
+ * @param {string | null} sessionId
+ * @param {number} tabId
+ * @returns {Promise<void>}
+ */
 export function requireOwnTab(sessionId, tabId) {
   return requireAgentEffect(sessionId, { rearrange: [tabId] });
 }
 
-// Whether the session sees the window: it holds a tab the session may reach.
+/**
+ * Whether the session sees the window: it holds a tab the session may reach.
+ * @param {string | null} sessionId
+ * @param {number} windowId
+ * @returns {Promise<boolean>}
+ */
 export async function seesWindow(sessionId, windowId) {
   for (const tab of await chrome.tabs.query({ windowId })) if (await mayAccess(sessionId, tab.id)) return true;
   return false;
 }
 
-// The tabs of a list that the session may reach, and how many others there are.
+/**
+ * The tabs of a list that the session may reach, and how many others there are.
+ * @template {{ id?: number }} T
+ * @param {string | null} sessionId
+ * @param {T[]} tabs
+ * @returns {Promise<{ shown: T[], hidden: number }>}
+ */
 export async function visibleTabs(sessionId, tabs) {
   const reading = await accessReading();
   const shown = tabs.filter((tab) => reading.reaches(sessionId, tab.id));

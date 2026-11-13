@@ -3,6 +3,7 @@
 
 import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
+import { ignore } from "../extension/shared.js";
 
 const GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 // Until the hub authenticated a peer, it takes only messages the size of a handshake; afterwards
@@ -32,7 +33,7 @@ export function acceptUpgrade(request, socket) {
 
 export function rejectUpgrade(socket, status = "403 Forbidden") {
   // After an upgrade Node no longer handles this socket's errors; a reset must not crash the process.
-  socket.on("error", () => {});
+  socket.on("error", ignore("the socket is being closed anyway"));
   socket.end(`HTTP/1.1 ${status}\r\nConnection: close\r\n\r\n`);
 }
 

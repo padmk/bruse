@@ -33,7 +33,7 @@
 - **Fewer turns.** The API follows the shape of Codex's browser computer use: numbered accessibility trees with diffs, input by element number, Playwright-style locators, dialogs, uploads and downloads. An agent batches many steps into one call.
 - **You stay in control.** By default an agent uses only the tabs it opens and the tabs you share with it. **Pause agents** in the toolbar popup detaches it from every tab at once.
 - **One tool for every MCP client,** including ones without a browser tool of their own. If your client's own browser tool already does what you need, a second tool may not add much.
-- **Nothing third-party.** No npm dependencies, no telemetry; setup writes native messaging host manifests in the browser's user data directory and does not change browser profiles, browser policies or system settings.
+- **Nothing third-party.** No npm dependencies in what you install (the repository's type checker and linter are development tools that never ship), no telemetry; setup writes native messaging host manifests in the browser's user data directory and does not change browser profiles, browser policies or system settings.
 
 On six read and interaction tasks on public websites (Wikipedia, GitHub, the Python documentation, a
 paginated shop and a single-page app), measured on 2026-10-29 with the same model and prompts, Bruse's
@@ -328,7 +328,8 @@ The `js` tool repeats these rules in its documentation, which the first call ret
 - **No independent audit yet.** No external security audit of Bruse has been published. The changes
   are reviewed by models and covered by end-to-end tests, which do not replace one.
 - **Nothing third-party.** The server and the extension use only Node.js built-ins and browser APIs:
-  no npm dependencies, no code downloaded at run time, no telemetry. The extension's only network connection is the
+  no npm dependencies, no code downloaded at run time, no telemetry. The type checker and linter in the
+  repository's `devDependencies` only check the code; they are not in the package or the installed copy. The extension's only network connection is the
   WebSocket to `127.0.0.1`; requests to websites are made by the pages themselves, for example when
   exporting a Google Doc the agent was asked to export.
 

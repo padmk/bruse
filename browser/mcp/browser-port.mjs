@@ -2,7 +2,10 @@
 // server's main thread (browser-link.mjs), so replacing the worker never drops it; calls and events
 // cross the thread boundary as messages.
 
-import { parentPort, workerData } from "node:worker_threads";
+import { parentPort as threadPort, workerData } from "node:worker_threads";
+
+if (!threadPort) throw new Error("browser-port.mjs runs in the REPL worker thread");
+const parentPort = threadPort;
 
 export const sessionId = workerData.sessionId;
 
@@ -21,7 +24,8 @@ parentPort.on("message", (message) => {
   }
 });
 
-export function callBrowser(method, params = {}) {
+/** @type {import("../extension/shared.js").BrowserCall} */
+export function callBrowser(method, ...[params = {}]) {
   return new Promise((resolve, reject) => {
     const callId = nextId++;
     pending.set(callId, { resolve, reject });

@@ -7,7 +7,7 @@ import http from "node:http";
 import { join } from "node:path";
 import { test } from "node:test";
 import { browserCopy, freePort, hubClient, launchBrowser, offerPairing, startSession, until } from "./harness.mjs";
-import { extensionBuild } from "../browser/extension/shared.js";
+import { extensionBuild, ignore } from "../browser/extension/shared.js";
 import { hostManifestPath, installPairingHost, pairingHostProblems } from "../installer/native-host.mjs";
 
 function nativeSecret(copy, stateDir) {
@@ -122,7 +122,7 @@ test("an older unpaired extension cannot plant a secret in a new hub", { timeout
   const stateDir = join(copy.dir, "state");
   const session = await startSession(copy.serverPath, { stateDir });
   try {
-    const call = session.js("await cua.getState()").catch(() => {});
+    const call = session.js("await cua.getState()").catch(ignore("the test checks what the hub saw, not the call"));
     await until(() => existsSync(join(stateDir, "hub-token")));
     const { EXTENSION_ORIGINS } = await import(join(copy.browserDir, "mcp", "config.mjs"));
     const id = [...EXTENSION_ORIGINS][0].split("//")[1];
@@ -156,7 +156,7 @@ test("a saved pairing works without a host and an unpacked permission update sta
     const expected = await extensionBuild((file) => Promise.resolve(readFileSync(join(copy.extensionDir, file), "utf8")));
     client = await hubClient(port, stateDir);
     // The popup's context ends during reload; its pending CDP request has a bounded lifetime.
-    evaluate("chrome.runtime.reload()").catch(() => {});
+    evaluate("chrome.runtime.reload()").catch(ignore("the popup's context ends during the reload"));
     await until(async () => (await client.call("browser.info").catch(() => null))?.build === expected.hash,
       { message: "the extension with the updated permission to reconnect" });
     assert.equal(readFileSync(join(stateDir, "extension-secret"), "utf8").trim(), secret);

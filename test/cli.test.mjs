@@ -5,7 +5,9 @@ import { dirname, join } from "node:path";
 import { after, before, test } from "node:test";
 import { browserCopy, freePort, launchBrowser, until } from "./harness.mjs";
 
-let copy, port, browser, home, installed, cli, environment;
+let copy, port, browser, home, installed, cli;
+/** @type {NodeJS.ProcessEnv} */
+let environment;
 const children = new Map();
 function run(command, ...args) {
   const child = spawn(process.execPath, [cli, command, ...args], { env: environment, stdio: ["ignore", "pipe", "pipe"] });
@@ -86,7 +88,7 @@ const setEnabled = (enabled) => inPage("chrome://extensions", `chrome.management
 test("version prints the manifest version", async () => {
   const result = await run("version").done;
   assert.equal(result.code, 0);
-  assert.match(result.output, new RegExp(JSON.parse(readFileSync(join(copy.extensionDir, "manifest.json"))).version.replaceAll(".", "\\.")));
+  assert.match(result.output, new RegExp(JSON.parse(readFileSync(join(copy.extensionDir, "manifest.json"), "utf8")).version.replaceAll(".", "\\.")));
 });
 test("setup, reload, doctor and uninstall", { timeout: 180_000 }, async () => {
   const setup = run("setup");
@@ -174,13 +176,17 @@ test("file clients preserve configuration and reject comments", { timeout: 180_0
   assert.match(result.output, /Cursor: failed \(could not read its MCP configuration\)/);
   assert.equal(readFileSync(malformed, "utf8"), "{ // comment\n}\n");
   for (const [, path, key] of files.slice(1)) {
-    const value = JSON.parse(readFileSync(path));
+    const value = JSON.parse(readFileSync(path, "utf8"));
     assert.equal(value.other, 42);
     assert.equal(value[key].existing.command, "other");
     assert.equal(value[key].bruse.args.at(-1), join(installed, "browser", "mcp", "server.mjs"));
   }
   // The clients that document a type field get it.
-  const entry = (label) => JSON.parse(readFileSync(files.find(([name]) => name === label)[1]))[files.find(([name]) => name === label)[2]].bruse;
+  const entry = (label) => {
+    const file = files.find(([name]) => name === label);
+    if (!file) throw new Error(`No client file for ${label}`);
+    return JSON.parse(readFileSync(file[1], "utf8"))[file[2]].bruse;
+  };
   const registered = entry("VS Code");
   assert.equal(registered.command, "/usr/bin/env");
   assert.equal(registered.args[0], `BROWSER_CONTROL_STATE_DIR=${join(installed, "state")}`);
@@ -198,7 +204,7 @@ test("file clients preserve configuration and reject comments", { timeout: 180_0
   await until(() => allReported(retry.output()), { timeoutMs: 60_000 });
   retry.child.kill("SIGTERM");
   await retry.done;
-  assert.equal(JSON.parse(readFileSync(malformed)).mcpServers.bruse.args.at(-1), join(installed, "browser", "mcp", "server.mjs"));
+  assert.equal(JSON.parse(readFileSync(malformed, "utf8")).mcpServers.bruse.args.at(-1), join(installed, "browser", "mcp", "server.mjs"));
   const doctor = await run("doctor").done;
   for (const [name] of files) assert.ok(doctor.output.includes(`${name}: registered`), doctor.output);
   writeFileSync(malformed, "{ // comment\n}\n");
@@ -210,7 +216,7 @@ test("file clients preserve configuration and reject comments", { timeout: 180_0
   const uninstall = await run("uninstall").done;
   assert.equal(uninstall.code, 0, uninstall.output);
   for (const [, path, key] of files) {
-    const value = JSON.parse(readFileSync(path));
+    const value = JSON.parse(readFileSync(path, "utf8"));
     assert.equal(value.other, 42);
     assert.equal(value[key].existing.command, "other");
     assert.equal(value[key].bruse, undefined);

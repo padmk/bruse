@@ -1,7 +1,7 @@
 // Element-level operations shared by accessibility indexes and locators: resolving nodes, finding
 // a clickable point, and mouse input. `cdp` is a tab-bound CDP sender.
 
-import { isUnresponsivePageError } from "../../extension/shared.js";
+import { ignore, isUnresponsivePageError } from "../../extension/shared.js";
 import { modifierMask } from "./keys.mjs";
 import { quadToSquare } from "./geometry.mjs";
 import { OPT_OUT_OF_PASSWORD_MANAGERS } from "./page-scripts.mjs";
@@ -40,7 +40,7 @@ export async function callOn(cdp, backendNodeId, functionDeclaration, args = [])
     return result.value;
   } finally {
     // Remote handles pin their DOM nodes until released.
-    cdp("Runtime.releaseObjectGroup", { objectGroup }).catch(() => {});
+    cdp("Runtime.releaseObjectGroup", { objectGroup }).catch(ignore("the group goes with its page when the page is gone"));
   }
 }
 
@@ -167,7 +167,7 @@ export async function watchFramePointer(cdp, backendNodeId) {
       },
     };
   } catch (error) {
-    await cdp("Runtime.releaseObjectGroup", { objectGroup }).catch(() => {});
+    await cdp("Runtime.releaseObjectGroup", { objectGroup }).catch(ignore("the group goes with its page when the page is gone"));
     throw error;
   }
 }
@@ -275,10 +275,11 @@ export async function coveringElement(cdp, backendNodeId, point, mainSession) {
     }
     return (await call(points, true)).result.value;
   } finally {
-    cdp("Runtime.releaseObjectGroup", { objectGroup }).catch(() => {});
+    cdp("Runtime.releaseObjectGroup", { objectGroup }).catch(ignore("the group goes with its page when the page is gone"));
   }
 }
 
+/** @param {Function} cdp @param {number[]} point @param {{ mouseButton?: string, clickCount?: number, key?: string, durationMs?: number }} [options] */
 export async function clickAt(cdp, [x, y], { mouseButton = "left", clickCount = 1, key, durationMs = 0 } = {}) {
   const button = BUTTONS[mouseButton];
   if (!button) throw new Error(`Unknown mouse button ${mouseButton}`);

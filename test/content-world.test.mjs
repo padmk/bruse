@@ -7,6 +7,7 @@ import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import { after, before, test } from "node:test";
 import { hubClient, startEnvironment, startSite, until } from "./harness.mjs";
+import { ignore } from "../browser/extension/shared.js";
 
 const fixture = fileURLToPath(new URL("./fixtures/password-manager", import.meta.url));
 let env, site, frameSite, session, client, extensionId;
@@ -284,6 +285,7 @@ test("zero-isolate node contracts pin every DOM, accessibility and overlay consu
   })()`);
   try {
     await send("Overlay.enable", {});
+    /** @type {[string, Record<string, unknown>][]} */
     const contracts = [
       ["DOM.describeNode", {}], ["DOM.scrollIntoViewIfNeeded", {}], ["DOM.focus", {}],
       ["DOM.getBoxModel", {}], ["DOM.getContentQuads", {}], ["DOM.getOuterHTML", {}],
@@ -295,7 +297,7 @@ test("zero-isolate node contracts pin every DOM, accessibility and overlay consu
     for (const [method, params] of contracts) {
       await evaluate("nodeContracts.calls = []; true");
       // Some commands require an input or a newer browser; the wire contract must still be pinned.
-      await send(method, { ...params, objectId: node.objectId }).catch(() => {});
+      await send(method, { ...params, objectId: node.objectId }).catch(ignore("the browser may refuse the command; the forwarded call is what counts"));
       const calls = await evaluate("nodeContracts.calls");
       assert.ok(calls.some((call) => call.method === "Runtime.callFunctionOn" && call.params.uniqueContextId), method);
       const forwarded = calls.find((call) => call.method === method);
@@ -307,12 +309,12 @@ test("zero-isolate node contracts pin every DOM, accessibility and overlay consu
     const { result: file } = await send("Runtime.evaluate", { expression: "new File(['x'], 'x.txt')" });
     await assert.rejects(send("DOM.getFileInfo", { objectId: file.objectId }), /DOM.getFileInfo.*zero-isolate/);
     // The open-dialog check must happen before even the conversion's Runtime command.
-    await send("Runtime.evaluate", { expression: "alert('node dialog')" }).catch(() => {});
+    await send("Runtime.evaluate", { expression: "alert('node dialog')" }).catch(ignore("the evaluation fails once the dialog opens"));
     await evaluate("nodeContracts.calls = []; true");
     await assert.rejects(send("DOM.requestNode", { objectId: node.objectId }), /dialog is open/);
     assert.deepEqual(await evaluate("nodeContracts.calls"), []);
   } finally {
-    await send("Page.handleJavaScriptDialog", { accept: false }).catch(() => {});
+    await send("Page.handleJavaScriptDialog", { accept: false }).catch(ignore("cleanup: the dialog may be closed already"));
     await evaluate("chrome.debugger.sendCommand = nodeContracts.original; true");
     await cdp.send("Target.detachFromTarget", { sessionId });
   }
@@ -323,7 +325,7 @@ test("node conversion refuses open dialogs before running Runtime", async () => 
   const tabId = await tabWithExtensionWorld("node-dialog");
   const send = (method, params) => client.call("cdp", { tabId, method, params });
   const { result: node } = await send("Runtime.evaluate", { expression: "document.body" });
-  await send("Runtime.evaluate", { expression: "alert('conversion dialog')" }).catch(() => {});
+  await send("Runtime.evaluate", { expression: "alert('conversion dialog')" }).catch(ignore("the evaluation fails once the dialog opens"));
   try {
     await assert.rejects(send("DOM.requestNode", { objectId: node.objectId }), /dialog is open/);
   } finally {

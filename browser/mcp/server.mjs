@@ -4,7 +4,7 @@
 
 import { createInterface } from "node:readline";
 import { Worker } from "node:worker_threads";
-import { isPressInput } from "../extension/shared.js";
+import { ignore, isPressInput, logFailure } from "../extension/shared.js";
 import { callBrowser, endSession, onBrowserEvent, sessionId } from "./browser-link.mjs";
 import { VERSION } from "./config.mjs";
 import { beforeInput, isOpeningInput, onEvent as guardFocus } from "./focus-guard.mjs";
@@ -93,7 +93,7 @@ class PressedInput {
     for (const { tabId, sessionId, method, params } of [...this.pressed.values()].reverse()) {
       const { key, code, windowsVirtualKeyCode, modifiers } = params;
       const release = method === "Input.dispatchMouseEvent" ? { ...params, type: "mouseReleased", clickCount: 1 } : { type: "keyUp", key, code, windowsVirtualKeyCode, modifiers };
-      callBrowser("cdp", { tabId, sessionId, method, params: release }).catch(() => {});
+      callBrowser("cdp", { tabId, sessionId, method, params: release }).catch(ignore("a tab that is gone holds no input"));
     }
     this.pressed.clear();
   }
@@ -102,6 +102,10 @@ class PressedInput {
 // Hosts the REPL worker and relays its browser calls and events through this thread's browser link.
 // A call that times out ends with the worker replaced, which stops everything the call left running.
 class ReplHost {
+  // Set by start(), which the constructor and every replacement run.
+  /** @type {Worker} */
+  worker;
+
   constructor() {
     this.nextId = 1;
     this.pending = new Map();
@@ -121,13 +125,16 @@ class ReplHost {
     worker.stdout.pipe(process.stderr, { end: false });
     let failure = null;
     worker.on("message", (message) => {
-      if (message.type === "browser-call") return this.relay(worker, message);
+      if (message.type === "browser-call") {
+        this.relay(worker, message).catch(logFailure("Relaying a browser call"));
+        return;
+      }
       this.pending.get(message.id)?.(message.result);
       this.pending.delete(message.id);
     });
     worker.on("error", (error) => {
       failure = error;
-      process.stderr.write(`[browser-control] REPL worker failed: ${error?.stack ?? error}\n`);
+      process.stderr.write(`[browser-control] REPL worker failed: ${error instanceof Error ? error.stack : error}\n`);
     });
     // A worker that dies on its own (not replaced) fails its pending calls and is started again.
     worker.on("exit", () => {
@@ -146,14 +153,14 @@ class ReplHost {
   async relay(worker, { callId, method, params }) {
     // A replaced worker may still be running until it is terminated; it reaches nothing anymore.
     if (worker !== this.worker) return;
-    if (isOpeningInput(method, params)) {
-      await beforeInput(params.tabId);
-      // The worker may have been replaced meanwhile; its input must not arrive after the reset.
-      if (worker !== this.worker) return;
-    }
-    this.pressed.note(method, params);
     let reply;
     try {
+      if (isOpeningInput(method, params)) {
+        await beforeInput(params.tabId);
+        // The worker may have been replaced meanwhile; its input must not arrive after the reset.
+        if (worker !== this.worker) return;
+      }
+      this.pressed.note(method, params);
       reply = { type: "browser-reply", callId, result: await callBrowser(method, params) };
     } catch (error) {
       reply = { type: "browser-reply", callId, error: error?.message ?? String(error) };
@@ -173,7 +180,7 @@ class ReplHost {
   request(message, waitMs) {
     const id = this.nextId++;
     return new Promise((resolve) => {
-      const timer = waitMs ? setTimeout(() => (this.pending.delete(id), resolve(undefined)), waitMs) : null;
+      const timer = waitMs ? setTimeout(() => (this.pending.delete(id), resolve(undefined)), waitMs) : undefined;
       this.pending.set(id, (result) => {
         clearTimeout(timer);
         resolve(result);
@@ -216,7 +223,7 @@ let queue = Promise.resolve();
 
 function serialized(task) {
   const result = queue.then(task, task);
-  queue = result.catch(() => {});
+  queue = result.catch(ignore("the task's caller gets its failure; the queue only keeps the order"));
   return result;
 }
 
@@ -247,6 +254,7 @@ async function runJs(call, code, timeoutMs) {
   return notes.length ? { ...result, content: [...result.content, ...notes.map((text) => ({ type: "text", text }))] } : result;
 }
 
+/** @returns {Promise<unknown>} */
 async function handle(message) {
   switch (message.method) {
     case "initialize":
@@ -283,38 +291,44 @@ async function handle(message) {
 }
 
 createInterface({ input: process.stdin, crlfDelay: Infinity })
-  .on("line", async (line) => {
-    if (!line.trim()) return;
-    let message;
-    try {
-      message = JSON.parse(line);
-    } catch {
-      return;
-    }
-    if (!message || typeof message !== "object") return;
-    // Notifications need no reply.
-    if (message.id === undefined) {
-      if (message.method === "notifications/cancelled") cancelCall(message.params?.requestId);
-      return;
-    }
-    try {
-      const result = await handle(message);
-      if (result === CANCELLED) return;
-      process.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", id: message.id, result })}\n`);
-    } catch (error) {
-      process.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", id: message.id, error: { code: error.code ?? -32603, message: error.message } })}\n`);
-    }
+  .on("line", (line) => {
+    answer(line).catch(logFailure("Answering an MCP message"));
   })
   // The client closed the session: close this session's unmarked agent tabs, then exit.
   .on("close", shutDown);
 
+// Answers one line of the MCP stream; a request gets its reply, a notification none.
+async function answer(line) {
+  if (!line.trim()) return;
+  let message;
+  try {
+    message = JSON.parse(line);
+  } catch {
+    return;
+  }
+  if (!message || typeof message !== "object") return;
+  // Notifications need no reply.
+  if (message.id === undefined) {
+    if (message.method === "notifications/cancelled") cancelCall(message.params?.requestId);
+    return;
+  }
+  try {
+    const result = await handle(message);
+    if (result === CANCELLED) return;
+    process.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", id: message.id, result })}\n`);
+  } catch (error) {
+    process.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", id: message.id, error: { code: error.code ?? -32603, message: error.message } })}\n`);
+  }
+}
+
 // Clients may also stop the server with a signal; the session's tabs are cleaned up the same way.
 let shuttingDown = false;
-async function shutDown() {
+function shutDown() {
   if (shuttingDown) return;
   shuttingDown = true;
-  await endSession();
-  process.exit(0);
+  endSession()
+    .catch(logFailure("Ending the session"))
+    .finally(() => process.exit(0));
 }
 process.on("SIGTERM", shutDown);
 process.on("SIGHUP", shutDown);

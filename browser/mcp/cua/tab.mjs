@@ -10,6 +10,7 @@ import { modifierMask, pressChord } from "./keys.mjs";
 import { Locator, functionSource, isRegExp } from "./locator.mjs";
 import { emitImage, emitText } from "./output.mjs";
 import { FOCUSED_FRAME, PASTE_INTO_FOCUSED, SELECT_TEXT, SET_VALUE } from "./page-scripts.mjs";
+import { ignore } from "../../extension/shared.js";
 
 const SETTLE_LOAD_MS = 5_000;
 // How long after a click or key press a navigation it started is looked for.
@@ -58,9 +59,18 @@ function urlMatches(url, pattern) {
   return url === pattern;
 }
 
+/**
+ * What a tab reaches the browser through.
+ * @typedef {object} TabContext
+ * @property {import("../../extension/shared.js").BrowserCall} call
+ * @property {(predicate: (event: BrowserEvent) => boolean, timeoutMs: number) => Promise<BrowserEvent>} waitForEvent
+ */
+/** @typedef {{ tabId: number, method: string, params: Record<string, unknown>, sessionId?: string | null }} BrowserEvent */
+
 export class Tab {
+  /** @param {TabContext} context @param {import("../../extension/shared.js").TabInfo} info */
   constructor(context, info) {
-    this.context = context; // { call(method, params), waitForEvent(predicate, timeoutMs) }
+    this.context = context;
     this.tabId = info.id;
     this.id = String(info.id);
     this.tracker = new AXTracker();
@@ -82,8 +92,19 @@ export class Tab {
   // CDP sender for the tab, or for a cross-origin frame's session.
   // Commands of the tool's own quick operations fail after QUICK_COMMAND_MS, so a stuck page gives an
   // error instead of a hang; reading whole pages and code the agent runs in them get PAGE_CODE_MS.
+  /** @param {string | null} [sessionId] @param {{ timeoutMs?: number }} [options] @returns {import("../../extension/shared.js").CdpSender} */
   cdpSender(sessionId = null, { timeoutMs = QUICK_COMMAND_MS } = {}) {
-    return (method, params = {}) => this.context.call("cdp", { tabId: this.tabId, method, params, timeoutMs, ...(sessionId ? { sessionId } : {}) });
+    /**
+     * The browser's reply to a command has the type the protocol defines for that command.
+     * @template {import("../../extension/shared.js").CdpMethod} C
+     * @param {C} method
+     * @param {import("../../extension/shared.js").CdpCommands[C]["paramsType"][0]} [params]
+     */
+    const send = (method, params = {}) =>
+      /** @type {Promise<import("../../extension/shared.js").CdpCommands[C]["returnType"]>} */ (
+        this.context.call("cdp", { tabId: this.tabId, method, params, timeoutMs, ...(sessionId ? { sessionId } : {}) })
+      );
+    return send;
   }
 
   async info() {
@@ -109,13 +130,13 @@ export class Tab {
     if ((state ?? (await this.pageState())).dialog) return false;
     const sinceAction = Date.now() - (this.lastActionAt ?? 0);
     const loading = (info ?? (await this.info())).status === "loading";
-    if (loading) await this.context.call("tabs.waitForLoad", { tabId: this.tabId, timeoutMs: SETTLE_LOAD_MS }).catch(() => {});
+    if (loading) await this.context.call("tabs.waitForLoad", { tabId: this.tabId, timeoutMs: SETTLE_LOAD_MS }).catch(ignore("settling is best effort: the state is read as it is"));
     if (sinceAction < SETTLE_WINDOW_MS) {
       await this.waitForQuietDom(SETTLE_WINDOW_MS - sinceAction);
       // The action may have started a navigation meanwhile (a form submission, a link): the new
       // document is read once it has loaded, not while it is being parsed.
       if ((await this.info()).status === "loading") {
-        await this.context.call("tabs.waitForLoad", { tabId: this.tabId, timeoutMs: SETTLE_LOAD_MS }).catch(() => {});
+        await this.context.call("tabs.waitForLoad", { tabId: this.tabId, timeoutMs: SETTLE_LOAD_MS }).catch(ignore("settling is best effort: the state is read as it is"));
         await this.waitForQuietDom(QUIET_MS);
       }
       return true;
@@ -138,7 +159,7 @@ export class Tab {
       const info = await this.info().catch(() => null);
       if (!info) return;
       if (info.status === "loading") {
-        await this.context.call("tabs.waitForLoad", { tabId: this.tabId, timeoutMs: SETTLE_LOAD_MS }).catch(() => {});
+        await this.context.call("tabs.waitForLoad", { tabId: this.tabId, timeoutMs: SETTLE_LOAD_MS }).catch(ignore("settling is best effort: the state is read as it is"));
         return;
       }
       await sleep(5);
@@ -228,6 +249,7 @@ export class Tab {
 
   // Main-page point at the center of a node. With `hitTest`, waits until a click there would reach the
   // node and fails if another element stays on top (`force` skips the check).
+  /** @param {number} backendNodeId @param {string | null} sessionId @param {{ hitTest?: boolean, force?: boolean, key?: string, timeoutMs?: number }} [options] */
   async nodePoint(backendNodeId, sessionId, { hitTest = false, force = false, key, timeoutMs = COVERED_WAIT_MS } = {}) {
     const cdp = this.cdpSender(sessionId);
     await prepareClick(cdp, backendNodeId);
@@ -256,7 +278,7 @@ export class Tab {
         await sleep(100);
       }
     } finally {
-      await pointer?.dispose().catch(() => {});
+      await pointer?.dispose().catch(ignore("the probe listeners go with their page when the page is gone"));
     }
   }
 
@@ -289,6 +311,7 @@ export class Tab {
 
   // Captures in CSS pixels, so a point in the image is the same point for click([x, y]). A page behind an
   // open JavaScript dialog answers neither the capture nor the reading of its size, so that fails at once.
+  /** @param {{ fullPage?: boolean, clip?: { x: number, y: number, width: number, height: number, scale?: number } }} [options] */
   async captureScreenshot({ fullPage = false, clip } = {}) {
     const { dialog } = await this.pageState();
     if (dialog) throw new Error(`A JavaScript ${dialog.type} dialog is open on this tab (${JSON.stringify(dialog.message)}), and the page cannot be captured behind it; handle it with getJsDialog() first`);
@@ -371,6 +394,7 @@ export class Tab {
     await sleep(200);
   }
 
+  /** @param {number} elementIndex @param {string} text @param {{ prefix?: string, suffix?: string, selectionType?: string }} [options] */
   async selectText(elementIndex, text, { prefix, suffix, selectionType = "text" } = {}) {
     const { backendNodeId, sessionId } = await this.nodeFor(elementIndex);
     await callOn(this.cdpSender(sessionId), backendNodeId, SELECT_TEXT, [text, prefix ?? null, suffix ?? null, selectionType]);
@@ -452,7 +476,7 @@ export class Tab {
           return result.value;
         }
       } finally {
-        cdp("Runtime.releaseObjectGroup", { objectGroup }).catch(() => {});
+        cdp("Runtime.releaseObjectGroup", { objectGroup }).catch(ignore("the group goes with its page when the page is gone"));
       }
     }
   }
@@ -517,6 +541,7 @@ export class Tab {
     return { type: dialog.type, message: dialog.message, accept, dismiss: () => handle(false) };
   }
 
+  /** @param {{ filter?: string, levels?: string[], limit?: number }} [options] */
   async logs({ filter, levels, limit } = {}) {
     let entries = await this.context.call("page.console", { tabId: this.tabId });
     if (levels?.length) entries = entries.filter((entry) => levels.includes(entry.level) || (entry.level === "warn" && levels.includes("warning")));
@@ -525,9 +550,10 @@ export class Tab {
   }
 
   // Recent network requests of the tab (fetch, XHR, documents, …), oldest first.
+  /** @param {{ filter?: string, types?: string[], limit?: number }} [options] */
   async requests({ filter, types, limit } = {}) {
     let entries = await this.context.call("page.network", { tabId: this.tabId });
-    if (types?.length) entries = entries.filter((entry) => types.includes(entry.type));
+    if (types?.length) entries = entries.filter((entry) => entry.type !== undefined && types.includes(entry.type));
     if (filter) entries = entries.filter((entry) => entry.url.includes(filter));
     return limit ? entries.slice(-limit) : entries;
   }
@@ -585,6 +611,7 @@ export class Tab {
         await tab.context.call("tabs.waitForLoad", { tabId: tab.tabId, timeoutMs: Math.max(1, deadline - Date.now()) });
       },
       // Waits for a new document, so a reload or a submission back to the same URL also counts.
+      /** @param {() => unknown} action @param {{ timeoutMs?: number, url?: string | RegExp }} [options] */
       async expectNavigation(action, { timeoutMs = NAVIGATION_TIMEOUT_MS, url } = {}) {
         const loaderId = async () => (await tab.cdpSender()("Page.getFrameTree")).frameTree.frame.loaderId;
         const before = await loaderId();
@@ -597,11 +624,12 @@ export class Tab {
         await tab.context.call("tabs.waitForLoad", { tabId: tab.tabId, timeoutMs: Math.max(1, deadline - Date.now()) });
         return result;
       },
+      /** @param {string} event @param {{ timeoutMs?: number }} [options] */
       async waitForEvent(event, { timeoutMs } = {}) {
         if (event === "download") {
           // Only a download this tab starts counts, not unrelated ones elsewhere in the browser.
           const download = tab.context.call("downloads.wait", { tabId: tab.tabId, timeoutMs: timeoutMs ?? DOWNLOAD_WAIT_MS });
-          download.catch(() => {}); // the caller may never ask for the path
+          download.catch(ignore("the caller may never ask for the path; one who does gets the error"));
           return { path: async () => (await download).path };
         }
         if (event === "filechooser") {
@@ -612,12 +640,15 @@ export class Tab {
             opened = await tab.context.waitForEvent((e) => e.tabId === tab.tabId && e.method === "Page.fileChooserOpened", timeoutMs ?? FILE_CHOOSER_WAIT_MS);
           } finally {
             // Leave the user's own file pickers working; setFiles needs no interception.
-            await cdp("Page.setInterceptFileChooserDialog", { enabled: false }).catch(() => {});
+            await cdp("Page.setInterceptFileChooserDialog", { enabled: false }).catch(ignore("the extension switches interception off on its own after a while"));
           }
+          const { mode, backendNodeId } = opened.params;
           return {
-            isMultiple: () => opened.params.mode === "selectMultiple",
+            isMultiple: () => mode === "selectMultiple",
             setFiles: async (files) => {
-              await tab.cdpSender()("DOM.setFileInputFiles", { backendNodeId: opened.params.backendNodeId, files: Array.isArray(files) ? files : [files] });
+              // The protocol names the input only for choosers that an <input type="file"> opened.
+              if (typeof backendNodeId !== "number") throw new Error("This file chooser belongs to no file input, so files cannot be set on it");
+              await tab.cdpSender()("DOM.setFileInputFiles", { backendNodeId, files: Array.isArray(files) ? files : [files] });
               await tab.afterInput();
             },
           };

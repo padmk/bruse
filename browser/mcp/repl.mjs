@@ -38,7 +38,8 @@ function limitText(items) {
   }
   const note = `… Output truncated: ${MAX_OUTPUT_CHARS} of ${total} characters shown. Return values are complete, so read the rest in parts, e.g. \`const s = await tab.getAXState({ emit: false, disableDiffing: true }); nodeRepl.write(s.slice(${MAX_OUTPUT_CHARS - 10_000}, ${MAX_OUTPUT_CHARS + 10_000}))\`, or query the page with tab.playwright locators or evaluate().`;
   const last = kept.findLast((item) => item.type === "text");
-  last.text += `\n${note}`;
+  if (last) last.text += `\n${note}`;
+  else kept.push({ type: "text", text: note });
   return kept;
 }
 
@@ -49,7 +50,7 @@ function imagePayload(image, mimeType) {
     const dataUrl = image.match(/^data:([^;]+);base64,(.*)$/);
     if (dataUrl) return { data: dataUrl[2], mimeType: dataUrl[1] };
     const path = image.startsWith("file:") ? fileURLToPath(image) : image;
-    const extension = path.split(".").pop().toLowerCase();
+    const extension = (path.split(".").pop() ?? "").toLowerCase();
     const type = { jpg: "image/jpeg", jpeg: "image/jpeg", webp: "image/webp", gif: "image/gif" }[extension] ?? "image/png";
     return { data: readFileSync(path).toString("base64"), mimeType: type };
   }
@@ -75,6 +76,12 @@ const NODE_GLOBALS = {
 };
 
 export class Repl {
+  // Set by reset(), which the constructor and every later REPL reset run.
+  /** @type {vm.Context} */
+  context;
+  /** @type {ReturnType<typeof createCua>} */
+  cuaSession;
+
   constructor() {
     this.reset();
   }
@@ -134,10 +141,10 @@ export class Repl {
 
   // Runs one `js` call and returns MCP content items plus whether it failed. The server sets the timeout.
   async run(code, timeoutMs) {
-    this.items = [];
+    const output = (this.items = []);
     useOutput({
       text: (text) => this.pushText(text),
-      image: (data, mimeType) => this.items.push({ type: "image", data, mimeType }),
+      image: (data, mimeType) => output.push({ type: "image", data, mimeType }),
     });
     let isError = false;
     let timedOut = false;

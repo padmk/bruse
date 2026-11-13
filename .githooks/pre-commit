@@ -1,0 +1,5 @@
+#!/bin/sh
+# Runs the repository checks before each commit: modules parse, versions agree, the MCP server starts,
+# types check and lint passes. They check the working tree, not only what is staged. Turn the hook on
+# in a checkout with `git config core.hooksPath .githooks`; `git commit --no-verify` skips it once.
+exec node scripts/check.mjs

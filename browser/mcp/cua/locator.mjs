@@ -4,6 +4,7 @@
 import { PAGE_CODE_MS, callOn, clickAt, dragBetween, focusNode, pageException } from "./elements.mjs";
 import { pressChord } from "./keys.mjs";
 import { LOCATOR_ENGINE, SET_VALUE } from "./page-scripts.mjs";
+import { ignore } from "../../extension/shared.js";
 
 const DEFAULT_TIMEOUT_MS = 10_000;
 const POLL_MS = 100;
@@ -27,6 +28,12 @@ export function functionSource(fn, parameters) {
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+/** @typedef {string | RegExp} TextMatcher */
+/** @typedef {{ exact?: boolean }} ExactOptions */
+/** @typedef {{ timeoutMs?: number }} TimeoutOptions */
+/** @typedef {{ has?: Locator, hasNot?: Locator, hasText?: TextMatcher, hasNotText?: TextMatcher, visible?: boolean }} FilterOptions */
+/** @typedef {TimeoutOptions & { button?: string, modifiers?: string[], clickCount?: number, force?: boolean }} ClickOptions */
+
 export class Locator {
   constructor(tab, steps) {
     this.tab = tab;
@@ -41,15 +48,19 @@ export class Locator {
     const next = this.chain({ kind: "css", selector });
     return Object.keys(options).length ? next.filter(options) : next;
   }
+  /** @param {string} role @param {ExactOptions & { name?: TextMatcher, includeHidden?: boolean }} [options] */
   getByRole(role, { name, exact, includeHidden } = {}) {
     return this.chain({ kind: "role", role, name: name === undefined ? undefined : serializeMatcher(name), exact, includeHidden });
   }
+  /** @param {TextMatcher} text @param {ExactOptions} [options] */
   getByText(text, { exact } = {}) {
     return this.chain({ kind: "text", text: serializeMatcher(text), exact });
   }
+  /** @param {TextMatcher} text @param {ExactOptions} [options] */
   getByLabel(text, { exact } = {}) {
     return this.chain({ kind: "label", text: serializeMatcher(text), exact });
   }
+  /** @param {TextMatcher} text @param {ExactOptions} [options] */
   getByPlaceholder(text, { exact } = {}) {
     return this.chain({ kind: "placeholder", text: serializeMatcher(text), exact });
   }
@@ -68,6 +79,7 @@ export class Locator {
   last() {
     return this.nth(-1);
   }
+  /** @param {FilterOptions} [options] */
   filter({ has, hasNot, hasText, hasNotText, visible } = {}) {
     return this.chain({
       kind: "filter",
@@ -138,7 +150,7 @@ export class Locator {
       return result;
     } finally {
       // Without a group of the caller's, nothing from this call is needed afterwards.
-      if (!options.objectGroup) cdp("Runtime.releaseObjectGroup", { objectGroup }).catch(() => {});
+      if (!options.objectGroup) cdp("Runtime.releaseObjectGroup", { objectGroup }).catch(ignore("the group goes with its page when the page is gone"));
     }
   }
 
@@ -155,7 +167,7 @@ export class Locator {
       if (exceptionDetails) throw pageException(exceptionDetails);
       return nodes.deepSerializedValue.value.map((node) => node.value.backendNodeId);
     } finally {
-      cdp("Runtime.releaseObjectGroup", { objectGroup }).catch(() => {});
+      cdp("Runtime.releaseObjectGroup", { objectGroup }).catch(ignore("the group goes with its page when the page is gone"));
     }
   }
 
@@ -169,7 +181,7 @@ export class Locator {
       if (result.type === "number") return { count: result.value, id: null };
       return { count: 1, id: (await cdp("DOM.describeNode", { objectId: result.objectId })).node.backendNodeId };
     } finally {
-      cdp("Runtime.releaseObjectGroup", { objectGroup }).catch(() => {});
+      cdp("Runtime.releaseObjectGroup", { objectGroup }).catch(ignore("the group goes with its page when the page is gone"));
     }
   }
 
@@ -202,6 +214,7 @@ export class Locator {
   }
 
   // The agent's own code may take its time; it gets the long command limit.
+  /** @param {Function | string} fn @param {unknown} [arg] @param {TimeoutOptions} [options] */
   async evaluate(fn, arg, { timeoutMs } = {}) {
     const { id, sessionId } = await this.resolveOne({ timeoutMs });
     return callOn(this.tab.cdpSender(sessionId, { timeoutMs: PAGE_CODE_MS }), id, `function (arg) { return (${functionSource(fn, "element, arg")})(this, arg); }`, [arg]);
@@ -245,6 +258,7 @@ export class Locator {
   }
 
   // Waits, within the timeout, until a click at the element's center would reach the element.
+  /** @param {ClickOptions} [options] */
   async click({ button = "left", modifiers = [], timeoutMs = DEFAULT_TIMEOUT_MS, clickCount = 1, force = false } = {}) {
     const deadline = Date.now() + timeoutMs;
     const { id, sessionId } = await this.resolveOne({ timeoutMs });
@@ -256,6 +270,7 @@ export class Locator {
     return this.click({ ...options, clickCount: 2 });
   }
 
+  /** @param {TimeoutOptions} [options] */
   async hover({ timeoutMs } = {}) {
     const { id, sessionId } = await this.resolveOne({ timeoutMs });
     const [x, y] = await this.tab.nodePoint(id, sessionId);
@@ -264,18 +279,21 @@ export class Locator {
   }
 
   // Drags this element onto the target locator's element.
+  /** @param {Locator} target @param {TimeoutOptions} [options] */
   async dragTo(target, { timeoutMs } = {}) {
     const [from, to] = [await this.resolveOne({ timeoutMs }), await target.resolveOne({ timeoutMs })];
     await dragBetween(this.tab.cdpSender(), await this.tab.nodePoint(from.id, from.sessionId), await this.tab.nodePoint(to.id, to.sessionId));
     await this.tab.afterInput();
   }
 
+  /** @param {string} value @param {TimeoutOptions} [options] */
   async fill(value, { timeoutMs } = {}) {
     const { id, cdp } = await this.resolveOne({ timeoutMs });
     await callOn(cdp, id, SET_VALUE, [value]);
     await this.tab.afterInput();
   }
   // Key and text input goes to the tab; the browser routes it to the focused frame.
+  /** @param {string} text @param {TimeoutOptions} [options] */
   async pressSequentially(text, { timeoutMs } = {}) {
     const { id, cdp } = await this.resolveOne({ timeoutMs });
     await focusNode(cdp, id, { requireFocus: true });
@@ -285,6 +303,7 @@ export class Locator {
   async type(text, options) {
     return this.pressSequentially(text, options);
   }
+  /** @param {string} key @param {TimeoutOptions} [options] */
   async press(key, { timeoutMs } = {}) {
     const { id, cdp } = await this.resolveOne({ timeoutMs });
     await focusNode(cdp, id);
@@ -303,6 +322,7 @@ export class Locator {
     return this.setChecked(false, options);
   }
 
+  /** @param {unknown} values @param {TimeoutOptions} [options] */
   async selectOption(values, { timeoutMs } = {}) {
     const wanted = (Array.isArray(values) ? values : [values]).map((v) => (typeof v === "string" ? { value: v, label: v } : v));
     await this.evaluate(
@@ -321,6 +341,7 @@ export class Locator {
     await this.tab.afterInput();
   }
 
+  /** @param {string | string[]} files @param {TimeoutOptions} [options] */
   async setInputFiles(files, { timeoutMs } = {}) {
     const { id, cdp } = await this.resolveOne({ timeoutMs });
     await cdp("DOM.setFileInputFiles", { backendNodeId: id, files: Array.isArray(files) ? files : [files] });

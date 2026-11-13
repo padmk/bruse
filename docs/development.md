@@ -19,7 +19,7 @@ MCP server (hub) ◀──WebSocket 127.0.0.1:47615──▶ extension ──chr
   session's unmarked tabs when it ends, or when the hub has not listed it among the live sessions for
   a while. `downloads.js` pairs downloads with the tabs that started
   them. `shared.js` is the one owner of what the extension and the MCP server must agree on (hub
-  port, management method allow-list, which input counts as the agent's press and for how long,
+  port, the requests the extension takes and how each is checked, management method allow-list, which input counts as the agent's press and for how long,
   password manager element names, the unresponsive-page error, the extension code fingerprint that
   setup, doctor and the benchmark compare); it uses no browser or Node APIs beyond Web Crypto, so
   the MCP server imports it from the extension directory. `browser/package.json` marks the `.js`
@@ -77,8 +77,51 @@ node --input-type=module -e 'import { callBrowser } from "./browser/mcp/browser-
 ```
 
 MCP server changes take effect in new agent sessions. `node scripts/check.mjs` runs the checks CI
-runs: every module parses, the versions agree, and the MCP server starts and lists its tools. `node installer/package.mjs` builds the zip
+runs: every module parses, the versions agree, the MCP server starts and lists its tools, every
+TypeScript project type-checks and ESLint finds no errors (the last two need `npm ci` first). `node installer/package.mjs` builds the zip
 package in `dist/`.
+
+## Type checking and lint
+
+The code stays plain JavaScript without a build step; types are JSDoc comments (`@param`, `@typedef`)
+that `tsc` checks with `checkJs` and `noEmit`. `npm ci` installs the tools from `package-lock.json`:
+TypeScript, ESLint with typescript-eslint, and the types of Node.js, the `chrome.*` APIs and the
+DevTools Protocol (`devtools-protocol`). They are `devDependencies` only: the server and the extension
+import none of them, setup and the zip package copy none of them (nor the `tsconfig.json` files, see
+`isDevelopmentFile` in `installer/lib.mjs`), and `.npmrc` installs only exact versions published at
+least a day earlier. TypeScript stays on 6.0, the newest release typescript-eslint supports.
+
+Each `tsconfig.json` is one project, and `scripts/check.mjs` runs `tsc -p` for every one it finds;
+`tsconfig.base.json` holds what they share. `browser/extension/tsconfig.json` checks the extension
+with `strict`. The root `tsconfig.json` covers the rest of the tree with `strictNullChecks` but
+without the other `strict` checks (`noImplicitAny` above all); `strict` moves there directory by
+directory. A directory switches by getting a `tsconfig.json` of its own that extends the base, which
+the root one then excludes.
+
+`eslint.config.mjs` uses the types for its rules (typescript-eslint's project service, which picks each
+file's nearest `tsconfig.json`). Errors:
+
+- `@typescript-eslint/no-floating-promises` and `@typescript-eslint/no-misused-promises`: a promise
+  is awaited, returned, or ends in `.catch(...)`; `void` does not count. A callback whose caller
+  ignores its result (an event listener, a timer, a `Promise` executor) does not return a promise.
+- `no-empty` and `no-restricted-syntax`: no empty `catch` block (a comment inside that says why the
+  error does not matter is enough) and no empty function as a rejection or `error` handler. Such a
+  handler is `ignore("reason")` from `browser/extension/shared.js`; one whose failure must show is
+  `logFailure("what")`, which logs to the console (standard error in Node.js).
+
+`max-lines` (800) and `max-lines-per-function` (200) only warn.
+
+The requests the server sends the extension are listed in `PROTOCOL` in `browser/extension/shared.js`:
+for each method, what it acts on (`scope`: the browser, a tab, its page, or its loaded page), whether
+it only reads (`readOnly`, resent after a hub handover), whether it runs while agents are paused
+(`pauseExempt`) and whether it runs without a session (`sessionless`). `Protocol` gives each method's
+parameter and result types. The service worker's checks before a handler, the guard's page checks and
+the server's resend rule all read the table, and the handler object is typed by it, so a method
+without an entry or without a handler fails the type check.
+
+`.githooks/pre-commit` runs `node scripts/check.mjs`; turn it on for a checkout with
+`git config core.hooksPath .githooks`. It checks the working tree, including changes that are not
+staged.
 
 The release version is the `version` of `browser/extension/manifest.json`; `package.json` carries the
 same value.

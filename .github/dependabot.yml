@@ -1,7 +1,18 @@
-# Proposes updates of the pinned GitHub Actions; the project has no npm dependencies.
+# Proposes updates of the pinned GitHub Actions and of the development tools in package.json (the
+# type checker and linter; the server and the extension have no npm dependencies). Releases younger than
+# a week are not proposed.
 version: 2
 updates:
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: monthly
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: monthly
+    cooldown:
+      default-days: 7
+    groups:
+      development-tools:
+        patterns: ["*"]

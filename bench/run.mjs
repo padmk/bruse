@@ -68,7 +68,7 @@ const version = (command) => {
 const askBrowser = (method) => {
   const link = path.join(here, "..", "browser", "mcp", "browser-link.mjs");
   const code = `const { callBrowser } = await import(${JSON.stringify(link)}); console.log(JSON.stringify(await callBrowser(${JSON.stringify(method)}))); process.exit(0);`;
-  try { return JSON.parse(execFileSync(process.execPath, ["--input-type=module", "-e", code], { encoding: "utf8", timeout: 30_000 }).trim().split("\n").pop()); } catch (error) { return { error: String(error.stderr || error.message).trim().slice(-300) }; }
+  try { return JSON.parse(execFileSync(process.execPath, ["--input-type=module", "-e", code], { encoding: "utf8", timeout: 30_000 }).trim().split("\n").pop() ?? ""); } catch (error) { return { error: String(error.stderr || error.message).trim().slice(-300) }; }
 };
 const extensionDir = path.join(here, "..", "browser", "extension");
 const { hash: checkoutBuild } = await extensionBuild((file) => fs.promises.readFile(path.join(extensionDir, file), "utf8"));
@@ -181,7 +181,7 @@ function runClaude(tool, task, transcriptPath) {
     child.stdout.on("data", (d) => {
       out += d;
       const parts = (pending + d).split("\n");
-      pending = parts.pop();
+      pending = parts.pop() ?? "";
       for (const text of parts) if (text.trim()) lines.push({ at: Date.now(), text });
     });
     child.stderr.on("data", (d) => (err += d));
@@ -196,7 +196,9 @@ function runClaude(tool, task, transcriptPath) {
         try {
           const event = JSON.parse(line);
           if (event.type === "result") { result = event; break; }
-        } catch {}
+        } catch {
+          // Not a JSON event: the CLI also prints plain lines.
+        }
       }
       const transcript = readClaudeTranscript(lines, { browserTools: [tool === "bruse" ? "mcp__bruse__" : "mcp__claude-in-chrome__"] });
       resolve({ code, wallMs: Date.now() - started, result, stderr: err.slice(-500), transcript });
@@ -318,6 +320,7 @@ await new Promise((r) => setTimeout(r, 800));
 try {
   for (const id of taskIds) {
     const task = tasks.find((t) => t.id === id);
+    if (!task) throw new Error(`Unknown task ${id}`);
     const n = task.kind === "timed" ? reps : capabilityReps;
     for (let rep = 1; rep <= n; rep++) {
       // Alternate which tool goes first so that warm-up and drift do not favor one of them.

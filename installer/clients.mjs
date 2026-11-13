@@ -68,6 +68,10 @@ export function moreClients(onPath, name) {
   return files.filter((file) => file.cli || existsSync(dirname(file.path))).map((file) => configClient(file, name));
 }
 
+/**
+ * @param {{ label: string, path: string, key: string, entry: (command: string[]) => object, cli?: { path: string, add: string[], remove: string[] } | "" | false | null }} file
+ * @param {string} name
+ */
 function configClient({ label, path, key, entry, cli }, name) {
   // The configuration, or null when it cannot be read as a JSON object with an object at `key`.
   const read = () => {
@@ -100,7 +104,8 @@ function configClient({ label, path, key, entry, cli }, name) {
     }
   };
 
-  const run = (args) => (read() ? runClient(cli.path, args) : UNREADABLE);
+  /** @param {{ path: string }} commandLine @param {string[]} args */
+  const run = (commandLine, args) => (read() ? runClient(commandLine.path, args) : UNREADABLE);
 
   const registration = () => {
     const config = read();
@@ -110,7 +115,7 @@ function configClient({ label, path, key, entry, cli }, name) {
   };
 
   const remove = () => {
-    if (cli) return registration()?.path === null ? { status: 0, stdout: "", stderr: "" } : run(cli.remove);
+    if (cli) return registration()?.path === null ? { status: 0, stdout: "", stderr: "" } : run(cli, cli.remove);
     return registration()?.path === null ? { status: 0, stdout: "", stderr: "" } : write((config) => delete config[key][name]);
   };
 
@@ -118,7 +123,7 @@ function configClient({ label, path, key, entry, cli }, name) {
   const add = (command) => {
     if (cli) {
       remove();
-      return run([...cli.add, ...command]);
+      return run(cli, [...cli.add, ...command]);
     }
     return write((config) => {
       config[key] = { ...config[key], [name]: entry(command) };

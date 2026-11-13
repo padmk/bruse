@@ -1,8 +1,10 @@
 // Repository checks that need no browser: every module parses, the release version agrees across
-// files, the bruse command runs, and the MCP server answers initialize and tools/list over stdio.
+// files, the bruse command runs, the MCP server answers initialize and tools/list over stdio, every
+// TypeScript project (tsconfig.json) type-checks and ESLint finds no errors. The last two use the
+// development dependencies that `npm ci` installs.
 
 import { spawn, spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
@@ -19,6 +21,22 @@ const files = spawnSync("git", ["ls-files", "*.js", "*.mjs"], { cwd: root, encod
 for (const file of files) {
   const result = spawnSync(process.execPath, ["--check", join(root, file)], { encoding: "utf8" });
   check(result.status === 0, `parses: ${file}${result.status === 0 ? "" : `\n${result.stderr}`}`);
+}
+
+// Each tsconfig.json is a project with its own strictness; tsconfig.base.json holds what they share.
+const tsc = join(root, "node_modules/typescript/bin/tsc");
+const eslint = join(root, "node_modules/eslint/bin/eslint.js");
+if (!existsSync(tsc) || !existsSync(eslint)) {
+  check(false, "type check and lint: the development dependencies are missing; run `npm ci`");
+} else {
+  const projects = spawnSync("git", ["ls-files", "--cached", "--others", "--exclude-standard", "tsconfig.json", "*/tsconfig.json"], { cwd: root, encoding: "utf8" }).stdout.split("\n").filter(Boolean);
+  check(projects.includes("tsconfig.json"), `TypeScript projects: ${projects.join(", ")}`);
+  for (const project of projects) {
+    const result = spawnSync(process.execPath, [tsc, "-p", project, "--pretty", "false"], { cwd: root, encoding: "utf8" });
+    check(result.status === 0, `types: ${project}${result.status === 0 ? "" : `\n${result.stdout}${result.stderr}`}`);
+  }
+  const lint = spawnSync(process.execPath, [eslint, "."], { cwd: root, encoding: "utf8" });
+  check(lint.status === 0, `lint: eslint .${lint.stdout.trim() ? `\n${lint.stdout.trim()}` : ""}${lint.stderr.trim() ? `\n${lint.stderr.trim()}` : ""}`);
 }
 
 const version = JSON.parse(readFileSync(join(root, "browser/extension/manifest.json"), "utf8")).version;

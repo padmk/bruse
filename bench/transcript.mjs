@@ -49,7 +49,9 @@ function nodeCode(code) {
 // `lines` holds { at, text } for every stdout line of `claude -p --output-format stream-json`.
 export function readClaudeTranscript(lines, { browserTools }) {
   const calls = new Map(); // tool_use id -> { name, at }
-  const summary = { browserCalls: 0, otherToolCalls: 0, toolMs: 0, slowestToolMs: 0, nodeAccess: [], extensionMissing: false };
+  /** @type {string[]} */
+  const nodeAccess = [];
+  const summary = { browserCalls: 0, otherToolCalls: 0, toolMs: 0, slowestToolMs: 0, nodeAccess, extensionMissing: false };
   for (const { at, text } of lines) {
     let event;
     try { event = JSON.parse(text); } catch { continue; }

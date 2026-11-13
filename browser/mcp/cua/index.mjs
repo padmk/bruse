@@ -77,9 +77,10 @@ export function createCua() {
   let documentationShown = false;
   let disposed = false;
 
-  const call = (method, params) => {
+  /** @type {import("../../extension/shared.js").BrowserCall} */
+  const call = (method, ...params) => {
     if (disposed) return Promise.reject(new Error("This REPL session was reset; its browser objects no longer work"));
-    return callBrowser(method, params);
+    return callBrowser(method, ...params);
   };
   const context = { call, waitForEvent };
   const capabilities = createCapabilities(call);
@@ -158,6 +159,7 @@ export function createCua() {
     return (await call("tabs.list")).map(tabSummary);
   }
 
+  /** @param {number | string | { url?: string, id?: unknown, mention?: unknown } | null} reference @param {{ browser?: string }} [options] */
   async function getTab(reference, { browser } = {}) {
     checkBrowser(browser);
     let info;
@@ -187,7 +189,7 @@ export function createCua() {
     return {
       browserId: BROWSER_ID,
       documentation: async () => BROWSER_DOCUMENTATION,
-      history: async ({ queries, from, to, limit = 100 } = {}) => {
+      history: async (/** @type {{ queries?: string[], from?: string | number | Date, to?: string | number | Date, limit?: number }} */ { queries, from, to, limit = 100 } = {}) => {
         const search = async (text) =>
           call("history.search", {
             text,
@@ -198,9 +200,9 @@ export function createCua() {
         const results = queries?.length ? (await Promise.all(queries.map(search))).flat() : await search("");
         const unique = [...new Map(results.map((entry) => [entry.url, entry])).values()];
         return unique
-          .sort((a, b) => b.lastVisitTime - a.lastVisitTime)
+          .sort((a, b) => (b.lastVisitTime ?? 0) - (a.lastVisitTime ?? 0))
           .slice(0, limit)
-          .map((entry) => ({ url: entry.url, title: entry.title, dateVisited: new Date(entry.lastVisitTime).toISOString() }));
+          .map((entry) => ({ url: entry.url, title: entry.title, dateVisited: entry.lastVisitTime === undefined ? null : new Date(entry.lastVisitTime).toISOString() }));
       },
       tabs: {
         list: listTabs,
@@ -212,7 +214,8 @@ export function createCua() {
             // An extension older than this server lacks tabs.selected.
             if (!/Unknown method tabs\.selected/.test(error.message)) throw error;
             const focused = await call("browser.manage", { namespace: "windows", method: "getLastFocused", args: [{ windowTypes: ["normal"] }] });
-            return (await call("tabs.list")).find((tab) => tab.active && tab.windowId === focused.id);
+            const windowId = focused && typeof focused === "object" && "id" in focused ? focused.id : undefined;
+            return (await call("tabs.list")).find((tab) => tab.active && tab.windowId === windowId);
           });
           return active ? bind(active) : undefined;
         },
@@ -251,6 +254,7 @@ export function createCua() {
       if (emit) emitText(JSON.stringify(browsers));
       return browsers;
     },
+    /** @param {{ browser?: string, emit?: boolean }} [options] */
     async listTabs({ browser, emit = true } = {}) {
       checkBrowser(browser);
       const result = await listTabs();
@@ -261,6 +265,7 @@ export function createCua() {
       }
       return result;
     },
+    /** @param {{ id?: string }} [options] */
     async getBrowser({ id } = {}) {
       checkBrowser(id);
       showDocumentation();
