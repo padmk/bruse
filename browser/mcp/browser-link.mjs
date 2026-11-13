@@ -305,7 +305,8 @@ function becomeHub() {
         if (message.type === "event") {
           const reaches = (session) => !Array.isArray(message.audience) || message.audience.includes(session);
           if (reaches(sessionId)) emitEvent(message);
-          for (const [client, clientSession] of clients) if (reaches(clientSession)) client.send(text);
+          // A client that has not named its session yet acts for none, and the extension refuses it the tabs.
+          for (const [client, clientSession] of clients) if (clientSession !== null && reaches(clientSession)) client.send(text);
           return;
         }
         pending.get(message.id)?.(message);
