@@ -207,12 +207,13 @@ export function attachedTabIds() {
 
 // Whether the agent session behind a command may use the tab now, or, for the extension's own work,
 // whether any session may (see access.js); the service worker sets it. Every command names its caller:
-// { session } for an agent's request, or EXTENSION_WORK (download interception); a missing caller is a
-// programming error, not a fallback. It is
-// asked before the debugger attaches, again once an attach completes, before every command and before
-// each recovery step that changes the page, so a share the user stops or an access setting the user
+// { session } for an agent's request ({ session, rearranges: true } for one that ends the tab's page,
+// which only a session that may close the tab sends), or EXTENSION_WORK (download interception); a
+// missing caller is a programming error, not a fallback. It is asked, together with the pause switch,
+// before the debugger attaches, again once an attach completes, before every command and before each
+// recovery step that changes the page, so a pause, a share the user stops or an access setting the user
 // changes while a command, an attach or a recovery is in flight ends it instead of letting it reach the
-// tab.
+// tab. (The pause also detaches every tab, but its change event arrives a moment after the switch.)
 let mayDebug = async () => true;
 
 export const EXTENSION_WORK = Object.freeze({ extension: true });
@@ -224,7 +225,9 @@ export function setDebugGate(gate) {
 
 async function requireDebugAccess(tabId, caller) {
   if (caller !== EXTENSION_WORK && !(caller && "session" in caller)) throw new Error("A debugger command was sent without its caller");
-  if (!(await mayDebug(tabId, caller))) throw new Error(NO_ACCESS);
+  const [paused, allowed] = await Promise.all([isPaused(), mayDebug(tabId, caller)]);
+  if (paused) throw new Error(PAUSED_ERROR);
+  if (!allowed) throw new Error(NO_ACCESS);
 }
 
 function attach(tabId) {
@@ -238,7 +241,6 @@ function attach(tabId) {
 }
 
 async function attachNow(tabId) {
-  if (await isPaused()) throw new Error(PAUSED_ERROR);
   // An attach is shared by concurrent callers, so it asks whether any session may use the tab; each
   // caller's own access is checked once it completes (withDebuggerAccess).
   await requireDebugAccess(tabId, EXTENSION_WORK);
@@ -253,15 +255,13 @@ async function attachNow(tabId) {
   }
   const session = { lastUsed: Date.now(), dialog: null, console: [], dialogWaiters: [], crashWaiters: [], objectGroups: new Map(), pageContexts: new Map(), frames: new Map(), requests: [], inflight: new Map(), attachedAt: Date.now(), networkActivityAt: null };
   sessions.set(tabId, session);
-  // A pause that came while the attach was in flight found no session to detach; one that comes from
-  // now on finds this one.
-  if (await isPaused()) {
+  // A pause or a change of access that came while the attach was in flight found no session to detach;
+  // one that comes from now on finds this one.
+  try {
+    await requireDebugAccess(tabId, EXTENSION_WORK);
+  } catch (error) {
     await detach(tabId);
-    throw new Error(PAUSED_ERROR);
-  }
-  if (!(await mayDebug(tabId, EXTENSION_WORK))) {
-    await detach(tabId);
-    throw new Error(NO_ACCESS);
+    throw error;
   }
   // A crash while the attach was in flight found no session to end; one that comes from now on does.
   if (await hasNoPage(tabId)) {
@@ -310,7 +310,15 @@ const CLOSE_ENABLE_WAIT_MS = 1_000;
 // call never settles. So the debugger is attached while the tab closes and accepts every dialog of the
 // tab, also one that was open before. This is the extension's own work on a tab the caller may close,
 // so it does not ask the access gate; it sends the page nothing but those answers.
-export async function closeTab(tabId) {
+// Every close, by an agent or by session cleanup, passes here. While agents are paused no tab closes,
+// and `check` (which throws to refuse, for an agent's close whether the session may still close the tab)
+// must hold too: both are asked before the debugger attaches and again right before the tab is removed,
+// since preparing the close takes a while. A refused close leaves the tab open and rejects.
+export async function closeTab(tabId, { check } = {}) {
+  const allowed = () => Promise.all([isPaused().then((paused) => {
+    if (paused) throw new Error(PAUSED_ERROR);
+  }), check?.()]);
+  await allowed();
   const target = { tabId };
   const accept = (sessionId) => chrome.debugger.sendCommand(sessionId ? { tabId, sessionId } : target, "Page.handleJavaScriptDialog", { accept: true }).catch(() => {});
   const wasOpen = Boolean(sessions.get(tabId)?.dialog);
@@ -329,6 +337,8 @@ export async function closeTab(tabId) {
     // that dialog is answered, so it is not waited for longer than a page without one takes.
     const enabled = chrome.debugger.sendCommand(target, "Page.enable").catch(() => {});
     await Promise.race([enabled, new Promise((resolve) => setTimeout(resolve, CLOSE_ENABLE_WAIT_MS))]);
+    // Nothing awaits between this check and the removal.
+    await allowed();
     await new Promise((resolve, reject) => {
       onRemoved = (id) => id === tabId && resolve();
       chrome.tabs.onRemoved.addListener(onRemoved);

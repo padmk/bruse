@@ -253,3 +253,23 @@ test("the selected tab is undefined in a user window and found once shared", asy
   await env.share(focused.id, false);
   await s.close();
 });
+
+test("a share stopped while a duplicate of the tab is prepared opens no duplicate", async (t) => {
+  const u = url("/page?duplicate-of-share");
+  const user = await userTab(u);
+  await env.share(user.id);
+  const { s } = await sessionWithTab(url("/page?duplicate-own"));
+  t.after(() => s.close());
+  // Holds the duplicate's lookup of the active tab, after the call's access was checked.
+  const hold = await env.holdCall("chrome.tabs.query", `stack.includes("tabs.duplicate")`);
+  t.after(() => hold.release().catch(() => {}));
+  const result = s.js(`await m.tabs.duplicate(${user.id});`).then(
+    () => null,
+    (error) => error,
+  );
+  await hold.held();
+  await env.share(user.id, false);
+  await hold.release();
+  assert.match(String((await result)?.message), /has not shared it/);
+  assert.equal((await pages()).filter((page) => page === u).length, 1, "no duplicate of the tab opened");
+});

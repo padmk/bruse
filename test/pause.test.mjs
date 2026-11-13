@@ -99,34 +99,10 @@ test("a session ended for its absence while paused that reconnects before the re
   assert.equal(await present(url), true, "the reconnected session's tab stays open after resume");
 });
 
-// Holds the first call of chrome.storage.local[method] in the extension's service worker for which
-// `holds`, an expression of the call's argument `keys` (true only for calls from ending a session,
-// endSessionNow), is true, until `release()`; so that the user and the hub can act while the extension
-// ends a session.
-async function holdSessionEnd(method, holds) {
-  const { cdp, extensionId } = env.browser;
-  const { targetInfos } = await cdp.send("Target.getTargets");
-  const worker = targetInfos.find((target) => target.type === "service_worker" && target.url.startsWith(`chrome-extension://${extensionId}/`));
-  const { sessionId } = await cdp.send("Target.attachToTarget", { targetId: worker.targetId, flatten: true });
-  const evaluate = async (expression) => (await cdp.send("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true }, sessionId)).result.value;
-  await evaluate(`(() => {
-    const original = chrome.storage.local.${method};
-    const held = (globalThis.heldEnd = { original, calls: 0, release: null });
-    chrome.storage.local.${method} = async function (keys) {
-      if (held.calls || !(${holds}) || !new Error().stack.includes("endSessionNow")) return original.call(this, keys);
-      held.calls++;
-      await new Promise((resolve) => (held.release = resolve));
-      return original.call(this, keys);
-    };
-  })()`);
-  return {
-    held: () => until(() => evaluate("globalThis.heldEnd.calls > 0"), { timeoutMs: GRACE_MS + 15_000, message: "a session end to start" }),
-    async release() {
-      await evaluate(`chrome.storage.local.${method} = globalThis.heldEnd.original; globalThis.heldEnd.release()`);
-      await cdp.send("Target.detachFromTarget", { sessionId });
-    },
-  };
-}
+// Holds the first call of chrome.storage.local[method] by the extension's end of a session
+// (endSessionNow) for which `holds`, an expression of the call's arguments `args`, is true, until
+// `release()`; so that the user and the hub can act while the extension ends a session.
+const holdSessionEnd = (method, holds) => env.holdCall(`chrome.storage.local.${method}`, `(${holds}) && stack.includes("endSessionNow")`, { timeoutMs: GRACE_MS + 15_000 });
 
 test("a session whose end is under way when the user pauses keeps its tabs until the user resumes", async (t) => {
   const client = await hubClient(env.port, env.stateDir);
@@ -134,7 +110,7 @@ test("a session whose end is under way when the user pauses keeps its tabs until
   const url = `${site.origin}/?pause-during-end`;
   const tab = await client.call("tabs.create", { url });
   // Holds the write that forgets this session's tab, the last step before the extension closes it.
-  const hold = await holdSessionEnd("set", `keys.agentState && !keys.agentState.tabs[${tab.id}]`);
+  const hold = await holdSessionEnd("set", `args[0].agentState && !args[0].agentState.tabs[${tab.id}]`);
   t.after(() => hold.release().catch(() => {}));
   const ending = client.call("session.end");
   await hold.held();
@@ -146,6 +122,52 @@ test("a session whose end is under way when the user pauses keeps its tabs until
   assert.equal(await present(url), true, "the tab stays open while paused");
   await setPaused(false);
   await until(async () => !(await present(url)), { message: "the ended session's tab to close after resume" });
+});
+
+test("a tab that the agent is closing when the user pauses stays open", async (t) => {
+  const client = await hubClient(env.port, env.stateDir);
+  t.after(() => client.close());
+  const url = `${site.origin}/?close-during-pause`;
+  const tab = await client.call("tabs.create", { url });
+  // Holds the check of the session's ownership, after the request passed the check for a pause.
+  const hold = await env.holdCall("chrome.storage.local.get", `args[0] === "agentState" && stack.includes("tabs.close")`);
+  t.after(() => hold.release().catch(() => {}));
+  const closing = client.call("tabs.close", { tabId: tab.id }).then(
+    () => null,
+    (error) => error,
+  );
+  await hold.held();
+  await setPaused(true);
+  t.after(() => setPaused(false));
+  await hold.release();
+  assert.match(String((await closing)?.message), /paused/);
+  await sleep(500);
+  assert.equal(await present(url), true, "the tab stays open while paused");
+  assert.equal(await agentTabAttached(url), false, "no debugger stays attached while paused");
+});
+
+test("a session ended for its absence while paused that is reported live as the user resumes keeps its tabs", async (t) => {
+  const url = `${site.origin}/?absent-back-at-resume`;
+  const first = await hubClient(env.port, env.stateDir);
+  await first.call("tabs.create", { url });
+  await setPaused(true);
+  t.after(() => setPaused(false));
+  first.close();
+  // Recorded the way an end for its absence does in the moment the pause starts (see above).
+  await env.inPopup(`chrome.storage.local.get("agentState").then(({ agentState }) => chrome.storage.local.set({
+    agentState: { ...agentState, pausedEnds: [...(agentState.pausedEnds ?? []), ${JSON.stringify(first.sessionId)}], absentEnds: [${JSON.stringify(first.sessionId)}] },
+  }))`);
+  // Holds the read with which the resume starts ending the session.
+  const hold = await env.holdCall("chrome.storage.local.get", `args[0] === "agentState" && stack.includes("endPausedEnds")`);
+  t.after(() => hold.release().catch(() => {}));
+  await setPaused(false);
+  await hold.held();
+  const back = await hubClient(env.port, env.stateDir, { sessionId: first.sessionId });
+  t.after(() => back.close());
+  await sleep(1_000);
+  await hold.release();
+  await sleep(1_500);
+  assert.equal(await present(url), true, "the reconnected session's tab stays open after resume");
 });
 
 test("pausing ends a download wait in progress", async (t) => {
@@ -188,17 +210,19 @@ test("a session that vanishes from the live report while paused keeps its tabs u
   await until(async () => !(await present(url)), { timeoutMs: GRACE_MS + 30_000, message: "the vanished session's tab to close after resume" });
 });
 
-// Runs last: it kills the hub.
+// Kills the hub.
 test("a session that reconnects while its end for its absence is under way and the user pauses keeps its tabs", async (t) => {
   const url = `${site.origin}/?absent-pause-back`;
   const first = await hubClient(env.port, env.stateDir);
   await first.call("tabs.create", { url });
   const next = await env.session();
   await next.js("await cua.getState();");
-  const hold = await holdSessionEnd("get", `keys === "agentState"`);
+  const killed = nextHub;
+  nextHub = next;
+  const hold = await holdSessionEnd("get", `args[0] === "agentState"`);
   t.after(() => hold.release().catch(() => {}));
   // The next session becomes the hub and reports only itself, so the first one is absent.
-  nextHub.kill();
+  killed.kill();
   // The grace period passes while agents run, so the extension starts ending the session.
   await hold.held();
   await setPaused(true);
@@ -211,4 +235,27 @@ test("a session that reconnects while its end for its absence is under way and t
   await setPaused(false);
   await sleep(1_500);
   assert.equal(await present(url), true, "the reconnected session's tab stays open after resume");
+});
+
+// Runs last: it kills the hub.
+test("a session reported live again while its end for its absence is saved keeps its tabs", async (t) => {
+  const url = `${site.origin}/?absent-back-after-save`;
+  // A client of the hub, which ends no session when the hub is killed.
+  const first = await hubClient(env.port, env.stateDir);
+  const tab = await first.call("tabs.create", { url });
+  const next = await env.session();
+  await next.js("await cua.getState();");
+  // Holds the write that forgets the session's tab, after the end checked for a newer report.
+  const hold = await holdSessionEnd("set", `args[0].agentState && !args[0].agentState.tabs[${tab.id}]`);
+  t.after(() => hold.release().catch(() => {}));
+  // The next session becomes the hub and reports only itself, so the first one is absent.
+  nextHub.kill();
+  await hold.held();
+  const back = await hubClient(env.port, env.stateDir, { sessionId: first.sessionId });
+  t.after(() => back.close());
+  await sleep(1_000);
+  await hold.release();
+  await sleep(1_500);
+  assert.equal(await present(url), true, "the returned session's tab stays open");
+  assert.ok(String(tab.id) in (await back.call("tabs.agent")), "the tab is still the session's");
 });
