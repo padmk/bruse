@@ -3,6 +3,7 @@
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import { hubClient, startEnvironment, startSite, until } from "./harness.mjs";
+import { ignore } from "../browser/extension/shared.js";
 
 const GRACE_MS = 2_000;
 let env;
@@ -111,7 +112,7 @@ test("a session whose end is under way when the user pauses keeps its tabs until
   const tab = await client.call("tabs.create", { url });
   // Holds the write that forgets this session's tab, the last step before the extension closes it.
   const hold = await holdSessionEnd("set", `args[0].agentState && !args[0].agentState.tabs[${tab.id}]`);
-  t.after(() => hold.release().catch(() => {}));
+  t.after(() => hold.release().catch(ignore("cleanup: a release the test made already fails")));
   const ending = client.call("session.end");
   await hold.held();
   await setPaused(true);
@@ -131,7 +132,7 @@ test("a tab that the agent is closing when the user pauses stays open", async (t
   const tab = await client.call("tabs.create", { url });
   // Holds the check of the session's ownership, after the request passed the check for a pause.
   const hold = await env.holdCall("chrome.storage.local.get", `args[0] === "agentState" && stack.includes("tabs.close")`);
-  t.after(() => hold.release().catch(() => {}));
+  t.after(() => hold.release().catch(ignore("cleanup: a release the test made already fails")));
   const closing = client.call("tabs.close", { tabId: tab.id }).then(
     () => null,
     (error) => error,
@@ -159,7 +160,7 @@ test("a session ended for its absence while paused that is reported live as the 
   }))`);
   // Holds the read with which the resume starts ending the session.
   const hold = await env.holdCall("chrome.storage.local.get", `args[0] === "agentState" && stack.includes("endPausedEnds")`);
-  t.after(() => hold.release().catch(() => {}));
+  t.after(() => hold.release().catch(ignore("cleanup: a release the test made already fails")));
   await setPaused(false);
   await hold.held();
   const back = await hubClient(env.port, env.stateDir, { sessionId: first.sessionId });
@@ -220,7 +221,7 @@ test("a session that reconnects while its end for its absence is under way and t
   const killed = nextHub;
   nextHub = next;
   const hold = await holdSessionEnd("get", `args[0] === "agentState"`);
-  t.after(() => hold.release().catch(() => {}));
+  t.after(() => hold.release().catch(ignore("cleanup: a release the test made already fails")));
   // The next session becomes the hub and reports only itself, so the first one is absent.
   killed.kill();
   // The grace period passes while agents run, so the extension starts ending the session.
@@ -247,7 +248,7 @@ test("a session reported live again while its end for its absence is saved keeps
   await next.js("await cua.getState();");
   // Holds the write that forgets the session's tab, after the end checked for a newer report.
   const hold = await holdSessionEnd("set", `args[0].agentState && !args[0].agentState.tabs[${tab.id}]`);
-  t.after(() => hold.release().catch(() => {}));
+  t.after(() => hold.release().catch(ignore("cleanup: a release the test made already fails")));
   // The next session becomes the hub and reports only itself, so the first one is absent.
   nextHub.kill();
   await hold.held();

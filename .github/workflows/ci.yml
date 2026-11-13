@@ -22,6 +22,8 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: ${{ matrix.node }}
+      # The type checker and linter; the server and the extension themselves have no dependencies.
+      - run: npm ci --ignore-scripts
       - run: node scripts/check.mjs
 
   # Unit tests and end-to-end tests in a real Chromium.

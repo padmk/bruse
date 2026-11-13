@@ -5,6 +5,7 @@ import http from "node:http";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { hubClient, sendFrame, startEnvironment, until } from "./harness.mjs";
+import { ignore } from "../browser/extension/shared.js";
 
 let env;
 let hub;
@@ -40,7 +41,9 @@ async function rawPeer(path, origin) {
   const result = await upgrade(path, origin);
   assert.ok(result.socket, `upgrade of ${path} rejected: ${result.status}`);
   const { socket } = result;
-  const peer = { socket, messages: [], closed: false, send: (value) => sendFrame(socket, value), destroy: () => socket.destroy() };
+  /** @type {{ type?: string }[]} */
+  const messages = [];
+  const peer = { socket, messages, closed: false, send: (value) => sendFrame(socket, value), destroy: () => socket.destroy() };
   let data = result.head;
   let taken = 0;
   const parseFrames = () => {
@@ -62,7 +65,7 @@ async function rawPeer(path, origin) {
     parseFrames();
   });
   socket.on("close", () => (peer.closed = true));
-  socket.on("error", () => {});
+  socket.on("error", ignore("a reset ends the peer, which the test reads from closed"));
   parseFrames();
   peer.next = async (matches = () => true) => {
     const message = await until(() => peer.messages.slice(taken).find(matches), { message: `a message on ${path}` });

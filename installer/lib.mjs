@@ -51,6 +51,7 @@ export const step = (text) => console.log(`\n\x1b[1m${text}\x1b[0m`);
 export const note = (text) => console.log(`  ${text}`);
 
 // Why an agent CLI's command failed. A crashed CLI prints nothing, so its output may be empty.
+/** @param {{ stderr?: unknown, stdout?: unknown, signal?: string | null, error?: Error, status?: number | null }} result */
 export function failureReason({ stderr, stdout, signal, error, status }) {
   const output = `${stderr ?? ""}`.trim() || `${stdout ?? ""}`.trim();
   if (output) return output;
@@ -58,6 +59,12 @@ export function failureReason({ stderr, stdout, signal, error, status }) {
   return signal ? `its command was ended by ${signal}` : `its command exited with status ${status}`;
 }
 
+// Files in browser/ that only development uses (type-check settings, Finder metadata); setup and the
+// package leave them out of their copies.
+/** @param {string} path */
+export const isDevelopmentFile = (path) => path.endsWith(".DS_Store") || path.endsWith("tsconfig.json");
+
+/** @param {string} text @returns {never} */
 export function fail(text) {
   console.error(`\n\x1b[31m${text}\x1b[0m`);
   process.exit(1);

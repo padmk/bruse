@@ -19,7 +19,7 @@ function reply(message) {
 
 let answered = false;
 let input = Buffer.alloc(0);
-process.stdin.on("data", (chunk) => {
+process.stdin.on("data", (/** @type {Buffer} */ chunk) => {
   if (answered) return;
   input = Buffer.concat([input, chunk]);
   if (input.length >= 4 && input.readUInt32LE(0) > 4096) { process.exit(1); return; }
@@ -28,7 +28,9 @@ process.stdin.on("data", (chunk) => {
   let request = null;
   try {
     request = JSON.parse(input.subarray(4, 4 + input.readUInt32LE(0)).toString());
-  } catch {}
+  } catch {
+    // Not JSON: the request stays null and gets the answer for an unknown request.
+  }
   try {
     reply(request?.type === "secret" ? { secret: ensureExtensionSecret() } : { error: "Unknown request" });
   } catch (error) {
