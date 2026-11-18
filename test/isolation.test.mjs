@@ -339,3 +339,24 @@ test("a hub client that names no session is refused", async () => {
     client.close();
   }
 });
+
+test("a user tab moved into a new window while it opens does not become the session's", async (t) => {
+  const user = await userTab(url("/page?moved-in-user"));
+  t.after(() => env.inPopup(`chrome.tabs.remove(${user.id})`));
+  const s = await env.session();
+  t.after(() => s.close());
+  await s.js(`const m = await (await cua.getBrowser()).capabilities.get('management');`);
+  const opened = url("/page?moved-in-own");
+  // Holds the browser's answer to the window's creation, while the user moves a tab into the new window.
+  const hold = await env.holdCall("chrome.windows.create", "true", { answered: true });
+  t.after(() => hold.release().catch(ignore("cleanup: a release the test made already fails")));
+  const created = json(s, `await m.windows.create({ url: ${JSON.stringify(opened)} })`);
+  await hold.held();
+  const { windowId } = await tabOf(opened);
+  await env.inPopup(`chrome.tabs.move(${user.id}, { windowId: ${windowId}, index: -1 })`);
+  await hold.release();
+  await created;
+  assert.equal(await env.inPopup(`import("./agent-state.js").then((state) => state.tabOwner(${user.id}))`), null, "the user's tab has no owner");
+  const owner = await env.inPopup(`chrome.tabs.query({}).then((tabs) => import("./agent-state.js").then((state) => state.tabOwner(tabs.find((tab) => tab.url === ${JSON.stringify(opened)}).id)))`);
+  assert.equal(typeof owner, "string", "the window's own tab is the session's");
+});

@@ -129,8 +129,10 @@ chrome.debugger.onEvent.addListener(({ tabId, sessionId: source }, name, data) =
       session.frames.set(params.targetInfo.targetId, { sessionId: params.sessionId, url: params.targetInfo.url, parentSessionId: source ?? null });
       frameOfSession.set(params.sessionId, params.targetInfo.targetId);
       tabOfFrameSession.set(params.sessionId, tabId);
+      // The two maps hold the same sessions, also after they detach (a command for one goes to the
+      // frame's next session), and forget the oldest together.
       const oldest = frameOfSession.keys().next();
-      if (frameOfSession.size > MAX_REMEMBERED_FRAME_SESSIONS && !oldest.done) frameOfSession.delete(oldest.value);
+      if (frameOfSession.size > MAX_REMEMBERED_FRAME_SESSIONS && !oldest.done) forgetFrameSession(oldest.value);
       enableChildSession(tabId, params.sessionId);
     } else if (params.targetInfo.type === "worker") {
       // A dedicated worker's script request starts in the page's session and reports no end there.
@@ -269,8 +271,13 @@ const attaching = new Map();
 /** @type {Map<string, number>} frame session id -> tab id */
 const tabOfFrameSession = new Map();
 chrome.tabs.onRemoved.addListener((tabId) => {
-  for (const [sessionId, owner] of tabOfFrameSession) if (owner === tabId) tabOfFrameSession.delete(sessionId);
+  for (const [sessionId, owner] of tabOfFrameSession) if (owner === tabId) forgetFrameSession(sessionId);
 });
+/** @param {string} sessionId */
+function forgetFrameSession(sessionId) {
+  frameOfSession.delete(sessionId);
+  tabOfFrameSession.delete(sessionId);
+}
 
 // The tabs the debugger is attached to.
 export function attachedTabIds() {
@@ -463,10 +470,13 @@ export async function closeTab(tabId, { check } = {}) {
 // Returns { removed, remaining, errors }: the elements removed, how many other extensions' frames the
 // page still holds a moment later, and why frames could not be scripted.
 /** @typedef {{ removed: number, remaining: number, errors: string[] }} FrameRemoval */
-/** @param {number} tabId @returns {Promise<FrameRemoval>} */
-async function removeForeignExtensionFrames(tabId) {
+/** @param {number} tabId @param {Caller} caller @returns {Promise<FrameRemoval>} */
+async function removeForeignExtensionFrames(tabId, caller) {
   // The browser lists the page's own frames only, which are the ones that can hold such a frame.
   const frames = (await chrome.webNavigation.getAllFrames({ tabId }).catch(() => null)) ?? [{ frameId: 0, url: "" }];
+  // The scripts change the page, so the caller must still reach the tab once the frames are known. Nothing
+  // awaits between this check and the scripts' start.
+  await requireDebugAccess(tabId, caller);
   /** @type {FrameRemoval} */
   const report = { removed: 0, remaining: 0, errors: [] };
   await Promise.all(
@@ -593,7 +603,7 @@ async function withDebuggerAccess(tabId, task, caller) {
       if (removals.length >= FOREIGN_FRAME_RETRIES) throw new Error(foreignFrameFailure(message, removals));
       // Removing frames changes the page, so the caller's access is checked again after the failed attempt.
       await requireDebugAccess(tabId, caller);
-      const removal = await removeForeignExtensionFrames(tabId);
+      const removal = await removeForeignExtensionFrames(tabId, caller);
       if (detached && !removal.removed) throw error;
       removals.push(removal);
       await detach(tabId);

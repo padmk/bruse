@@ -205,3 +205,30 @@ test("selected tab is the active tab of the last focused window", async (t) => {
   assert.equal(state.selected, state.active.find((tab) => tab.windowId === state.focused)?.id, JSON.stringify(state));
   await s.close();
 });
+
+// A peer server whose connection to the hub drops links up again with the same session; only its
+// session.end, not the closed connection, ends the session.
+test("a client that reconnects with its session keeps its tabs and opens more", async () => {
+  const hub = await env.session();
+  await hub.js("await cua.getState();");
+  const sessionId = randomUUID();
+  const first = await hubClient(env.port, env.stateDir, { sessionId });
+  const kept = url("/page?reconnect-kept");
+  await first.call("tabs.create", { url: kept });
+  await waitPage(kept, true);
+  first.close();
+  await new Promise((resolve) => setTimeout(resolve, 1_500));
+  const again = await hubClient(env.port, env.stateDir, { sessionId });
+  try {
+    assert.equal(await present(kept), true, "the tab stays open across the reconnect");
+    const added = url("/page?reconnect-added");
+    await again.call("tabs.create", { url: added });
+    await waitPage(added, true);
+    await again.call("session.end");
+    await waitPage(kept, false);
+    await waitPage(added, false);
+  } finally {
+    again.close();
+    await hub.close();
+  }
+});

@@ -358,8 +358,15 @@ export async function createAgentTabs(sessionId, create) {
  * @returns {Promise<{ open: number[], paused: boolean, error: unknown }>}
  */
 async function closeTabsOfEndedSession(state, sessionId, tabIds) {
+  // Recorded as closing until the close is done, as in endSessionNow.
+  for (const tabId of tabIds) state.closing[tabId] = { sessionId, mark: null };
+  await save(state);
   const { open, error } = await closeTabs(tabIds);
-  if (!open.length) return { open, paused: false, error: null };
+  for (const tabId of tabIds) delete state.closing[tabId];
+  if (!open.length) {
+    await save(state);
+    return { open, paused: false, error: null };
+  }
   const paused = await isPaused();
   for (const tabId of open) state.tabs[tabId] = { sessionId, mark: null };
   // A session forgotten as ended meanwhile (reported live again) is noted as an explicit end.
@@ -529,12 +536,16 @@ async function endSessionNow(sessionId, cause, superseded = () => false) {
     if (isKept(entry.mark)) kept.push(Number(tabId));
     else toClose.push(Number(tabId));
     ended[tabId] = entry;
+    state.closing[tabId] = entry;
     delete state.tabs[tabId];
   }
-  // The session gets back its tabs except those that closed.
+  // The session gets back its tabs except those that closed, and none of them is closing anymore.
   /** @param {number[]} closed */
   const restore = (closed) => {
-    for (const [tabId, entry] of Object.entries(ended)) if (!closed.includes(Number(tabId))) state.tabs[tabId] = entry;
+    for (const [tabId, entry] of Object.entries(ended)) {
+      delete state.closing[tabId];
+      if (!closed.includes(Number(tabId))) state.tabs[tabId] = entry;
+    }
   };
   // Undoes the end for a newer report: the session's tabs and ends as they were, and it may open tabs again.
   /** @param {number[]} closed */
@@ -563,10 +574,10 @@ async function endSessionNow(sessionId, cause, superseded = () => false) {
     return { closed: closed.length };
   }
   if (superseded()) return undo(closed);
-  if (open.length) {
-    for (const tabId of open) state.tabs[tabId] = ended[tabId];
-    await save(state);
-  }
+  // The end is done: the tabs that stayed open stay the session's, the kept ones are no one's.
+  for (const tabId of Object.keys(ended)) delete state.closing[tabId];
+  for (const tabId of open) state.tabs[tabId] = ended[tabId];
+  await save(state);
   // A kept tab is the user's again, so the browser may discard it like any other (see keepLoaded).
   await Promise.all(kept.map((tabId) => chrome.tabs.ungroup(tabId).catch(ignore("a kept tab that closed or left the group needs no ungrouping"))));
   for (const tabId of kept) chrome.tabs.update(tabId, { autoDiscardable: true }).catch(ignore("a kept tab that closed needs no change"));
@@ -729,6 +740,20 @@ async function endPausedEnds() {
     }
   }
 }
+// Tabs that an end was closing when the service worker stopped (an extension reload) go back to their
+// session, so that its next end, or the sweep for its absence, closes them; see AgentState.closing.
+async function returnClosingTabs() {
+  const state = await load();
+  const entries = Object.entries(state.closing);
+  if (!entries.length) return;
+  for (const [tabId, entry] of entries) {
+    if (!state.tabs[tabId] && (await chrome.tabs.get(Number(tabId)).then(() => true, () => false))) state.tabs[tabId] = entry;
+  }
+  state.closing = {};
+  await save(state);
+}
+serialized(returnClosingTabs).catch(logFailure("Returning the tabs of an unfinished session end"));
+
 onPausedChange((/** @type {boolean} */ paused) => {
   if (paused) return;
   serialized(endPausedEnds).catch(logFailure("Ending sessions that ended while agents were paused"));

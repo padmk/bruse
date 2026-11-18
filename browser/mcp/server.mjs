@@ -147,9 +147,10 @@ class ReplHost {
 
   constructor() {
     this.nextId = 1;
-    this.generation = 0; // of the current worker; its requests carry it (see requests.js in the extension)
+    this.generation = 0; // of the current worker, moved on by each reset; its requests carry it (see requests.js in the extension)
     this.pending = new Map();
     this.runId = null; // request id of the js call the worker is running
+    this.relayedGeneration = 0; // the generation of the latest browser call relayed
     this.pressed = new PressedInput();
     onBrowserEvent((event) => {
       guardFocus(event);
@@ -161,13 +162,15 @@ class ReplHost {
   start() {
     // The server's standard output carries the MCP protocol, so what REPL code or a module it loads prints
     // there (process.stdout) goes to the server's log instead.
-    const generation = ++this.generation;
+    ++this.generation;
     const worker = (this.worker = new Worker(new URL("./repl-worker.mjs", import.meta.url), { workerData: { sessionId }, stderr: false, stdout: true }));
     worker.stdout.pipe(process.stderr, { end: false });
     let failure = null;
     worker.on("message", (message) => {
+      // A call gets the generation current when it arrives: a reset (see reset()) answers after the calls
+      // the worker sent before it, and moves the generation on for those it sends afterwards.
       if (message.type === "browser-call") {
-        this.relay(worker, generation, message).catch(logFailure("Relaying a browser call"));
+        this.relay(worker, this.generation, message).catch(logFailure("Relaying a browser call"));
         return;
       }
       this.pending.get(message.id)?.(message.result);
@@ -195,22 +198,25 @@ class ReplHost {
   }
 
   async relay(worker, generation, { callId, method, params }) {
-    // A replaced worker may still be running until it is terminated; it reaches nothing anymore.
-    if (worker !== this.worker) return;
+    // A replaced worker may still be running until it is terminated, and a reset worker's code from before
+    // the reset may still be waiting here; neither reaches anything anymore.
+    const current = () => worker === this.worker && generation === this.generation;
+    if (!current()) return;
     let reply;
+    this.relayedGeneration = generation;
     try {
       if (isOpeningInput(method, params)) {
         await beforeInput(params.tabId);
-        // The worker may have been replaced meanwhile; its input must not arrive after the reset.
-        if (worker !== this.worker) return;
+        // The REPL may have been replaced or reset meanwhile; its input must not arrive after that.
+        if (!current()) return;
       }
       const released = this.pressed.note(method, params);
-      reply = { type: "browser-reply", callId, result: await callBrowser(method, params, { wanted: () => worker === this.worker, generation }) };
-      if (worker === this.worker) released();
+      reply = { type: "browser-reply", callId, result: await callBrowser(method, params, { wanted: current, generation }) };
+      if (current()) released();
     } catch (error) {
       reply = { type: "browser-reply", callId, error: error?.message ?? String(error) };
     }
-    if (worker === this.worker) worker.postMessage(reply);
+    if (current()) worker.postMessage(reply);
   }
 
   // Replaces the worker and has the extension cancel the browser requests the old one left in flight.
@@ -259,8 +265,18 @@ class ReplHost {
     settle?.(CANCELLED);
   }
 
+  // Resets the REPL, in the same worker when it confirms in time, else by replacing it. As after a
+  // replacement, the extension cancels the browser requests of the code before the reset still in flight,
+  // and the keys and mouse buttons it held are released. Resolves with whether the extension confirmed the
+  // cancel (true when no request was sent since the last one).
   async reset() {
-    if ((await this.request({ type: "reset" }, RESET_WAIT_MS)) === undefined) await this.restart();
+    if ((await this.request({ type: "reset" }, RESET_WAIT_MS)) === undefined) return this.restart();
+    const used = this.relayedGeneration === this.generation;
+    const held = this.pressed.take();
+    ++this.generation;
+    const confirmed = used ? await cancelInFlight(this.generation) : true;
+    releaseInput(held);
+    return confirmed;
   }
 }
 
@@ -329,9 +345,9 @@ async function handle(message) {
       }
       if (name === "js_reset") {
         return serialized(async () => {
-          await repl.reset();
+          const confirmed = await repl.reset();
           pendingCancelNote = null;
-          return { content: [{ type: "text", text: "The REPL was reset." }] };
+          return { content: [{ type: "text", text: confirmed ? "The REPL was reset." : `The REPL was reset, but ${REQUESTS_UNCONFIRMED}.` }] };
         });
       }
       throw Object.assign(new Error(`Unknown tool ${name}`), { code: -32602 });

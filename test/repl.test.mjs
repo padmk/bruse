@@ -66,6 +66,7 @@ for (const [name, source, expected] of [
   ["typeof before prefix", "typeof ++x\nlet after = 13", 13],
   ["await before prefix", "await ++x\nlet after = 14", 14],
   ["keyword property", "obj.return++\nlet after = 15", 15],
+  ["block comment that spans lines", "let before = 1 /* one\n two */ let after = 16", 16],
 ]) {
   test(`REPL preserves declaration after ${name}`, async (t) => {
     const client = await server(t);
@@ -74,3 +75,39 @@ for (const [name, source, expected] of [
     assert.equal((await cell(client, "nodeRepl.write(after)")).trim(), String(expected));
   });
 }
+
+// A soft reset keeps the worker, and the server passes on no answer to a browser call from before the
+// reset, so the worker ends such calls itself.
+test("a reset ends the browser call a running cell waits for", async (t) => {
+  const { Worker } = await import("node:worker_threads");
+  const worker = new Worker(new URL("../browser/mcp/repl-worker.mjs", import.meta.url), { workerData: { sessionId: "test-session" } });
+  t.after(() => worker.terminate());
+  const messages = [];
+  worker.on("message", (message) => messages.push(message));
+  const next = (matches, timeoutMs) =>
+    new Promise((resolve, reject) => {
+      const found = messages.find(matches);
+      if (found) return resolve(found);
+      const timer = setTimeout(() => reject(new Error(`No matching worker message within ${timeoutMs} ms: ${JSON.stringify(messages)}`)), timeoutMs);
+      worker.on("message", function listener(message) {
+        if (!matches(message)) return;
+        clearTimeout(timer);
+        worker.off("message", listener);
+        resolve(message);
+      });
+    });
+  worker.postMessage({ type: "run", id: 1, code: "await cua.listTabs({ emit: false });", timeoutMs: 30_000 });
+  const call = await next((message) => message.type === "browser-call", 5_000);
+  worker.postMessage({ type: "reset", id: 2 });
+  await next((message) => message.id === 2, 2_000);
+  const run = await next((message) => message.id === 1, 2_000);
+  const text = run.result.content.map((item) => item.text).join("\n");
+  assert.equal(run.result.isError, true, text);
+  assert.match(text, /The REPL was reset/);
+  // A late answer to the call changes nothing: no second result, and the worker still runs cells.
+  worker.postMessage({ type: "browser-reply", callId: call.callId, result: [] });
+  worker.postMessage({ type: "run", id: 3, code: "nodeRepl.write('after');", timeoutMs: 5_000 });
+  const after = await next((message) => message.id === 3, 5_000);
+  assert.equal(after.result.content.map((item) => item.text).join("\n"), "after");
+  assert.equal(messages.filter((message) => message.id === 1).length, 1, "the cell has one result");
+});

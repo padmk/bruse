@@ -2,6 +2,7 @@
 // loop, or a timer the code scheduled) by terminating the worker. Messages: run, reset.
 
 import { parentPort as threadPort } from "node:worker_threads";
+import { abandonPendingCalls } from "./browser-port.mjs";
 import { Repl } from "./repl.mjs";
 
 if (!threadPort) throw new Error("repl-worker.mjs runs in a worker thread that server.mjs starts");
@@ -33,6 +34,7 @@ parentPort.on("message", (message) => {
     );
   } else if (message.type === "reset") {
     repl.reset();
+    abandonPendingCalls();
     parentPort.postMessage({ id: message.id, result: null });
   }
 });

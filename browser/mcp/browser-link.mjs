@@ -301,7 +301,7 @@ function becomeHub() {
           } catch {
             // No pairing secret yet: the proof below cannot match, and the cause is reported.
           }
-          if (message.type === "auth" && secret && HEX_NONCE.test(message.nonce) && sameHex(message.mac, hmac(secret, `extension:${nonce}`))) activate(secret, message.nonce);
+          if (message.type === "auth" && secret && typeof message.nonce === "string" && HEX_NONCE.test(message.nonce) && sameHex(message.mac, hmac(secret, `extension:${nonce}`))) activate(secret, message.nonce);
           else {
             if (message.type === "auth") pairingFailure = { cause: secret ? OTHER_SECRET : NO_HUB_SECRET, at: Date.now() };
             peer.close();
@@ -368,9 +368,9 @@ function becomeHub() {
         }
         request(message.method, message.params, (reply) => peer.send(JSON.stringify({ ...reply, id: message.id })), clientSession, message.generation);
       });
+      // A client ends its session with session.end before it closes (endSession); one that closes without it may reconnect, so its session only leaves the live report.
       peer.on("close", () => {
         if (!clients.delete(peer)) return;
-        if (clientSession) request("session.end", { sessionId: clientSession }, ignore("nobody waits for the reply of a client that is gone"), clientSession);
         reportSessions();
       });
     }

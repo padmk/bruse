@@ -220,6 +220,8 @@ test("impostors cannot authenticate or replace the pairing", { timeout: 120_000 
   for (const message of [
     { type: "auth", mac: "0".repeat(64), nonce: "x" },
     { type: "auth", mac: "é".repeat(64), nonce: "x" },
+    // A nonce that is no string, which a regular expression cannot even turn into one.
+    { type: "auth", mac: "0".repeat(64), nonce: { toString: 1 } },
     { type: "pair", secret: "a".repeat(64), nonce: "x" },
   ]) {
     await rejectedExtension(message);

@@ -6,7 +6,8 @@ import assert from "node:assert/strict";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { hubClient, lastJson, startEnvironment, startSite } from "./harness.mjs";
+import { hubClient, lastJson, startEnvironment, startSite, until } from "./harness.mjs";
+import { ignore } from "../browser/extension/shared.js";
 
 const fixture = fileURLToPath(new URL("./fixtures/password-manager", import.meta.url));
 let env, site, frameSite, session;
@@ -67,4 +68,28 @@ test("a frame command after the debugger attached anew goes to the frame's new s
   } finally {
     client.close();
   }
+});
+
+test("a pause that comes while the frames to remove are listed leaves the page alone", async (t) => {
+  // The session's call starts the hub, which the client joins.
+  await session.js("await cua.getState();");
+  const client = await hubClient(env.port, env.stateDir);
+  t.after(() => client.close());
+  const { id: tabId } = await client.call("tabs.create", { url: `${site.origin}/?pause#menu` });
+  const menus = () => env.inPopup(`chrome.scripting.executeScript({ target: { tabId: ${tabId} }, func: () => document.querySelector("#shadow-host")?.shadowRoot?.querySelectorAll("com-1password-menu").length ?? 0 }).then(([injection]) => injection.result)`);
+  await until(async () => (await menus()) === 1, { message: "the menu to show" });
+  // Holds the list of the page's frames, after the removal's check of access and before its scripts.
+  const hold = await env.holdCall("chrome.webNavigation.getAllFrames", "true", { answered: true });
+  t.after(() => hold.release().catch(ignore("cleanup: a release the test made already fails")));
+  const read = client.call("page.state", { tabId }).then(
+    () => null,
+    (error) => error,
+  );
+  await hold.held();
+  const setPaused = (paused) => env.inPopup(`import("./pause.js").then((pause) => pause.setPaused(${paused}))`);
+  await setPaused(true);
+  t.after(() => setPaused(false));
+  await hold.release();
+  assert.match(String((await read)?.message), /paused/);
+  assert.equal(await menus(), 1, "the menu stays in the page");
 });

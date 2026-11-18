@@ -70,7 +70,8 @@ function tabSummary(tab) {
 
 // One instance per REPL session: tracks bound tabs (so element numbers persist), shown documentation
 // and notifications to report after each call. After dispose() every browser call of the instance
-// fails, so code left over from a reset REPL (timers, un-awaited promises) cannot act anymore.
+// fails, so code left over from a reset REPL (timers, un-awaited promises) sends no more requests; the
+// server has the extension cancel those it sent before (ReplHost.reset in server.mjs).
 export function createCua() {
   const tabs = new Map(); // tab id -> Tab
   const notifications = [];

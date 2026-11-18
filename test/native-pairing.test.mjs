@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -44,6 +44,22 @@ test("native host preserves existing pairings and registers only the pinned exte
     assert.deepEqual(manifest.allowed_origins, [...EXTENSION_ORIGINS].map((origin) => `${origin}/`));
     assert.deepEqual(pairingHostProblems(copy.browserDir, dataDirs), []);
     assert.match(pairingHostProblems(copy.browserDir, [join(copy.dir, "missing")])[0], /Run bruse setup/);
+  } finally { copy.remove(); }
+});
+
+test("a pairing secret left incomplete is replaced with a complete one", async () => {
+  const copy = browserCopy(await freePort());
+  try {
+    const stateDir = join(copy.dir, "state");
+    mkdirSync(stateDir, { recursive: true });
+    for (const damaged of ["", "0123abcd"]) {
+      writeFileSync(join(stateDir, "extension-secret"), damaged);
+      const secret = await nativeSecret(copy, stateDir);
+      assert.match(secret, /^[0-9a-f]{64}$/);
+      assert.equal(readFileSync(join(stateDir, "extension-secret"), "utf8").trim(), secret);
+      assert.equal(await nativeSecret(copy, stateDir), secret, "the replacement stays");
+    }
+    assert.deepEqual(readdirSync(stateDir), ["extension-secret"], "no temporary file stays behind");
   } finally { copy.remove(); }
 });
 
@@ -108,6 +124,38 @@ test("a flood of challenges on one connection gets one answer", { timeout: 60_00
     // Time for the native hosts of further answers to start and reply.
     await new Promise((resolve) => setTimeout(resolve, 3_000));
     assert.ok([...answers.values()].every((count) => count <= 1), JSON.stringify([...answers.values()]));
+  } finally {
+    await browser?.close();
+    for (const peer of peers) peer.close();
+    await new Promise((resolve) => server.close(resolve));
+    copy.remove();
+  }
+});
+
+test("a challenge whose nonce is not a string gets no answer", { timeout: 60_000 }, async () => {
+  const port = await freePort();
+  const copy = browserCopy(port);
+  const stateDir = join(copy.dir, "state");
+  const { acceptUpgrade } = await import(join(copy.browserDir, "mcp", "websocket.mjs"));
+  const server = http.createServer();
+  const peers = [];
+  const answers = [];
+  server.on("upgrade", (req, socket) => {
+    const peer = acceptUpgrade(req, socket);
+    peers.push(peer);
+    peer.on("message", (text) => answers.push(text));
+    // An array turns into the string of its one element, which looks like a nonce.
+    peer.send(JSON.stringify({ type: "challenge", nonce: ["a".repeat(64)] }));
+  });
+  server.listen(port, "127.0.0.1");
+  await once(server, "listening");
+  let browser;
+  try {
+    browser = await launchBrowser(copy.extensionDir, { pairing: { browserDir: copy.browserDir, stateDir } });
+    await until(() => peers.length > 0, { message: "the extension to connect" });
+    // Time for the native host to start and an answer to arrive.
+    await new Promise((resolve) => setTimeout(resolve, 3_000));
+    assert.deepEqual(answers, []);
   } finally {
     await browser?.close();
     for (const peer of peers) peer.close();

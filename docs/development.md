@@ -47,7 +47,9 @@ MCP server (hub) ◀──WebSocket 127.0.0.1:47615──▶ extension ──chr
     generations still in flight in the extension (`browser/extension/requests.js`): each is refused at
     its next check before an effect (`requireAgentEffect` in `access.js`, the debugger gate in `cdp.js`).
     Then it releases the keys and mouse buttons the old worker held; the server's own requests carry no
-    generation, so no later cancel stops those releases. The browser connection stays in the main
+    generation, so no later cancel stops those releases. `js_reset` keeps a worker that confirms the reset in
+    time, but moves its generation on and cancels and releases the same way, since code from before the
+    reset may still have requests in flight. The browser connection stays in the main
     thread and survives the replacement; the worker reaches it through `browser-port.mjs`. The worker's
     standard output is piped to the server's standard error, because the server's own carries the protocol.
   - `repl.mjs`: the persistent REPL; `hoist.mjs`: turns top-level declarations of a cell into globals so

@@ -9,6 +9,9 @@
  * @property {Record<string, number>} windowGroups window id -> the id of its agent tab group
  * @property {(string | null)[]} pausedEnds sessions that ended while agents were paused, whose tabs close on resume
  * @property {(string | null)[]} absentEnds those of pausedEnds that ended for their absence from the hub's reports
+ * @property {Record<string, AgentTabEntry>} closing tab id -> its entry, for the tabs a session's end is closing:
+ *   no session owns them meanwhile, and a service worker that stopped before the end finished gives them
+ *   back to their session, so that a later end closes them
  */
 
 /**
@@ -36,6 +39,20 @@ function sessionList(value) {
 }
 
 /**
+ * @param {unknown} value
+ * @returns {Record<string, AgentTabEntry>}
+ */
+function tabEntries(value) {
+  /** @type {Record<string, AgentTabEntry>} */
+  const entries = {};
+  if (!isRecord(value)) return entries;
+  for (const [tabId, entry] of Object.entries(value)) {
+    if (isRecord(entry)) entries[tabId] = { sessionId: stringOrNull(entry.sessionId), mark: stringOrNull(entry.mark) };
+  }
+  return entries;
+}
+
+/**
  * What storage holds, as an AgentState: a missing or malformed field is empty.
  * @param {unknown} stored
  * @returns {AgentState}
@@ -43,12 +60,7 @@ function sessionList(value) {
 function parseAgentState(stored) {
   const record = isRecord(stored) ? stored : {};
   /** @type {AgentState} */
-  const state = { tabs: {}, windowGroups: {}, pausedEnds: sessionList(record.pausedEnds), absentEnds: sessionList(record.absentEnds) };
-  if (isRecord(record.tabs)) {
-    for (const [tabId, entry] of Object.entries(record.tabs)) {
-      if (isRecord(entry)) state.tabs[tabId] = { sessionId: stringOrNull(entry.sessionId), mark: stringOrNull(entry.mark) };
-    }
-  }
+  const state = { tabs: tabEntries(record.tabs), windowGroups: {}, pausedEnds: sessionList(record.pausedEnds), absentEnds: sessionList(record.absentEnds), closing: tabEntries(record.closing) };
   if (isRecord(record.windowGroups)) {
     for (const [windowId, groupId] of Object.entries(record.windowGroups)) {
       if (typeof groupId === "number") state.windowGroups[windowId] = groupId;

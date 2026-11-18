@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
+import { chmodSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { after, before, test } from "node:test";
-import { startEnvironment, until } from "./harness.mjs";
+import { startEnvironment, tempDir, until } from "./harness.mjs";
 import { ignore } from "../browser/extension/shared.js";
 
 // A js call that times out or is cancelled ends with its REPL replaced. Browser requests it already sent
@@ -115,4 +117,51 @@ test("a held key's release survives the cancel of a later call", async (t) => {
   assert.match(second.result.content.map((item) => item.text).join("\n"), /timed out/);
   await hold.release();
   await until(() => tabTitled("Released Shift"), { message: "the held Shift to be released" });
+});
+
+// js_reset keeps the worker when it answers in time; code left from before the reset must not act either.
+test("a close held at its last check when the REPL is reset does not happen afterwards", async (t) => {
+  const s = await env.session();
+  t.after(() => s.close());
+  const { opened, hold } = await heldClose(s, "Reset probe");
+  t.after(() => hold.release().catch(ignore("cleanup: a release the test made already fails")));
+  // The close goes on after its call returned.
+  await s.js("globalThis.closing = tab.close().catch(() => {});");
+  await hold.held();
+  const { result } = await s.request("tools/call", { name: "js_reset", arguments: {} });
+  assert.match(result.content.map((item) => item.text).join("\n"), /The REPL was reset\.$/);
+  await hold.release();
+  assert.ok(await staysOpen(opened.id), "the tab stays open");
+});
+
+test("a key held before the REPL is reset is released", async (t) => {
+  const s = await env.session();
+  t.after(() => s.close());
+  const page = `<title>Reset key</title><script>addEventListener("keyup", (event) => (document.title = "Released " + event.key))</script>`;
+  await s.js(`const tab = await cua.createBrowserTab("1", ${JSON.stringify(`data:text/html,${page}`)});`);
+  await until(() => tabTitled("Reset key"), { message: "the page to open" });
+  await s.js(`await tab.cdpSender()("Input.dispatchKeyEvent", { type: "rawKeyDown", key: "Shift", code: "ShiftLeft", windowsVirtualKeyCode: 16 });`);
+  await s.request("tools/call", { name: "js_reset", arguments: {} });
+  await until(() => tabTitled("Released Shift"), { message: "the held Shift to be released" });
+});
+
+// Before a press the server asks macOS which app is in front (the focus guard, see focus-guard.mjs), and
+// it waits for the answer. Here the answer never comes (lsappinfo hangs until its 2 s limit), so the
+// press waits while the REPL is reset.
+test("a press waiting for the front app when the REPL is reset never reaches the page", { skip: process.platform !== "darwin" }, async (t) => {
+  const bin = tempDir("bin");
+  t.after(() => rmSync(bin, { recursive: true, force: true }));
+  writeFileSync(join(bin, "lsappinfo"), "#!/bin/sh\nsleep 10\n");
+  chmodSync(join(bin, "lsappinfo"), 0o755);
+  const s = await env.session({ env: { BRUSE_NO_FOCUS_GUARD: "", PATH: `${bin}:${process.env.PATH}` } });
+  t.after(() => s.close());
+  const page = `<title>Waiting press</title><script>addEventListener("keydown", (event) => (document.title = "Pressed " + event.key))</script>`;
+  await s.js(`const tab = await cua.createBrowserTab("1", ${JSON.stringify(`data:text/html,${page}`)}); const send = tab.cdpSender();`);
+  await until(() => tabTitled("Waiting press"), { message: "the page to open" });
+  await s.js(`globalThis.pressing = send("Input.dispatchKeyEvent", { type: "rawKeyDown", key: "Shift", code: "ShiftLeft", windowsVirtualKeyCode: 16 }).catch(() => null);`);
+  const { result } = await s.request("tools/call", { name: "js_reset", arguments: {} });
+  assert.match(result.content.map((item) => item.text).join("\n"), /The REPL was reset/);
+  // Past the front app's 2 s limit, after which the press would go out.
+  await new Promise((resolve) => setTimeout(resolve, 3_500));
+  assert.ok(await tabTitled("Waiting press"), "the press never reached the page");
 });

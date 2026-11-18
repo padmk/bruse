@@ -22,6 +22,7 @@ before(async () => {
     <iframe src="${frame.origin}/"></iframe><button onclick="window.confirmed=confirm('Proceed?')">Confirm</button>
     <button onclick="console.log('hello log');console.error('hello error')">Log</button><input aria-label="Keys" value="select me">
     <button onclick="while(true){}">Hang</button>`,
+    "/file": '<!doctype html><title>File</title><label>Upload <input type="file" multiple></label>',
   });
   env = await startEnvironment();
   session = await env.session();
@@ -124,4 +125,29 @@ test("unresponsive page commands time out", { timeout: 60000 }, async () => {
   const start = Date.now();
   await assert.rejects(session.js(`await tab.pressKey(null, 'Tab');`, 40000), /respond|timed out/i);
   assert.ok(Date.now() - start < 20000);
+});
+
+test("a file chooser that opens before interception is confirmed is caught", async (t) => {
+  await session.js(`var fileTab = await cua.createBrowserTab("1", ${JSON.stringify(`${site.origin}/file`)});`);
+  // The extension hears the browser's confirmation that interception is on 1.5 s late, so the chooser the
+  // click opens is reported before it.
+  const worker = await env.worker();
+  t.after(async () => {
+    await worker.evaluate("globalThis.restoreSendCommand?.()");
+    await worker.close();
+  });
+  await worker.evaluate(`(() => {
+    const original = chrome.debugger.sendCommand;
+    globalThis.restoreSendCommand = () => (chrome.debugger.sendCommand = original);
+    chrome.debugger.sendCommand = function (target, method, params, callback) {
+      if (method !== "Page.setInterceptFileChooserDialog" || !params?.enabled || typeof callback !== "function") return original.apply(this, arguments);
+      return original.call(this, target, method, params, (result) => setTimeout(() => callback(result), 1_500));
+    };
+  })()`);
+  const output = await session.js(`
+    const chooser = fileTab.playwright.waitForEvent("filechooser", { timeoutMs: 6_000 });
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    await fileTab.playwright.getByLabel("Upload").click();
+    nodeRepl.write(JSON.stringify((await chooser).isMultiple()));`);
+  assert.equal(lastJson(output), true);
 });

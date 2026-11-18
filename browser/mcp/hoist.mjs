@@ -43,7 +43,10 @@ function scan(code) {
       while (i < code.length && code[i] !== "\n") i++;
     } else if (c === "/" && code[i + 1] === "*") {
       const end = code.indexOf("*/", i + 2);
-      i = end < 0 ? code.length : end + 2;
+      const after = end < 0 ? code.length : end + 2;
+      // A comment that spans lines counts as a line break between the tokens around it.
+      if (code.slice(i, after).includes("\n")) newlineSinceLast = true;
+      i = after;
     } else if (c === "'" || c === '"') {
       const start = i++;
       while (i < code.length && code[i] !== c) i += code[i] === "\\" ? 2 : 1;

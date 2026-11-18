@@ -535,7 +535,8 @@ const OPENING_METHODS = {
       const window = /** @type {chrome.windows.Window | undefined} */ (await managementCall("windows", "create")(options));
       if (window?.id === undefined) throw new Error("The browser opened no window");
       created.windowId = window.id;
-      return (await chrome.tabs.query({ windowId: window.id })).filter((tab) => tab.id !== (isRecord(options) ? options.tabId : undefined));
+      // The tabs the window opened with, not a later query: a tab moved into the window meanwhile is not the session's.
+      return (window.tabs ?? []).filter((tab) => tab.id !== (isRecord(options) ? options.tabId : undefined));
     });
     if (created.windowId === undefined) throw new Error("The browser opened no window");
     return chrome.windows.get(created.windowId, { populate: true });
@@ -739,8 +740,8 @@ async function handle(gen, text) {
     if (hub.challenged) return null;
     hub.challenged = true;
     // A hub's nonce is 32 random bytes; whatever sends another holds the port without being a hub.
-    const nonce = String(message.nonce);
-    if (!/^[0-9a-f]{64}$/.test(nonce)) return null;
+    const nonce = message.nonce;
+    if (typeof nonce !== "string" || !/^[0-9a-f]{64}$/.test(nonce)) return null;
     const connection = hub;
     const reply = await answerChallenge(nonce, connection);
     return hub === connection ? JSON.stringify(reply) : null;

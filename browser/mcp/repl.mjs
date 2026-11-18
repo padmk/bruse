@@ -132,16 +132,20 @@ export class Repl {
     });
   }
 
-  pushText(text) {
-    if (!this.items) return;
-    const last = this.items[this.items.length - 1];
+  // Adds text to `items`, by default those of the call running now (none after a reset).
+  pushText(text, items = this.items) {
+    if (!items) return;
+    const last = items[items.length - 1];
     if (last?.type === "text") last.text += `\n${text}`;
-    else this.items.push({ type: "text", text });
+    else items.push({ type: "text", text });
   }
 
   // Runs one `js` call and returns MCP content items plus whether it failed. The server sets the timeout.
+  // A reset while the call runs ends what the cell's code writes; its own failure and result still go to
+  // this call.
   async run(code, timeoutMs) {
     const output = (this.items = []);
+    const session = this.cuaSession;
     useOutput({
       text: (text) => this.pushText(text),
       image: (data, mimeType) => output.push({ type: "image", data, mimeType }),
@@ -168,16 +172,16 @@ export class Repl {
       isError = true;
       // Errors thrown in the vm come from another realm, so instanceof Error does not apply.
       const text = typeof error?.stack === "string" ? error.stack : error?.message ?? String(error);
-      this.pushText(text.split("\n").filter((line) => !line.includes("node:internal")).slice(0, 6).join("\n"));
+      this.pushText(text.split("\n").filter((line) => !line.includes("node:internal")).slice(0, 6).join("\n"), output);
       if (/Script execution timed out/.test(text)) timedOut = true;
     } finally {
       // Also when the vm timeout threw before the race began, so the timer does not reject unobserved.
       clearTimeout(timer);
     }
-    const notifications = await this.cuaSession.takeNotifications();
-    if (notifications.length) this.pushText(`Notifications:\n${notifications.map((n) => `- ${n}`).join("\n")}`);
-    const items = this.items.length ? limitText(this.items) : [{ type: "text", text: "" }];
-    this.items = null;
+    const notifications = await session.takeNotifications();
+    if (notifications.length) this.pushText(`Notifications:\n${notifications.map((n) => `- ${n}`).join("\n")}`, output);
+    const items = output.length ? limitText(output) : [{ type: "text", text: "" }];
+    if (this.items === output) this.items = null;
     useOutput(null);
     // Code that outlived its call could still act; the server replaces this worker when it sees timedOut.
     if (timedOut) this.reset();

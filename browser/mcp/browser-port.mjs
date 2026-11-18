@@ -33,6 +33,13 @@ export function callBrowser(method, ...[params = {}]) {
   });
 }
 
+// Ends the calls still waiting for an answer, which a reset of the REPL stops the server from passing on, so
+// nothing of the code before the reset waits for ever.
+export function abandonPendingCalls() {
+  for (const { reject } of pending.values()) reject(new Error("The REPL was reset"));
+  pending.clear();
+}
+
 export function onBrowserEvent(listener) {
   eventListeners.add(listener);
   return () => eventListeners.delete(listener);
