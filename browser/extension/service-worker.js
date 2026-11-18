@@ -7,11 +7,13 @@ import { attachedTabIds, cdp, closeTab, consoleLogs, detach, hasNoPage, networkR
 import { waitForDownload } from "./downloads.js";
 import { PAUSED_ERROR, isPaused } from "./pause.js";
 import { agentTabs, createAgentTab, createAgentTabs, endSession, markTab, noteAgentInput, onTabOpened, openingSession, setLiveSessions } from "./sessions.js";
+import { tabsOpenedByWindowCreate } from "./created-tabs.js";
 import { checkRequest } from "./guard.js";
 import { beginRequest, cancelSessionRequests } from "./requests.js";
 import { fromExtensionPage, isRecord } from "./sender.js";
 import { LOAD_PAGE_HINT, PAIRING_HOST, MANAGEMENT_METHODS, actsOn, extensionBuild, ignore, isPressInput, logFailure, methodRules } from "./shared.js";
 
+/** @typedef {import("./shared.js").LoadEnd} LoadEnd */
 /** @typedef {import("./shared.js").Method} Method */
 /** @template {Method} M @typedef {import("./shared.js").Params<M>} Params */
 /** @template {Method} M @typedef {import("./shared.js").Result<M>} Result */
@@ -80,30 +82,38 @@ async function requirePermission(permission, what) {
 // to leave holds the navigation back), so the wait ends there. It also ends when the tab closes (as one
 // whose address turns out to be a download does) or its page crashes.
 /** @param {number} tabId @param {number} [timeoutMs] @returns {Promise<boolean>} */
-function waitForLoad(tabId, timeoutMs = LOAD_TIMEOUT_MS) {
+async function waitForLoad(tabId, timeoutMs = LOAD_TIMEOUT_MS) {
+  return (await loadEnd(tabId, timeoutMs)).loaded;
+}
+
+// The same wait, with why it ended when the page did not load.
+/** @param {number} tabId @param {number} [timeoutMs] @returns {Promise<LoadEnd>} */
+function loadEnd(tabId, timeoutMs = LOAD_TIMEOUT_MS) {
   return new Promise((resolve) => {
-    /** @param {boolean} loaded */
-    const done = (loaded) => {
+    /** @param {LoadEnd} end */
+    const done = (end) => {
       clearTimeout(timer);
       chrome.tabs.onUpdated.removeListener(listener);
       chrome.tabs.onRemoved.removeListener(onRemoved);
       stopCdpWatch();
-      resolve(loaded);
+      resolve(end);
     };
     const stopCdpWatch = onCdpEvent((id, method, _params, source) => {
-      if (id === tabId && (method === "Page.javascriptDialogOpening" || (method === "Inspector.targetCrashed" && !source))) done(false);
+      if (id !== tabId) return;
+      if (method === "Page.javascriptDialogOpening") done({ loaded: false, reason: "dialog" });
+      else if (method === "Inspector.targetCrashed" && !source) done({ loaded: false, reason: "crashed" });
     });
     /** @param {number} id @param {chrome.tabs.OnUpdatedInfo} change */
     const listener = (id, change) => {
-      if (id === tabId && change.status === "complete") done(true);
+      if (id === tabId && change.status === "complete") done({ loaded: true });
     };
     /** @param {number} id */
-    const onRemoved = (id) => id === tabId && done(false);
-    const timer = setTimeout(() => done(false), timeoutMs);
+    const onRemoved = (id) => id === tabId && done({ loaded: false, reason: "closed" });
+    const timer = setTimeout(() => done({ loaded: false, reason: "timeout" }), timeoutMs);
     chrome.tabs.onUpdated.addListener(listener);
     chrome.tabs.onRemoved.addListener(onRemoved);
-    if (openDialog(tabId)) return done(false);
-    chrome.tabs.get(tabId).then((tab) => tab.status === "complete" && done(true), () => done(false));
+    if (openDialog(tabId)) return done({ loaded: false, reason: "dialog" });
+    chrome.tabs.get(tabId).then((tab) => tab.status === "complete" && done({ loaded: true }), () => done({ loaded: false, reason: "closed" }));
   });
 }
 
@@ -250,14 +260,14 @@ const handlers = {
     return tabInfo(await chrome.tabs.get(tabId));
   },
 
-  "tabs.waitForLoad": async ({ tabId, timeoutMs }) => ({ loaded: await waitForLoad(tabId, timeoutMs) }),
+  "tabs.waitForLoad": ({ tabId, timeoutMs }) => loadEnd(tabId, timeoutMs),
 
   "tabs.close": async ({ tabId }, request) => {
     await closeTab(tabId, { check: closeCheck(request, tabId) });
     return null;
   },
 
-  "tabs.mark": ({ tabId, mark }) => markTab(tabId, mark),
+  "tabs.mark": ({ tabId, mark }, request) => markTab(tabId, mark, () => requireAgentEffect(request, { reach: [tabId] })),
   // The session's own tabs and their marks.
   "tabs.agent": async (_, { session }) => Object.fromEntries(Object.entries(await agentTabs()).filter(([, entry]) => entry.sessionId === session)),
   "session.end": (_, { session }) => endSession(session),
@@ -535,8 +545,8 @@ const OPENING_METHODS = {
       const window = /** @type {chrome.windows.Window | undefined} */ (await managementCall("windows", "create")(options));
       if (window?.id === undefined) throw new Error("The browser opened no window");
       created.windowId = window.id;
-      // The tabs the window opened with, not a later query: a tab moved into the window meanwhile is not the session's.
-      return (window.tabs ?? []).filter((tab) => tab.id !== (isRecord(options) ? options.tabId : undefined));
+      // Only the tabs the call opened: a tab moved or opened into the window meanwhile is not the session's.
+      return tabsOpenedByWindowCreate(options, window.tabs);
     });
     if (created.windowId === undefined) throw new Error("The browser opened no window");
     return chrome.windows.get(created.windowId, { populate: true });

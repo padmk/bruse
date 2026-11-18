@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHmac, randomBytes } from "node:crypto";
-import { readFileSync, statSync } from "node:fs";
+import { readFileSync, statSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
@@ -91,7 +91,7 @@ async function rejectedExtension(message) {
     await until(() => data.length >= 2 && data.length >= 2 + (data[1] & 127), { message: "authentication challenge" });
     const challenge = JSON.parse(data.subarray(2, 2 + (data[1] & 127)).toString());
     assert.equal(challenge.type, "challenge");
-    sendFrame(socket, message);
+    sendFrame(socket, typeof message === "function" ? message(challenge) : message);
     await until(() => closed, { message: "unauthenticated extension to close" });
     const remaining = data.subarray(2 + (data[1] & 127));
     assert.ok(!remaining.includes(Buffer.from("auth-ok")), "unauthenticated peer received auth-ok");
@@ -228,6 +228,19 @@ test("impostors cannot authenticate or replace the pairing", { timeout: 120_000 
     assert.equal(readFileSync(secretPath(), "utf8"), original);
     await call(hub);
   }
+});
+
+test("a pairing secret cut short is no key the hub takes", { timeout: 120_000 }, async () => {
+  const original = readFileSync(secretPath(), "utf8");
+  const partial = original.slice(0, 2);
+  writeFileSync(secretPath(), partial);
+  try {
+    const nonce = "1".repeat(64);
+    await rejectedExtension((challenge) => ({ type: "auth", nonce, mac: createHmac("sha256", partial).update(`extension:${challenge.nonce}`).digest("hex") }));
+  } finally {
+    writeFileSync(secretPath(), original);
+  }
+  await call(hub);
 });
 
 test("reinstalled extension retrieves the existing native pairing without a reset", { timeout: 120_000 }, async () => {

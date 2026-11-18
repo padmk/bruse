@@ -35,6 +35,14 @@ const DOWNLOAD_WAIT_MS = 30_000;
 const NAVIGATION_TIMEOUT_MS = 30_000;
 // The error of such a wait whose page did not reach `what` (a load state) within `timeoutMs`.
 const notReached = (what, timeoutMs) => new Error(`The page did not reach ${what} within ${timeoutMs} ms`);
+// The error of a load wait that ended without a load: why it ended, or the timeout when the extension gave no other reason.
+const LOAD_ENDED = {
+  dialog: "The page opened a JavaScript dialog before it finished loading; handle it with `const dialog = await tab.getJsDialog()` and `dialog.accept()` or `dialog.dismiss()`",
+  crashed: "The page crashed before it finished loading",
+  closed: "The tab closed before its page finished loading",
+};
+/** @param {{ reason?: string }} end @param {number} timeoutMs */
+const notLoaded = (end, timeoutMs) => (end.reason && Object.hasOwn(LOAD_ENDED, end.reason) ? new Error(LOAD_ENDED[end.reason]) : notReached("load", timeoutMs));
 // Shorter than a call's default timeout, so the wait ends (and stops intercepting) within the call.
 const FILE_CHOOSER_WAIT_MS = 20_000;
 // How long a click by element number waits for something covering the element (an animation, a toast) to go away.
@@ -594,8 +602,8 @@ export class Tab {
           }
           return;
         }
-        const { loaded } = await tab.context.call("tabs.waitForLoad", { tabId: tab.tabId, timeoutMs });
-        if (!loaded) throw timedOut("load");
+        const end = await tab.context.call("tabs.waitForLoad", { tabId: tab.tabId, timeoutMs });
+        if (!end.loaded) throw notLoaded(end, timeoutMs);
         if (state !== "networkidle") return;
         for (;;) {
           const { inflightRequests, networkQuietMs } = await tab.pageState();
@@ -610,8 +618,8 @@ export class Tab {
           if (Date.now() > deadline) throw new Error(`URL did not match ${pattern} within ${timeoutMs} ms`);
           await sleep(100);
         }
-        const { loaded } = await tab.context.call("tabs.waitForLoad", { tabId: tab.tabId, timeoutMs: Math.max(1, deadline - Date.now()) });
-        if (!loaded) throw notReached("load", timeoutMs);
+        const end = await tab.context.call("tabs.waitForLoad", { tabId: tab.tabId, timeoutMs: Math.max(1, deadline - Date.now()) });
+        if (!end.loaded) throw notLoaded(end, timeoutMs);
       },
       // Waits for a new document, so a reload or a submission back to the same URL also counts.
       /** @param {() => unknown} action @param {{ timeoutMs?: number, url?: string | RegExp }} [options] */
@@ -624,8 +632,8 @@ export class Tab {
           if (Date.now() > deadline) throw new Error("No navigation happened in time");
           await sleep(100);
         }
-        const { loaded } = await tab.context.call("tabs.waitForLoad", { tabId: tab.tabId, timeoutMs: Math.max(1, deadline - Date.now()) });
-        if (!loaded) throw notReached("load", timeoutMs);
+        const end = await tab.context.call("tabs.waitForLoad", { tabId: tab.tabId, timeoutMs: Math.max(1, deadline - Date.now()) });
+        if (!end.loaded) throw notLoaded(end, timeoutMs);
         return result;
       },
       /** @param {string} event @param {{ timeoutMs?: number }} [options] */
@@ -643,7 +651,8 @@ export class Tab {
           chooser.catch(ignore("a failed start of interception is the error the caller gets"));
           let opened;
           try {
-            await cdp("Page.setInterceptFileChooserDialog", { enabled: true });
+            // The chooser's deadline also bounds a start of interception that stalls.
+            await Promise.race([cdp("Page.setInterceptFileChooserDialog", { enabled: true }), chooser]);
             opened = await chooser;
           } finally {
             // Leave the user's own file pickers working; setFiles needs no interception.

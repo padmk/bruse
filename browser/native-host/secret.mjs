@@ -5,10 +5,7 @@
 import { randomBytes } from "node:crypto";
 import { chmodSync, linkSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
-import { EXTENSION_SECRET_PATH, STATE_DIR } from "../mcp/config.mjs";
-
-// What a complete secret looks like; the extension takes no other.
-const SECRET = /^[0-9a-f]{64}$/;
+import { COMPLETE_SECRET as SECRET, EXTENSION_SECRET_PATH, STATE_DIR } from "../mcp/config.mjs";
 
 /** @param {string} path @returns {string | null} the file's content, or null when there is no file */
 function readSecret(path) {

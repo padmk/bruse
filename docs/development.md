@@ -14,11 +14,12 @@ MCP server (hub) ◀──WebSocket 127.0.0.1:47615──▶ extension ──chr
   passes requests to `service-worker.js`, which checks each request with `guard.js` (web pages only,
   no raw DevTools commands beyond the tab) and handles tab lifecycle, browser management, history and
   downloads. `cdp.js` relays DevTools Protocol commands through `chrome.debugger`, including the
-  sessions of cross-origin frames, and tracks dialogs and console output. `sessions.js` keeps the tabs
+  sessions of cross-origin frames (`frame-sessions.js` remembers which frame and tab each belongs to), and
+  tracks dialogs and console output. `sessions.js` keeps the tabs
   of all agent sessions in one tab group per window, tracks which session owns each tab and closes a
   session's unmarked tabs when it ends, or when the hub has not listed it among the live sessions for
   a while. `downloads.js` pairs downloads with the tabs that started
-  them. `shared.js` is the one owner of what the extension and the MCP server must agree on (hub
+  them, and `created-tabs.js` tells which tabs of a new window the window's creation opened. `shared.js` is the one owner of what the extension and the MCP server must agree on (hub
   port, the requests the extension takes and how each is checked, management method allow-list, which input counts as the agent's press and for how long,
   password manager element names, the unresponsive-page error, the extension code fingerprint that
   setup, doctor and the benchmark compare); it uses no browser or Node APIs beyond Web Crypto, so
@@ -54,6 +55,8 @@ MCP server (hub) ◀──WebSocket 127.0.0.1:47615──▶ extension ──chr
     standard output is piped to the server's standard error, because the server's own carries the protocol.
   - `repl.mjs`: the persistent REPL; `hoist.mjs`: turns top-level declarations of a cell into globals so
     they persist and can be redeclared.
+  - `lines.mjs`: splits the MCP stream into messages at newlines only, since JSON may hold U+2028 and
+    U+2029, which `node:readline` takes for line ends.
   - `update-notice.mjs`: tells the agent once per session when the folder setup copied from (recorded
     in the installed copy's `update-source.json`; Homebrew's stable opt path, from `INSTALL_SOURCE`)
     holds another version, as after `brew upgrade bruse` without `bruse setup`.

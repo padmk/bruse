@@ -2,13 +2,13 @@
 // MCP stdio server with a persistent JavaScript REPL (`js`) whose `cua` global controls the user's
 // browser through the extension (see cua/ and browser-link.mjs).
 
-import { createInterface } from "node:readline";
 import { Worker } from "node:worker_threads";
 import { ignore, isPressInput, logFailure } from "../extension/shared.js";
 import { callBrowser, endSession, onBrowserEvent, sessionId } from "./browser-link.mjs";
 import { VERSION } from "./config.mjs";
 import { beforeInput, isOpeningInput, onEvent as guardFocus } from "./focus-guard.mjs";
 import { updateNotice } from "./update-notice.mjs";
+import { onLines } from "./lines.mjs";
 
 const SERVER_INFO = { name: "browser-control", version: VERSION };
 
@@ -357,12 +357,14 @@ async function handle(message) {
   }
 }
 
-createInterface({ input: process.stdin, crlfDelay: Infinity })
-  .on("line", (line) => {
+onLines(
+  process.stdin,
+  (line) => {
     answer(line).catch(logFailure("Answering an MCP message"));
-  })
+  },
   // The client closed the session: close this session's unmarked agent tabs, then exit.
-  .on("close", shutDown);
+  shutDown,
+);
 
 // Answers one line of the MCP stream; a request gets its reply, a notification none.
 async function answer(line) {

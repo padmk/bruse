@@ -23,6 +23,7 @@ before(async () => {
     <button onclick="console.log('hello log');console.error('hello error')">Log</button><input aria-label="Keys" value="select me">
     <button onclick="while(true){}">Hang</button>`,
     "/file": '<!doctype html><title>File</title><label>Upload <input type="file" multiple></label>',
+    "/alert-while-loading": '<!doctype html><title>Alert</title><script>alert("Before load")</script><img src="/never">',
   });
   env = await startEnvironment();
   session = await env.session();
@@ -100,6 +101,12 @@ test("confirm notification and acceptance", async () => {
   assert.deepEqual(await json(`(async()=>{const d=await tab.getJsDialog(); return [d.type,d.message]})()`), ["confirm", "Proceed?"]);
   await session.js(`await (await tab.getJsDialog()).accept();`);
   assert.equal(await json(`tab.playwright.evaluate(() => window.confirmed)`), true);
+});
+
+test("a load wait that a dialog ends says so instead of reporting a timeout", async () => {
+  await session.js(`const alerting = await cua.createBrowserTab("1", "${site.origin}/");`);
+  const output = await session.js(`await alerting.goto("${site.origin}/alert-while-loading").catch(() => {}); try { await alerting.playwright.waitForLoadState({ timeoutMs: 20000 }); nodeRepl.write("loaded"); } catch (error) { nodeRepl.write(String(error.message)); } finally { await (await alerting.getJsDialog())?.accept(); await alerting.close(); }`);
+  assert.match(output, /opened a JavaScript dialog before it finished loading/);
 });
 
 test("console logs include page messages", async () => {

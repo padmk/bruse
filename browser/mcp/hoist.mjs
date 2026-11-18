@@ -8,7 +8,11 @@ const CONTINUES_AFTER = new Set(["=", ",", "?", ":", "+", "-", "*", "/", "%", "&
 const CONTINUES_BEFORE = new Set([".", "?", ":", ",", ")", "]", "}", "=", "+", "-", "*", "/", "%", "&", "|", "^", "<", ">", "(", "[", "`", "=>", "in", "of", "instanceof"]);
 const CONDITION_KEYWORDS = new Set(["if", "while", "for", "with"]);
 const KEYWORDS_BEFORE_REGEX = new Set(["return", "typeof", "instanceof", "in", "of", "new", "delete", "void", "throw", "case", "do", "else", "yield", "await"]);
-const IDENT = /[A-Za-z0-9_$\u0080-\uffff]/;
+const IDENT = /[A-Za-z0-9_$\u0080-\u2027\u202a-\uffff]/;
+// JavaScript's line terminators: each ends a line for automatic semicolon insertion, also inside a block comment.
+const LINE_TERMINATOR = /[\n\r\u2028\u2029]/;
+// After these keywords a line break continues to the declared name, unless the word is a property name.
+const DECLARES_NAME = new Set(["function", "class"]);
 
 // Returns [{ start, end, kind, depth, statementStart }] tokens that matter for hoisting.
 function scan(code) {
@@ -24,8 +28,11 @@ function scan(code) {
     const previous = tokens[tokens.length - 1];
     // A line break at depth 0 ends the statement unless the surrounding tokens continue it. A prefix
     // ++ or -- continues onto its operand; a postfix one ends the expression.
+    const declaresName = DECLARES_NAME.has(previous?.text) && tokens[tokens.length - 2]?.text !== ".";
+    // "!" followed by "=" is the start of != or !==, which continue the expression before them.
+    const continuesBefore = CONTINUES_BEFORE.has(text[0] === "`" ? "`" : text) || (text === "!" && code[end] === "=");
     const lineBoundary =
-      newlineSinceLast && brackets.length === 0 && !!previous && !CONTINUES_AFTER.has(previous.text) && !previous.prefix && !CONTINUES_BEFORE.has(text[0] === "`" ? "`" : text);
+      newlineSinceLast && brackets.length === 0 && !!previous && !CONTINUES_AFTER.has(previous.text) && !declaresName && !previous.prefix && !continuesBefore;
     tokens.push({ start, end, kind, text, depth: brackets.length, lineBoundary, statementStart: statementStart || lineBoundary || !previous, ...extra });
     lastSignificant = text;
     newlineSinceLast = false;
@@ -34,18 +41,18 @@ function scan(code) {
 
   while (i < code.length) {
     const c = code[i];
-    if (c === "\n") {
+    if (LINE_TERMINATOR.test(c)) {
       newlineSinceLast = true;
       i++;
     } else if (/\s/.test(c)) {
       i++;
     } else if (c === "/" && code[i + 1] === "/") {
-      while (i < code.length && code[i] !== "\n") i++;
+      while (i < code.length && !LINE_TERMINATOR.test(code[i])) i++;
     } else if (c === "/" && code[i + 1] === "*") {
       const end = code.indexOf("*/", i + 2);
       const after = end < 0 ? code.length : end + 2;
       // A comment that spans lines counts as a line break between the tokens around it.
-      if (code.slice(i, after).includes("\n")) newlineSinceLast = true;
+      if (LINE_TERMINATOR.test(code.slice(i, after))) newlineSinceLast = true;
       i = after;
     } else if (c === "'" || c === '"') {
       const start = i++;

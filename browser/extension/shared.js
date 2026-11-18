@@ -95,6 +95,8 @@ export const logFailure = (what) => (error) => {
 /** @typedef {{ id: string, url?: string, title?: string, lastVisitTime?: number, visitCount?: number, typedCount?: number }} HistoryEntry */
 /** @typedef {{ path: string, url: string, mime: string }} DownloadInfo */
 
+// Whether a wait for a page's load saw it finish, and when not, why the wait ended (an older extension gives no reason).
+/** @typedef {{ loaded: true } | { loaded: false, reason?: "dialog" | "crashed" | "closed" | "timeout" }} LoadEnd */
 /** @typedef {{ tabId: number }} TabParams */
 
 /**
@@ -107,7 +109,7 @@ export const logFailure = (what) => (error) => {
  *   "tabs.create": { params: { url?: string, sessionId?: string }, result: TabInfo },
  *   "tabs.navigate": { params: TabParams & { url: string }, result: TabInfo },
  *   "tabs.history": { params: TabParams & { direction: "back" | "forward" | "reload" }, result: TabInfo },
- *   "tabs.waitForLoad": { params: TabParams & { timeoutMs?: number }, result: { loaded: boolean } },
+ *   "tabs.waitForLoad": { params: TabParams & { timeoutMs?: number }, result: LoadEnd },
  *   "tabs.close": { params: TabParams, result: null },
  *   "tabs.mark": { params: TabParams & { mark: string | null }, result: null },
  *   "tabs.agent": { params: {}, result: Record<string, AgentTabEntry> },

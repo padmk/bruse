@@ -463,18 +463,22 @@ async function groupAgentTabsNow(tabIds, sessionId) {
 /**
  * @param {number} tabId
  * @param {string | null} mark
+ * @param {() => Promise<void>} check throws when the request may no longer mark the tab
  * @returns {Promise<null>}
  */
-export function markTab(tabId, mark) {
-  return serialized(() => markTabNow(tabId, mark));
+export function markTab(tabId, mark, check) {
+  return serialized(() => markTabNow(tabId, mark, check));
 }
 
 /**
  * @param {number} tabId
  * @param {string | null} mark
+ * @param {() => Promise<void>} check throws when the request may no longer mark the tab, such as after a cancel
  */
-async function markTabNow(tabId, mark) {
+async function markTabNow(tabId, mark, check) {
   const state = await load();
+  // Asked right before the write, since the request may have waited for earlier changes of the state.
+  await check();
   state.tabs[tabId] ??= { sessionId: null, mark: null };
   state.tabs[tabId].mark = mark;
   await save(state);

@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { createInterface } from "node:readline";
+import { onLines } from "../browser/mcp/lines.mjs";
 import { once } from "node:events";
 
 async function server(t) {
@@ -12,7 +12,7 @@ async function server(t) {
   });
   const pending = new Map();
   let id = 0;
-  createInterface({ input: child.stdout }).on("line", (line) => {
+  onLines(child.stdout, (line) => {
     const reply = JSON.parse(line);
     pending.get(reply.id)?.(reply);
   });
@@ -67,6 +67,12 @@ for (const [name, source, expected] of [
   ["await before prefix", "await ++x\nlet after = 14", 14],
   ["keyword property", "obj.return++\nlet after = 15", 15],
   ["block comment that spans lines", "let before = 1 /* one\n two */ let after = 16", 16],
+  ["block comment between function and its name", "let { a } = { a: 1 }, b = function /* one\n two */ named() { return 17 }\nlet after = b()", 17],
+  ["block comment before !==", "let { a } = { a: 1 }, after = 18 /* one\n two */ !== 0", true],
+  ["line break before !=", "let { a } = { a: 1 }, after = 19\n != 0", true],
+  ["carriage return", "let before = 1\rlet after = 20", 20],
+  ["line separator", "let before = 1\u2028let after = 21", 21],
+  ["block comment with a paragraph separator", "let before = 1 /* one\u2029two */ let after = 22", 22],
 ]) {
   test(`REPL preserves declaration after ${name}`, async (t) => {
     const client = await server(t);

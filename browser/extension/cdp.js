@@ -4,6 +4,7 @@
 // network requests, out-of-process frames) and when the agent last pressed a button or key in a tab.
 
 import { PAUSED_ERROR, isPaused, onPausedChange, setPaused } from "./pause.js";
+import { FrameSessions } from "./frame-sessions.js";
 import { requireNotCancelled } from "./requests.js";
 import { LOAD_PAGE_HINT, PASSWORD_MANAGER_ELEMENTS, ignore, isPressInput, logFailure, unresponsivePageError } from "./shared.js";
 
@@ -72,11 +73,7 @@ export async function hasNoPage(tabId) {
 const sessions = new Map();
 /** @type {Set<CdpEventListener>} */
 const eventListeners = new Set();
-// Child session id -> frame id of cross-origin frames, kept after the sessions end: the next attach gives
-// the frames new sessions, and a command for an earlier one goes to the frame's new session.
-/** @type {Map<string, string>} */
-const frameOfSession = new Map();
-const MAX_REMEMBERED_FRAME_SESSIONS = 1_000;
+const frameSessions = new FrameSessions();
 
 // Returns a function that removes the listener.
 /**
@@ -127,12 +124,7 @@ chrome.debugger.onEvent.addListener(({ tabId, sessionId: source }, name, data) =
   if (method === "Target.attachedToTarget") {
     if (params.targetInfo.type === "iframe") {
       session.frames.set(params.targetInfo.targetId, { sessionId: params.sessionId, url: params.targetInfo.url, parentSessionId: source ?? null });
-      frameOfSession.set(params.sessionId, params.targetInfo.targetId);
-      tabOfFrameSession.set(params.sessionId, tabId);
-      // The two maps hold the same sessions, also after they detach (a command for one goes to the
-      // frame's next session), and forget the oldest together.
-      const oldest = frameOfSession.keys().next();
-      if (frameOfSession.size > MAX_REMEMBERED_FRAME_SESSIONS && !oldest.done) forgetFrameSession(oldest.value);
+      frameSessions.remember(params.sessionId, params.targetInfo.targetId, tabId, isLiveFrameSession);
       enableChildSession(tabId, params.sessionId);
     } else if (params.targetInfo.type === "worker") {
       // A dedicated worker's script request starts in the page's session and reports no end there.
@@ -268,15 +260,11 @@ const attaching = new Map();
 
 // Concurrent commands for a tab share one attach.
 // The tab each frame session was attached in.
-/** @type {Map<string, number>} frame session id -> tab id */
-const tabOfFrameSession = new Map();
-chrome.tabs.onRemoved.addListener((tabId) => {
-  for (const [sessionId, owner] of tabOfFrameSession) if (owner === tabId) forgetFrameSession(sessionId);
-});
+chrome.tabs.onRemoved.addListener((tabId) => frameSessions.forgetTab(tabId));
 /** @param {string} sessionId */
-function forgetFrameSession(sessionId) {
-  frameOfSession.delete(sessionId);
-  tabOfFrameSession.delete(sessionId);
+function isLiveFrameSession(sessionId) {
+  for (const session of sessions.values()) for (const frame of session.frames.values()) if (frame.sessionId === sessionId) return true;
+  return false;
 }
 
 // The tabs the debugger is attached to.
@@ -432,10 +420,12 @@ export async function closeTab(tabId, { check } = {}) {
   let onRemoved;
   /** @type {ReturnType<typeof setTimeout> | undefined} */
   let timer;
-  chrome.debugger.onEvent.addListener(answer);
   try {
     // Fails when the debugger is attached already or cannot attach (an internal page); both are fine.
     await chrome.debugger.attach(target, PROTOCOL_VERSION).catch(ignore("attached already, or the tab cannot be debugged; it closes either way"));
+    // Answering a dialog changes the page, so the close must still be allowed before the first answer.
+    await allowed();
+    chrome.debugger.onEvent.addListener(answer);
     if (wasOpen) await accept();
     // Page.enable reports a dialog that opened while no debugger was attached, and completes only once
     // that dialog is answered, so it is not waited for longer than a page without one takes.
@@ -639,7 +629,7 @@ function foreignFrameFailure(message, removals) {
  */
 async function currentFrameSession(tabId, session, sessionId) {
   if (!sessionId || [...session.frames.values()].some((frame) => frame.sessionId === sessionId)) return sessionId;
-  const frameId = frameOfSession.get(sessionId);
+  const frameId = frameSessions.frameOf(sessionId);
   if (frameId === undefined) return sessionId;
   const deadline = Date.now() + FRAME_SESSION_WAIT_MS;
   for (;;) {
@@ -701,7 +691,7 @@ export async function cdp(tabId, method, commandParams, sessionId, timeoutMs, ca
   const params = /** @type {CommandParams | undefined} */ (commandParams);
   // A frame session is used only with the tab it was attached in, so access to one tab never reaches
   // another. (After the debugger attached anew, currentFrameSession maps an old session to the frame's new one.)
-  if (sessionId && tabOfFrameSession.get(sessionId) !== tabId) {
+  if (sessionId && frameSessions.tabOf(sessionId) !== tabId) {
     throw new Error("This frame does not belong to the tab; call getAXState() again");
   }
   if (isPressInput(method, params)) agentInputAt.set(tabId, Date.now());

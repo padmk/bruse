@@ -28,6 +28,8 @@ export const HUB_VERSION_MISMATCH = "HUB_VERSION_MISMATCH";
 
 // Native host supplies this secret to the extension; hub and extension prove it to each other.
 export const EXTENSION_SECRET_PATH = join(STATE_DIR, "extension-secret");
+// What a complete pairing secret looks like; a file holding anything else holds no secret.
+export const COMPLETE_SECRET = /^[0-9a-f]{64}$/;
 
 // Chromium derives an extension's ID from the SHA-256 of its manifest key, written with letters a-p.
 export function extensionId(manifestKey) {

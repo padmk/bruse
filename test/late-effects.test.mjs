@@ -134,6 +134,23 @@ test("a close held at its last check when the REPL is reset does not happen afte
   assert.ok(await staysOpen(opened.id), "the tab stays open");
 });
 
+test("a mark held before the REPL is reset is not saved afterwards", async (t) => {
+  const s = await env.session();
+  t.after(() => s.close());
+  await s.js(`const tab = await cua.createBrowserTab("1", "data:text/html,<title>Mark probe</title>");`);
+  const opened = await until(() => tabTitled("Mark probe"), { message: "Mark probe to open" });
+  const hold = await env.holdCall("chrome.storage.local.get", `args[0] === "agentState" && stack.includes("markTabNow")`);
+  t.after(() => hold.release().catch(ignore("cleanup: a release the test made already fails")));
+  await s.js("globalThis.marking = tab.markDeliverable().catch(() => {});");
+  await hold.held();
+  const { result } = await s.request("tools/call", { name: "js_reset", arguments: {} });
+  assert.match(result.content.map((item) => item.text).join("\n"), /The REPL was reset\.$/);
+  await hold.release();
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  const mark = await env.inPopup(`chrome.storage.local.get("agentState").then(({ agentState }) => agentState?.tabs?.[${opened.id}]?.mark ?? null)`);
+  assert.equal(mark, null, "the cancelled mark is not saved");
+});
+
 test("a key held before the REPL is reset is released", async (t) => {
   const s = await env.session();
   t.after(() => s.close());

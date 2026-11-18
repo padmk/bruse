@@ -6,7 +6,7 @@
 import { createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import http from "node:http";
-import { EXTENSION_ORIGINS, EXTENSION_SECRET_PATH, HUB_VERSION_MISMATCH, PORT, PRODUCT_NAME, STATE_DIR, TOKEN_PATH, VERSION } from "./config.mjs";
+import { COMPLETE_SECRET, EXTENSION_ORIGINS, EXTENSION_SECRET_PATH, HUB_VERSION_MISMATCH, PORT, PRODUCT_NAME, STATE_DIR, TOKEN_PATH, VERSION } from "./config.mjs";
 import { acceptUpgrade, rejectUpgrade } from "./websocket.mjs";
 import { PAIRING_FAILURES, ignore, isReadOnly, logFailure } from "../extension/shared.js";
 
@@ -297,7 +297,9 @@ function becomeHub() {
           }
           let secret = null;
           try {
-            secret = readFileSync(EXTENSION_SECRET_PATH, "utf8").trim();
+            const stored = readFileSync(EXTENSION_SECRET_PATH, "utf8").trim();
+            // A secret cut short by an earlier version is no key: the native host replaces it.
+            if (COMPLETE_SECRET.test(stored)) secret = stored;
           } catch {
             // No pairing secret yet: the proof below cannot match, and the cause is reported.
           }
