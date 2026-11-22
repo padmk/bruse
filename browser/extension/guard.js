@@ -8,7 +8,7 @@
 // storage of any origin (Storage, DOMStorage, IndexedDB, CacheStorage), certificate checks (Security)
 // or the machine (SystemInfo) are not on the list.
 
-import { isRecord } from "./sender.js";
+import { isRecord } from "./record.js";
 import { actsOn } from "./shared.js";
 
 /** @typedef {import("./shared.js").Method} Method */

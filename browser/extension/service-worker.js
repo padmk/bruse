@@ -1,4 +1,4 @@
-// Executes requests from the local MCP hub, which reach it through the offscreen document: tab
+// Executes requests from the local MCP hub, which it holds a connection to (hub-connection.js): tab
 // lifecycle, agent tab groups, raw CDP commands, browser management, history and downloads. Page
 // logic lives in the MCP server.
 
@@ -10,7 +10,8 @@ import { agentTabs, createAgentTab, createAgentTabs, endSession, markTab, noteAg
 import { tabsOpenedByWindowCreate } from "./created-tabs.js";
 import { checkRequest } from "./guard.js";
 import { beginRequest, cancelSessionRequests } from "./requests.js";
-import { fromExtensionPage, isRecord } from "./sender.js";
+import { reconnectHub, sendToHub, startHubConnection } from "./hub-connection.js";
+import { isRecord } from "./record.js";
 import { LOAD_PAGE_HINT, PAIRING_HOST, MANAGEMENT_METHODS, actsOn, extensionBuild, ignore, isPressInput, logFailure, methodRules } from "./shared.js";
 
 /** @typedef {import("./shared.js").LoadEnd} LoadEnd */
@@ -41,7 +42,6 @@ const storageRestriction = Promise.all([
     `${chrome.runtime.getManifest().name} could not keep web pages' content scripts out of its storage (${errorText(error)}), so it runs no agent requests. Ask the user to update the browser and reload the extension.`,
 );
 
-const OFFSCREEN_ALARM = "offscreen-check";
 const LOAD_TIMEOUT_MS = 20_000;
 // CDP events the MCP server reacts to; the rest stay inside the extension.
 const FORWARDED_EVENTS = new Set(["Page.javascriptDialogOpening", "Page.javascriptDialogClosed", "Page.fileChooserOpened", "Page.windowOpen"]);
@@ -630,7 +630,7 @@ const OUTDATED_HUB = `The ${chrome.runtime.getManifest().name} MCP server that r
 
 // Native messaging supplies the secret locally. Only HMAC proofs cross the hub port.
 /**
- * The hub behind one connection of the offscreen document (its generation `gen`) and how far its
+ * The hub behind one connection (its generation `gen`, see hub-connection.js) and how far its
  * authentication got: whether it was challenged, the proof it must send back and whether it did.
  * @typedef {object} HubConnection
  * @property {number} gen
@@ -702,19 +702,10 @@ async function answerChallenge(nonce, connection) {
   return { type: "auth", mac: await hmac(hubSecret, `extension:${nonce}`), nonce: ownNonce };
 }
 
-let reconnectRequestedFor = 0;
-/** @param {number} gen */
-function requestReconnect(gen) {
-  if (reconnectRequestedFor === gen) return;
-  reconnectRequestedFor = gen;
-  chrome.runtime.sendMessage({ target: "offscreen", type: "reconnect", gen }).catch(ignore("without an offscreen document there is no connection to reconnect"));
-}
-
-// Sends a message to the authenticated hub through the offscreen document.
+// Sends a message to the authenticated hub.
 /** @param {Record<string, unknown>} message */
 function send(message) {
-  if (!hub.verified) return;
-  chrome.runtime.sendMessage({ target: "offscreen", type: "send", gen: hub.gen, data: JSON.stringify(message) }).catch(ignore("without an offscreen document there is no hub connection to send to"));
+  if (hub.verified) sendToHub(hub.gen, JSON.stringify(message));
 }
 
 /** @param {unknown} value @returns {value is Method} */
@@ -761,9 +752,8 @@ async function handle(gen, text) {
     return null;
   }
   const { id, method } = message;
-  // A restarted service worker has lost the authentication of an open connection; reconnecting makes
-  // the hub authenticate again.
-  if (!hub.verified) requestReconnect(gen);
+  // A hub that has not proved the pairing secret gets a new connection, which challenges it again.
+  if (!hub.verified) reconnectHub(gen);
   if (message.type === "live-sessions") {
     if (hub.verified && Array.isArray(message.sessionIds)) setLiveSessions(message.sessionIds.filter((sessionId) => typeof sessionId === "string"));
     return null;
@@ -813,23 +803,6 @@ async function runRequest(id, method, message, request) {
   }
 }
 
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (!isRecord(message) || message.target !== "worker" || !fromExtensionPage(sender)) return false;
-  const { type, gen } = message;
-  if (typeof gen !== "number") return false;
-  if (type === "hub-open" || type === "hub-closed") {
-    if (gen >= hub.gen) resetHub(gen);
-    return false;
-  }
-  if (type !== "hub-message") return false;
-  handle(gen, message.data).then(sendResponse, (error) => {
-    // The hub gets no answer and drops the connection after its authentication deadline.
-    console.error("Hub message failed:", error);
-    sendResponse(null);
-  });
-  return true;
-});
-
 // Events go only to the sessions that may use their tab now (`audience`, null for all); the hub routes
 // them. An event no session may see is not sent. Working out the audience takes storage reads, so events
 // pass through one queue and keep their order.
@@ -873,20 +846,6 @@ onTabOpened((openerTabId, tabId, url, byAgent) => {
   sendEvent({ tabId: openerTabId, method: "tabs.opened", params: { tabId, url, byAgent } }, async () => bothAudiences(await audienceOf(openerTabId), await audienceOf(tabId)));
 });
 
-async function ensureOffscreenDocument() {
-  const existing = await chrome.runtime.getContexts({ contextTypes: ["OFFSCREEN_DOCUMENT"] });
-  if (existing.length) return;
-  await chrome.offscreen
-    .createDocument({ url: "offscreen.html", reasons: ["WORKERS"], justification: "Keeps the connection to local agent sessions open" })
-    .catch((error) => {
-      if (!/single offscreen/i.test(errorText(error))) throw error;
-    });
-}
-
-function keepOffscreenDocument() {
-  ensureOffscreenDocument().catch(logFailure("Creating the offscreen document"));
-}
-
 // Debugger sessions this extension still holds from before a service worker restart have lost their
 // tracked state (and would never be detached when idle); start them over.
 chrome.debugger
@@ -896,11 +855,16 @@ chrome.debugger
   })
   .catch(logFailure("Detaching debugger sessions from before the restart"));
 
-// The offscreen document reconnects on its own; this only recreates it if the browser closed it.
-chrome.alarms.create(OFFSCREEN_ALARM, { periodInMinutes: 0.5 }).catch(logFailure("Scheduling the offscreen document check"));
-chrome.alarms.onAlarm.addListener(({ name }) => {
-  if (name === OFFSCREEN_ALARM) keepOffscreenDocument();
+startHubConnection({
+  // A new connection, or none: its hub has yet to authenticate.
+  opened: resetHub,
+  closed: (gen) => {
+    if (gen >= hub.gen) resetHub(gen);
+  },
+  message: (gen, text) =>
+    handle(gen, text).catch((error) => {
+      // The hub gets no answer and drops the connection after its authentication deadline.
+      console.error("Hub message failed:", error);
+      return null;
+    }),
 });
-chrome.runtime.onStartup.addListener(keepOffscreenDocument);
-chrome.runtime.onInstalled.addListener(keepOffscreenDocument);
-keepOffscreenDocument();

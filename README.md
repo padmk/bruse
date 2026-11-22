@@ -346,7 +346,7 @@ The extension asks for these permissions:
 | `history`, `bookmarks` (optional) | `browser.history()` and bookmarks in the `management` capability; off until you turn them on under **Access** in the popup, and the browser asks you to confirm |
 | `nativeMessaging` | Retrieve the pairing secret through the locally installed host |
 | `storage` | The pairing secret and which session owns which tab |
-| `offscreen`, `alarms` | Keeping the connection to the local hub open |
+| `alarms` | Restarting the connection to the local hub after the browser stopped the extension |
 
 Report vulnerabilities as described in [SECURITY.md](SECURITY.md).
 
@@ -435,9 +435,11 @@ Report vulnerabilities as described in [SECURITY.md](SECURITY.md).
   fails page calls with a message to reload it.
 - Without a connected extension, every browser call waits 8 s and fails, and agents are told to stop
   and tell the user rather than reach the pages another way; `bruse doctor` shows what is missing.
-- The first call of a new session connects within about 0.5 s. While no session runs, the offscreen
-  document retries twice a second; the browser logs the refused connections on the extension's card
-  under **Errors**, which is expected.
+- The first call of a new session connects within about 0.5 s, or a few seconds when no session has
+  run for a while: the extension retries twice a second, and the browser spaces out repeated failed
+  connections. The browser logs the refused connections on the extension's card under **Errors**,
+  which is expected. When the extension's process crashes, the extension comes back by itself: the
+  browser starts it again at its next alarm, scheduled every 30 s, and it reconnects a moment later.
 - `tab.setViewport()` overrides the viewport for responsive testing; `browser.capabilities.get("management")`
   organizes windows, tabs, tab groups and bookmarks; `tab.content` exports YouTube transcripts and
   Google Docs, Sheets and Slides to local files.

@@ -1,7 +1,7 @@
 // Values and rules that the extension and the MCP server must agree on. This is a plain module without
 // chrome.* or Node APIs, so the extension loads it directly and the MCP server imports it from here.
 
-// Local port of the MCP hub, which the extension's offscreen document connects to.
+// Local port of the MCP hub, which the extension's service worker connects to.
 export const HUB_PORT = 47615;
 
 /**
@@ -292,7 +292,7 @@ function canonicalManifest(text) {
 
 // A fingerprint of the extension's code: SHA-256 over manifest.json (see canonicalManifest) and every
 // file it reaches through the manifest, module imports, HTML script and style links and quoted page
-// names such as "offscreen.html", read with `readText(path)` (a path relative to the extension folder).
+// names such as "popup.html", read with `readText(path)` (a path relative to the extension folder).
 // The extension reports it, and the installer and the benchmark compute it from a folder, so they can
 // tell whether the browser runs that folder's code; the version alone stays the same between releases.
 /** @param {(path: string) => Promise<string>} readText */

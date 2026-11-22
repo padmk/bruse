@@ -11,14 +11,14 @@ import { acceptUpgrade, rejectUpgrade } from "./websocket.mjs";
 import { PAIRING_FAILURES, ignore, isReadOnly, logFailure } from "../extension/shared.js";
 
 const REQUEST_TIMEOUT_MS = 90_000;
-// The extension's offscreen document retries every 0.5 s; this also covers pairing and a slow worker start.
+// The extension retries every 0.5 s; this also covers pairing and a slow worker start.
 const EXTENSION_WAIT_MS = 8_000;
 const AUTH_TIMEOUT_MS = 5_000;
 // Connections that have not authenticated yet, at most; more are refused until some finish.
 const MAX_UNAUTHENTICATED = 32;
 const KEEPALIVE_MS = 20_000;
 const NOT_CONNECTED_START = "The browser extension did not connect.";
-const NOT_CONNECTED = `${NOT_CONNECTED_START} Make sure the browser is running (on macOS, Chrome with no window open stops its extensions: open a window) and the ${PRODUCT_NAME} extension is enabled, and run \`bruse doctor\`. If it is enabled but stays disconnected, its process may have crashed, which it cannot recover from alone: the user clicks Reload on it on the extensions page. If the extension was reinstalled, the user runs \`bruse setup\` in a terminal.`;
+const NOT_CONNECTED = `${NOT_CONNECTED_START} Make sure the browser is running (on macOS, Chrome with no window open stops its extensions: open a window) and the ${PRODUCT_NAME} extension is enabled, and run \`bruse doctor\`. If it is enabled but stays disconnected for more than a minute, the user clicks Reload on it on the extensions page. If the extension was reinstalled, the user runs \`bruse setup\` in a terminal.`;
 // An extension reached the hub but did not authenticate. The hub words every cause itself: the
 // connection is not authenticated, so whatever it says may come from a process posing as the extension.
 const PAIRING_FAILED = (cause) =>

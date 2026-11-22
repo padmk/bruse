@@ -14,7 +14,6 @@
     "storage",
     "downloads",
     "scripting",
-    "offscreen",
     "webNavigation",
     "nativeMessaging"
   ],

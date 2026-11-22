@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **The extension reconnects by itself after its process crashes.** It held the hub connection in an offscreen document, and when the extension's process died (for example while the Mac was out of memory), the browser marked the whole extension as crashed and ran none of its code again: every call failed with "The browser extension did not connect" until the extension was reloaded or its page on the extensions page was opened. The connection now lives in the service worker, which the browser starts again at its next alarm, scheduled every 30 s, and which then reconnects, and the extension no longer asks for the `offscreen` permission.
+
 ## 0.26.0
 
 - **`js_reset` stops what the code before it left in flight.** The reset made the old `cua` objects fail, but a browser request they had already sent, such as an un-awaited `tab.close()` waiting for its last check, still took effect afterwards, and keys and mouse buttons the code held stayed down. The reset now has the extension cancel those requests and releases the held input, as a call that times out does, and a press that was still waiting to go out is dropped; when the extension does not confirm the cancel, the reply says so.

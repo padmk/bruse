@@ -9,9 +9,14 @@ MCP server (hub) ◀──WebSocket 127.0.0.1:47615──▶ extension ──chr
    └── other MCP servers (one per agent session) connect to the hub as clients
 ```
 
-- `browser/extension/`: MV3 extension, a thin executor. `offscreen.js` holds the WebSocket to the hub
-  (an offscreen document is never suspended, so it reconnects within 0.5 s of a session starting) and
-  passes requests to `service-worker.js`, which checks each request with `guard.js` (web pages only,
+- `browser/extension/`: MV3 extension, a thin executor. `hub-connection.js` holds the WebSocket to the
+  hub in the service worker and retries twice a second, so it connects within moments of a session
+  starting, and drops a connection that does not open within 15 s. An extension API call every 20 s
+  keeps the browser from stopping the worker as idle, and an alarm every 30 s starts a stopped worker
+  again. The connection stays out of an offscreen
+  document on purpose: when the extension's process dies, Chromium marks an extension with an offscreen
+  document as crashed and runs none of its code until it is reloaded, while it restarts a lone service
+  worker on its next event. `service-worker.js` checks each request with `guard.js` (web pages only,
   no raw DevTools commands beyond the tab) and handles tab lifecycle, browser management, history and
   downloads. `cdp.js` relays DevTools Protocol commands through `chrome.debugger`, including the
   sessions of cross-origin frames (`frame-sessions.js` remembers which frame and tab each belongs to), and
