@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.26.1
 
 - **The extension reconnects by itself after its process crashes.** It held the hub connection in an offscreen document, and when the extension's process died (for example while the Mac was out of memory), the browser marked the whole extension as crashed and ran none of its code again: every call failed with "The browser extension did not connect" until the extension was reloaded or its page on the extensions page was opened. The connection now lives in the service worker, which the browser starts again at its next alarm, scheduled every 30 s, and which then reconnects, and the extension no longer asks for the `offscreen` permission.
 
