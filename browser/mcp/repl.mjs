@@ -143,7 +143,8 @@ export class Repl {
   // Runs one `js` call and returns MCP content items plus whether it failed. The server sets the timeout.
   // A reset while the call runs ends what the cell's code writes; its own failure and result still go to
   // this call.
-  async run(code, timeoutMs) {
+  // `replyBy` (a Date.now() time) is when the server's wait for the reply runs out, less its grace.
+  async run(code, timeoutMs, replyBy = Date.now() + timeoutMs) {
     const output = (this.items = []);
     const session = this.cuaSession;
     useOutput({
@@ -178,7 +179,7 @@ export class Repl {
       // Also when the vm timeout threw before the race began, so the timer does not reject unobserved.
       clearTimeout(timer);
     }
-    const notifications = await session.takeNotifications();
+    const notifications = await session.takeNotifications(replyBy);
     if (notifications.length) this.pushText(`Notifications:\n${notifications.map((n) => `- ${n}`).join("\n")}`, output);
     const items = output.length ? limitText(output) : [{ type: "text", text: "" }];
     if (this.items === output) this.items = null;

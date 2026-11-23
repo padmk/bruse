@@ -28,7 +28,7 @@ const repl = new Repl();
 parentPort.on("message", (message) => {
   if (message.type === "run") {
     // A failure of the REPL itself still answers the call, which would otherwise wait for its timeout.
-    repl.run(message.code, message.timeoutMs).then(
+    repl.run(message.code, message.timeoutMs, message.replyBy).then(
       (result) => parentPort.postMessage({ id: message.id, result }),
       (error) => parentPort.postMessage({ id: message.id, result: { content: [{ type: "text", text: `The REPL failed: ${error instanceof Error ? error.stack : error}` }], isError: true, timedOut: false } }),
     );

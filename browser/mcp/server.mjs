@@ -249,7 +249,8 @@ class ReplHost {
   // its browser requests } when cancelRun() ended it. A call that timed out or was cancelled ends with the
   // worker replaced and its browser requests cancelled, so nothing of it runs on.
   async run(code, timeoutMs) {
-    const result = await this.request({ type: "run", code, timeoutMs }, timeoutMs + TERMINATE_GRACE_MS);
+    // `replyBy` is when this call stops waiting less the grace; the worker's own waits end by then.
+    const result = await this.request({ type: "run", code, timeoutMs, replyBy: Date.now() + timeoutMs }, timeoutMs + TERMINATE_GRACE_MS);
     this.runId = null;
     if (result === CANCELLED) return { cancelled: await this.restart() };
     if (result !== undefined && !result.timedOut) return result;

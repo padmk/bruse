@@ -8,7 +8,10 @@ import { emitText } from "./output.mjs";
 import { Tab } from "./tab.mjs";
 
 const BROWSER_ID = "1";
-const OPENED_TAB_WAIT_MS = 500;
+// How long a call waits for the tab of an opening its page reported. The extension may wait 300 ms for
+// the page's report and then saves the tab's owner first, which takes longer on a busy machine; the wait
+// ends as soon as the tab is known, so only a blocked popup waits it out.
+const OPENED_TAB_WAIT_MS = 2_000;
 
 function waitForEvent(predicate, timeoutMs) {
   return new Promise((resolve, reject) => {
@@ -58,12 +61,16 @@ function sameUrl(a, b) {
   }
 }
 
+// A tab that has not committed its first page yet (a tab a page just opened) has no url; the address it
+// is opening is its pendingUrl.
+const tabUrl = (tab) => (!tab.url && tab.pendingUrl ? tab.pendingUrl : tab.url);
+
 function tabSummary(tab) {
   return {
     id: String(tab.id),
     browserId: BROWSER_ID,
     title: tab.title,
-    url: tab.url,
+    url: tabUrl(tab),
     ...(tab.lastAccessed ? { lastOpened: new Date(tab.lastAccessed).toISOString() } : {}),
   };
 }
@@ -103,10 +110,13 @@ export function createCua() {
     }
   });
 
-  async function takeNotifications() {
+  // `deadline` (a Date.now() time) is when the call's reply must be ready, which may end the wait sooner.
+  /** @param {number} [deadline] */
+  async function takeNotifications(deadline = Infinity) {
     // The new tab of an opening is usually known within moments.
-    for (let waited = 0; waited < OPENED_TAB_WAIT_MS && notifications.some((n) => typeof n === "object" && n.tabId === null); waited += 50) {
-      await new Promise((resolve) => setTimeout(resolve, 50));
+    const waitUntil = Math.min(Date.now() + OPENED_TAB_WAIT_MS, deadline);
+    while (Date.now() < waitUntil && notifications.some((n) => typeof n === "object" && n.tabId === null)) {
+      await new Promise((resolve) => setTimeout(resolve, Math.min(50, waitUntil - Date.now())));
     }
     return notifications.splice(0).map((n) => {
       if (typeof n === "string") return n;
@@ -165,7 +175,7 @@ export function createCua() {
     checkBrowser(browser);
     let info;
     if (typeof reference === "object" && reference?.url) {
-      const matches = (await call("tabs.list")).filter((tab) => tab.url === reference.url);
+      const matches = (await call("tabs.list")).filter((tab) => tabUrl(tab) === reference.url);
       if (matches.length !== 1) {
         const note = matches.length ? null : hiddenTabsNote((await browserInfo()).hiddenTabs);
         throw new Error(`Expected exactly one tab with URL ${reference.url}, found ${matches.length}.${note ? ` ${note}` : ""}`);

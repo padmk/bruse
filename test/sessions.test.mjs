@@ -5,6 +5,7 @@ import { hubClient, lastJson, startEnvironment, startSite, until } from "./harne
 import { ignore } from "../browser/extension/shared.js";
 
 let env, site;
+const slowResponses = [];
 before(async () => {
   env = await startEnvironment();
   site = await startSite({
@@ -12,6 +13,9 @@ before(async () => {
     "/link": "<title>Link child</title>",
     "/popup": "<title>Popup child</title>",
     "/page": "<title>Page</title>",
+    "/slow-opener": '<title>Slow opener</title><a href="/slow" target="_blank">Open slow</a>',
+    // Answers only when the test lets it, so the tab opened to it stays on its first navigation.
+    "/slow": (req, res) => slowResponses.push(() => res.writeHead(200, { "content-type": "text/html" }).end("<title>Slow</title>")),
   });
 });
 after(async () => {
@@ -89,10 +93,44 @@ test("input-created link and popup tabs are reported and closed", async () => {
     assert.ok(match, output);
     assert.equal(match[2], url(path));
     const tabs = await json(s, "await cua.listTabs({emit:false})");
-    assert.ok(tabs.some((t) => String(t.id) === match[1] && t.url === url(path)));
+    assert.ok(tabs.some((t) => String(t.id) === match[1] && t.url === url(path)), JSON.stringify(tabs));
   }
   await s.close();
   for (const path of ["/", "/link", "/popup"]) await waitPage(url(path), false);
+});
+
+test("a tab a page just opened is listed and found by the address it is opening", async () => {
+  const s = await env.session();
+  try {
+    await s.js(`const tab = await cua.createBrowserTab('1', ${JSON.stringify(url("/slow-opener"))});`);
+    const output = await s.js(`await tab.playwright.getByText("Open slow").click();`);
+    const id = output.match(/opened a new tab (\d+)/i)?.[1];
+    assert.ok(id, output);
+    await until(() => slowResponses.length > 0, { message: "the new tab to request its page" });
+    const tabs = await json(s, "await cua.listTabs({emit:false})");
+    assert.equal(tabs.find((t) => t.id === id)?.url, url("/slow"), JSON.stringify(tabs));
+    assert.match(await s.js(`nodeRepl.write((await cua.getTab({ url: ${JSON.stringify(url("/slow"))} })).id);`), new RegExp(`\\b${id}\\b`));
+  } finally {
+    for (const respond of slowResponses.splice(0)) respond();
+    await s.close();
+  }
+});
+
+test("waiting for the tab of an opening ends in time for the call's reply", async () => {
+  const s = await env.session();
+  await s.js(`const tab = await cua.createBrowserTab('1', ${JSON.stringify(url("/"))});`);
+  // The extension saves the new tab's owner before it reports the tab; held, the report does not come.
+  const hold = await env.holdCall("chrome.storage.local.set", "JSON.stringify(args).includes('\"mark\":null')");
+  try {
+    const reply = await s.request("tools/call", { name: "js", arguments: { code: `await tab.playwright.getByText("Open popup").click(); nodeRepl.write("clicked");`, timeout_ms: 1_500 } });
+    const text = (reply.result?.content ?? []).map((item) => item.text ?? "").join("\n");
+    assert.equal(reply.result?.isError, false, text);
+    assert.match(text, /clicked/);
+    await hold.held();
+  } finally {
+    await hold.release();
+    await s.close();
+  }
 });
 
 test("concurrent sessions retain independent ownership", async () => {
