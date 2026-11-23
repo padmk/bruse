@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.26.3
 
 - **Agent apps show the browser tool as Bruse.** The `js` and `js_reset` tools carry the titles "Bruse" and "Bruse reset", and the server introduces itself as Bruse instead of browser-control, so Claude Code passes these names on and apps such as T3 Code no longer label the calls "Js".
 
