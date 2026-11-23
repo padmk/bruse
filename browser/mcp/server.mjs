@@ -5,12 +5,12 @@
 import { Worker } from "node:worker_threads";
 import { ignore, isPressInput, logFailure } from "../extension/shared.js";
 import { callBrowser, endSession, onBrowserEvent, sessionId } from "./browser-link.mjs";
-import { VERSION } from "./config.mjs";
+import { PRODUCT_NAME, VERSION } from "./config.mjs";
 import { beforeInput, isOpeningInput, onEvent as guardFocus } from "./focus-guard.mjs";
 import { updateNotice } from "./update-notice.mjs";
 import { onLines } from "./lines.mjs";
 
-const SERVER_INFO = { name: "browser-control", version: VERSION };
+const SERVER_INFO = { name: PRODUCT_NAME, version: VERSION };
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 
@@ -40,7 +40,9 @@ const TOOLS = [
       required: ["code"],
       additionalProperties: false,
     },
-    annotations: { openWorldHint: true },
+    // Claude Code shows annotations.title as the tool's name (clients such as T3 Code display it);
+    // the top-level MCP `title` it ignores.
+    annotations: { title: PRODUCT_NAME, openWorldHint: true },
     // Claude Code otherwise defers MCP tools behind tool search, which costs a model turn before the
     // first browser call.
     _meta: { "anthropic/alwaysLoad": true },
@@ -49,6 +51,7 @@ const TOOLS = [
     name: "js_reset",
     description: "Reset the persistent REPL: all bindings are discarded and the next js call starts fresh. Browser tabs stay open.",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
+    annotations: { title: `${PRODUCT_NAME} reset` },
   },
 ];
 

@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **Agent apps show the browser tool as Bruse.** The `js` and `js_reset` tools carry the titles "Bruse" and "Bruse reset", and the server introduces itself as Bruse instead of browser-control, so Claude Code passes these names on and apps such as T3 Code no longer label the calls "Js".
+
 ## 0.26.2
 
 - **`cua.listTabs()` shows the address of a tab a page just opened.** Until the browser committed the new tab's first page, it was listed with an empty URL, and `cua.getTab({ url })` did not find it. A call also waits up to 2 s instead of 0.5 s for the tab of an opening its page reported, so on a busy machine the reply names the new tab instead of saying no tab appeared.
