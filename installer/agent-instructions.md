@@ -77,6 +77,9 @@ Use a stable Node path such as `/opt/homebrew/bin/node`, not a versioned one.
   existing secret automatically; no pairing reset is needed. An older
   unpaired extension must be updated. If a permission change disabled it, the user enables it on the
   extensions page and runs setup again.
+- **Setup says the extension did not reconnect after the reload.** When Developer mode and the
+  extension are on, the user quits and reopens the browser and runs setup again: a browser that
+  installed an update of itself but was not restarted may fail to start the reloaded extension.
 - **"Load unpacked" fails.** Check that the selected folder contains `manifest.json`.
 - **Developer mode warning.** Chromium shows a notice about developer-mode extensions. It is expected
   for extensions loaded this way.

@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- **`cua.listTabs()` shows the address of a tab a page just opened.** Until the browser committed the new tab's first page, it was listed with an empty URL, and `cua.getTab({ url })` did not find it. A call also waits up to 2 s instead of 0.5 s for the tab of an opening its page reported, so on a busy machine the reply names the new tab instead of saying no tab appeared.
+- **Setup says what to try when the reloaded extension does not come back.** Besides checking Developer mode and the extension, it tells the user to quit and reopen the browser: one that installed an update of itself without a restart may not start the reloaded extension.
+
 ## 0.26.1
 
 - **The extension reconnects by itself after its process crashes.** It held the hub connection in an offscreen document, and when the extension's process died (for example while the Mac was out of memory), the browser marked the whole extension as crashed and ran none of its code again: every call failed with "The browser extension did not connect" until the extension was reloaded or its page on the extensions page was opened. The connection now lives in the service worker, which the browser starts again at its next alarm, scheduled every 30 s, and which then reconnects, and the extension no longer asks for the `offscreen` permission.

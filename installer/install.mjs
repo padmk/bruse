@@ -237,7 +237,7 @@ async function reloadExtension(callBrowser, connected, build) {
     }
     await new Promise((resolve) => setTimeout(resolve, 1_000));
   }
-  if (!info) fail(`The extension did not reconnect after the reload. On the extensions page of ${connected.name}, check that Developer mode and the ${product} extension are turned on.`);
+  if (!info) fail(`The extension did not reconnect after the reload. On the extensions page of ${connected.name}, check that Developer mode and the ${product} extension are turned on. If both are, quit and reopen ${connected.name} (a browser that installed an update of itself but was not restarted may fail to start the reloaded extension), then run setup again.`);
   fail(
     info.version === manifest.version
       ? `The connected extension runs other code than ${extensionDir}, though its version is ${manifest.version}. It is probably loaded from another folder: remove it on the extensions page and load ${extensionDir}.`
