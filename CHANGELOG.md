@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.26.4
 
 - **A declaration that starts with a pattern and lists a plain name runs.** A code cell such as `const { a } = obj, b;` or `let [first] = list, rest;` failed with `ReferenceError: b is not defined`, because the whole declaration was rewritten as one assignment and the name without an initializer was not assigned `undefined`. Such a name is now assigned `undefined` in every rewritten declaration, also after a pattern.
 
