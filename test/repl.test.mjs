@@ -76,7 +76,9 @@ for (const [name, source, expected] of [
   ["object pattern before a name without initializer", "const { a } = { a: 23 }, b;\nlet after = [a, b]", "[ 23, undefined ]"],
   ["array pattern before a name without initializer", "let [a] = [24], b;\nlet after = [a, b]", "[ 24, undefined ]"],
   ["patterns between plain declarators", "var n, { a } = { a: 25 }, [c] = [1], m = 2;\nlet after = [n, a, c, m]", "[ undefined, 25, 1, 2 ]"],
-]) {
+  ["pattern initialized by a function whose body starts on the next line", "let n = 26, { name } = function named()\n{};\nlet after = [n, name]", "[ 26, 'named' ]"],
+  ["pattern initialized by a template whose substitution ends on the next line", "let n = 27, [ch] = `${\"x\"\n}`, m = 2;\nlet after = [n, ch, m]", "[ 27, 'x', 2 ]"],
+  ["pattern initialized with a regular expression after a division", "let [ch] = 8 / /,x/.source.length + \"\", b = 28;\nlet after = [ch, b]", "[ '4', 28 ]"],]) {
   test(`REPL preserves declaration after ${name}`, async (t) => {
     const client = await server(t);
     await cell(client, "let x = 1; let obj = { return: 1 };");

@@ -147,18 +147,19 @@ export function hoistTopLevelDeclarations(code) {
       // Find the end of this declaration: ; or a newline at depth 0 that ends the statement.
       let end = t + 1;
       while (end + 1 < tokens.length && !(tokens[end + 1].depth === 0 && (tokens[end + 1].text === ";" || tokens[end + 1].lineBoundary))) end++;
-      // Each declarator between commas at depth 0 becomes its own assignment: a destructuring one is
-      // parenthesized to parse as an expression, a name without an initializer is assigned undefined.
-      for (let first = t + 1; first <= end; ) {
-        let last = first;
-        while (last < end && !(tokens[last + 1].depth === 0 && tokens[last + 1].text === ",")) last++;
-        if (tokens[first].text === "{" || tokens[first].text === "[") {
-          edits.push({ at: tokens[first].start, remove: 0, insert: "(" });
-          edits.push({ at: tokens[last].end, remove: 0, insert: ")" });
-        } else if (first === last && tokens[first].kind === "word") {
-          edits.push({ at: tokens[first].end, remove: 0, insert: " = undefined" });
+      if (next.text === "{" || next.text === "[") {
+        // A declaration that starts with a destructuring pattern must be parenthesized to parse as an
+        // expression; the declarators after it are then parts of one comma expression.
+        edits.push({ at: next.start, remove: 0, insert: "(" });
+        edits.push({ at: tokens[end].end, remove: 0, insert: ")" });
+      }
+      // Declarators without an initializer become explicit undefined assignments.
+      for (let d = t + 1; d <= end; d++) {
+        const isName = tokens[d].kind === "word" && tokens[d].depth === 0 && (d === t + 1 || tokens[d - 1].text === ",");
+        const following = tokens[d + 1];
+        if (isName && (!following || following.text === "," || following.text === ";" || d === end)) {
+          edits.push({ at: tokens[d].end, remove: 0, insert: " = undefined" });
         }
-        first = last + 2;
       }
     } else if (token.text === "function" || (token.text === "async" && next.text === "function")) {
       // Function declarations stay declarations (they are hoisted within the cell); the cell starts by
