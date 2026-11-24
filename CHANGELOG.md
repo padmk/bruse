@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **A declaration that starts with a pattern and lists a plain name runs.** A code cell such as `const { a } = obj, b;` or `let [first] = list, rest;` failed with `ReferenceError: b is not defined`, because the whole declaration was rewritten as one assignment and the name without an initializer was not assigned `undefined`. Each declarator is now rewritten on its own.
+
 ## 0.26.3
 
 - **Agent apps show the browser tool as Bruse.** The `js` and `js_reset` tools carry the titles "Bruse" and "Bruse reset", and the server introduces itself as Bruse instead of browser-control, so Claude Code passes these names on and apps such as T3 Code no longer label the calls "Js".

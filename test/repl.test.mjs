@@ -73,6 +73,9 @@ for (const [name, source, expected] of [
   ["carriage return", "let before = 1\rlet after = 20", 20],
   ["line separator", "let before = 1\u2028let after = 21", 21],
   ["block comment with a paragraph separator", "let before = 1 /* one\u2029two */ let after = 22", 22],
+  ["object pattern before a name without initializer", "const { a } = { a: 23 }, b;\nlet after = [a, b]", "[ 23, undefined ]"],
+  ["array pattern before a name without initializer", "let [a] = [24], b;\nlet after = [a, b]", "[ 24, undefined ]"],
+  ["patterns between plain declarators", "var n, { a } = { a: 25 }, [c] = [1], m = 2;\nlet after = [n, a, c, m]", "[ undefined, 25, 1, 2 ]"],
 ]) {
   test(`REPL preserves declaration after ${name}`, async (t) => {
     const client = await server(t);
