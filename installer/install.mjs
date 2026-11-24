@@ -13,7 +13,7 @@ import { platform } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { HUB_VERSION_MISMATCH, PORT, UPDATE_SOURCE_FILE } from "../browser/mcp/config.mjs";
-import { agentClients, clientId, installedBrowser, showPage, extensionDir, fail, failureReason, installRoot, installed, isDevelopmentFile, manifest, note, onPath, problemMessage, product, requireNode, serverPath, source, step, moveToTrash } from "./lib.mjs";
+import { FORMER_CLIENT_IDS, agentClients, clientId, installedBrowser, showPage, extensionDir, fail, failureReason, installRoot, installed, isDevelopmentFile, manifest, note, onPath, problemMessage, product, requireNode, serverPath, source, step, moveToTrash } from "./lib.mjs";
 import { ignore } from "../browser/extension/shared.js";
 
 const PAIR_WAIT_MS = 10 * 60_000;
@@ -99,30 +99,34 @@ const nodePath = () => stableNode(process.env.INSTALL_NODE || onPath("node")) ||
 // Without a terminal (an agent or a script runs setup), an update keeps the clients that already have the
 // server, and a first install stops with the list, because registering with every client unasked is the
 // user's decision.
+// The user picks choices (`clientId`); a choice covers every installation of its product found here.
 async function chooseClients(clients, requested) {
+  const choices = [...new Set(clients.map(clientId))];
+  const of = (/** @type {string[]} */ picked) => clients.filter((client) => picked.includes(clientId(client)));
   if (requested !== undefined) {
-    const ids = requested.split(",").map((id) => id.trim()).filter(Boolean);
-    if (!ids.length) fail(`--clients needs client names, such as ${clients.map(clientId).join(",") || "claude-code,codex"}.`);
-    const unknown = ids.filter((id) => !clients.some((client) => clientId(client) === id));
-    if (unknown.length) fail(`Unknown or not installed client: ${unknown.join(", ")}. Found: ${clients.map(clientId).join(", ") || "none"}.`);
-    return clients.filter((client) => ids.includes(clientId(client)));
+    const ids = requested.split(",").map((id) => id.trim()).filter(Boolean).map((id) => FORMER_CLIENT_IDS.get(id) ?? id);
+    if (!ids.length) fail(`--clients needs client names, such as ${choices.join(",") || "claude,codex"}.`);
+    const unknown = ids.filter((id) => !choices.includes(id));
+    if (unknown.length) fail(`Unknown or not installed client: ${unknown.join(", ")}. Found: ${choices.join(", ") || "none"}.`);
+    return of(ids);
   }
   if (!process.stdin.isTTY) {
     if (!clients.length) return clients;
+    // Each installation on its own: an update does not register a new installation of a chosen product.
     const registered = clients.filter((client) => client.registration()?.path);
     if (registered.length) return registered;
-    fail(`Choose the agent clients to register with: bruse setup --clients ${clients.map(clientId).join(",")} (any subset of these).`);
+    fail(`Choose the agent clients to register with: bruse setup --clients ${choices.join(",")} (any subset of these).`);
   }
   if (clients.length < 2) return clients;
   step("Agent clients found");
-  clients.forEach((client, i) => note(`${i + 1}. ${client.name}`));
+  choices.forEach((id, i) => note(`${i + 1}. ${of([id]).map((client) => client.name).join(" and ")}`));
   const prompt = createInterface({ input: process.stdin, output: process.stdout });
   const answer = (await prompt.question("  Register with which? Enter for all, numbers such as 1,3, or 0 for none: ")).trim();
   prompt.close();
   if (!answer) return clients;
   const picked = answer.split(/[\s,]+/).map(Number);
-  if (picked.some((n) => !Number.isInteger(n) || n < 0 || n > clients.length)) fail(`Expected numbers from 1 to ${clients.length}.`);
-  return clients.filter((_, i) => picked.includes(i + 1));
+  if (picked.some((n) => !Number.isInteger(n) || n < 0 || n > choices.length)) fail(`Expected numbers from 1 to ${choices.length}.`);
+  return of(choices.filter((_, i) => picked.includes(i + 1)));
 }
 
 // Returns whether every chosen client took the registration.

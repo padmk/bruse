@@ -12,9 +12,9 @@
 //   (https://code.visualstudio.com/docs/copilot/reference/mcp-configuration)
 // - GitHub Copilot CLI: `copilot mcp add|remove`, or ~/.copilot/mcp-config.json with "type": "local"
 //   (https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/add-mcp-servers)
-// - Gemini CLI: `gemini mcp add|remove --scope user`, or ~/.gemini/settings.json; GEMINI_CLI_HOME
-//   replaces the home folder (https://geminicli.com/docs/tools/mcp-server/,
-//   https://geminicli.com/docs/reference/configuration/)
+// - Antigravity CLI, which replaced Gemini CLI: `agy mcp add|remove`, or ~/.gemini/config/mcp_config.json,
+//   "mcpServers" (https://antigravity.google/docs/mcp?tab=cli). Observed with agy 1.5.16 on 2026-11-25: it
+//   keeps a "--" in the command as an argument, so none is passed, and it can leave that file empty.
 
 import { spawnSync } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
@@ -39,7 +39,7 @@ export function moreClients(onPath, name) {
   const stdio = (command) => ({ command: command[0], args: command.slice(1) });
   const files = [
     { label: "Cursor", path: join(home, ".cursor", "mcp.json"), key: "mcpServers", entry: (command) => ({ type: "stdio", ...stdio(command) }) },
-    { label: "Claude Desktop", path: join(appData, "Claude", "claude_desktop_config.json"), key: "mcpServers", entry: stdio },
+    { label: "Claude Desktop", choice: "Claude", path: join(appData, "Claude", "claude_desktop_config.json"), key: "mcpServers", entry: stdio },
     { label: "Devin Desktop", path: join(process.env.XDG_CONFIG_HOME || join(home, ".config"), "devin", "mcp_config.json"), key: "mcpServers", entry: stdio },
     { label: "Windsurf", path: join(home, ".codeium", "windsurf", "mcp_config.json"), key: "mcpServers", entry: stdio },
     { label: "VS Code", path: join(appData, "Code", "User", "mcp.json"), key: "servers", entry: (command) => ({ type: "stdio", ...stdio(command) }) },
@@ -57,11 +57,11 @@ export function moreClients(onPath, name) {
       cli: onPath("copilot") && { path: onPath("copilot"), add: ["mcp", "add", "--tools", "*", name, "--"], remove: ["mcp", "remove", name] },
     },
     {
-      label: "Gemini CLI",
-      path: join(process.env.GEMINI_CLI_HOME || home, ".gemini", "settings.json"),
+      label: "Antigravity CLI",
+      path: join(home, ".gemini", "config", "mcp_config.json"),
       key: "mcpServers",
       entry: stdio,
-      cli: onPath("gemini") && { path: onPath("gemini"), add: ["mcp", "add", "--scope", "user", name], remove: ["mcp", "remove", "--scope", "user", name] },
+      cli: onPath("agy") && { path: onPath("agy"), add: ["mcp", "add", name], remove: ["mcp", "remove", name] },
     },
   ];
   // A client counts as installed when its CLI is on PATH or its configuration folder exists.
@@ -69,14 +69,16 @@ export function moreClients(onPath, name) {
 }
 
 /**
- * @param {{ label: string, path: string, key: string, entry: (command: string[]) => object, cli?: { path: string, add: string[], remove: string[] } | "" | false | null }} file
+ * @param {{ label: string, choice?: string, path: string, key: string, entry: (command: string[]) => object, cli?: { path: string, add: string[], remove: string[] } | "" | false | null }} file
  * @param {string} name
  */
-function configClient({ label, path, key, entry, cli }, name) {
+function configClient({ label, choice, path, key, entry, cli }, name) {
   // The configuration, or null when it cannot be read as a JSON object with an object at `key`.
   const read = () => {
     try {
-      const config = existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : {};
+      // An empty file holds no servers yet.
+      const text = existsSync(path) ? readFileSync(path, "utf8") : "";
+      const config = text.trim() ? JSON.parse(text) : {};
       const isObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
       return isObject(config) && (config[key] === undefined || isObject(config[key])) ? config : null;
     } catch {
@@ -130,5 +132,5 @@ function configClient({ label, path, key, entry, cli }, name) {
     });
   };
 
-  return { name: label, add, remove, registration };
+  return { name: label, choice, add, remove, registration };
 }

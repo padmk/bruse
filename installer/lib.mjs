@@ -82,8 +82,14 @@ export function onPath(command) {
   return spawnSync("/bin/sh", ["-c", `command -v ${command}`], { encoding: "utf8" }).stdout.trim() || null;
 }
 
-// Short name of a client for `bruse setup --clients`, such as claude-code or vs-code.
-export const clientId = (client) => client.name.toLowerCase().replace(/[^a-z0-9]+/g, "-");
+// Short name of a client's choice for `bruse setup --clients`, such as claude or vs-code. Installations of
+// one product (Claude Code and Claude Desktop) share a `choice` and are picked together.
+export const clientId = (client) => (client.choice ?? client.name).toLowerCase().replace(/[^a-z0-9]+/g, "-");
+// Choice names of earlier versions, still accepted by --clients.
+export const FORMER_CLIENT_IDS = new Map([
+  ["claude-code", "claude"],
+  ["claude-desktop", "claude"],
+]);
 
 // A CLI's answer for a server it does not know; any other failure leaves the registration unknown.
 const NOT_REGISTERED = /No MCP server named/i;
@@ -97,6 +103,7 @@ export function agentClients() {
   if (claude) {
     clients.push({
       name: "Claude Code",
+      choice: "Claude",
       add: (command) => {
         runClient(claude, ["mcp", "remove", "-s", "user", MCP_NAME]);
         return runClient(claude, ["mcp", "add", "-s", "user", MCP_NAME, "--", ...command]);

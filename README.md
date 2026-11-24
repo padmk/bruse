@@ -81,10 +81,10 @@ Setup:
   that fails too, it keeps it next to the installed path and prints the command that restores it;
 - on a first install, says what agents can reach through Bruse (your user account's permissions and
   the accounts signed in to your browser profile) and links to [SECURITY.md](SECURITY.md);
-- lists the agent clients it finds (Claude Code, Codex, Cursor, VS Code and Insiders, GitHub Copilot CLI,
-  Gemini CLI, Claude Desktop, Devin Desktop, Windsurf) and registers the MCP server as `bruse` with the
-  ones you pick; Enter picks all of them. The registration pins the pairing state directory, even if
-  the client starts with a different `XDG_DATA_HOME`. `bruse setup --clients claude-code,codex` picks without
+- lists the agent clients it finds (Claude, which covers Claude Code and Claude Desktop, Codex, Cursor,
+  VS Code and Insiders, GitHub Copilot CLI, Antigravity CLI, Devin Desktop, Windsurf) and registers the
+  MCP server as `bruse` with the ones you pick; Enter picks all of them. The registration pins the pairing state directory, even if
+  the client starts with a different `XDG_DATA_HOME`. `bruse setup --clients claude,codex` picks without
   asking. Run without a terminal (by an agent or a script) and without `--clients`, setup updates the
   clients that already have the server and, on a first install, stops and lists the clients to choose
   from. It uses the client's own `mcp add` command where there is one; otherwise it edits the client's
@@ -123,7 +123,7 @@ an agent tells you so on its first browser call.
 | Command | What it does |
 | --- | --- |
 | `bruse setup` | Install or update, register the MCP server with the clients you pick and wait for the extension |
-| `bruse setup --clients claude-code,codex` | The same, with the named clients and without asking (names as `bruse doctor` shows them) |
+| `bruse setup --clients claude,codex` | The same, with the named clients and without asking (names as `bruse doctor` shows them) |
 | `bruse doctor` | Check Node.js, the installed copy, the registrations, pairing and the browser connection |
 | `bruse uninstall` | Remove the registrations, the installed copy and the pairing state, and open the extensions page for removing the extension |
 | `bruse version` | Print the version |

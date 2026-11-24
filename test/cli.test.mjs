@@ -58,7 +58,6 @@ before(async () => {
   delete environment.XDG_DATA_HOME;
   delete environment.XDG_CONFIG_HOME;
   delete environment.COPILOT_HOME;
-  delete environment.GEMINI_CLI_HOME;
   delete environment.BROWSER_CONTROL_STATE_DIR;
 });
 after(async () => {
@@ -157,16 +156,19 @@ test("file clients preserve configuration and reject comments", { timeout: 180_0
     ["VS Code", join(app, "Code", "User", "mcp.json"), "servers"],
     ["VS Code Insiders", join(app, "Code - Insiders", "User", "mcp.json"), "servers"],
     ["GitHub Copilot CLI", join(home, ".copilot", "mcp-config.json"), "mcpServers"],
-    ["Gemini CLI", join(home, ".gemini", "settings.json"), "mcpServers"],
+    ["Antigravity CLI", join(home, ".gemini", "config", "mcp_config.json"), "mcpServers"],
   ];
   for (const [, path, key] of files) {
     mkdirSync(dirname(path), { recursive: true });
     writeFileSync(path, JSON.stringify({ other: 42, [key]: { existing: { command: "other" } } }));
   }
+  // Antigravity CLI can leave its file empty before any server is added.
+  const empty = files[files.length - 1][1];
+  writeFileSync(empty, "");
   const malformed = files[0][1];
   writeFileSync(malformed, "{ // comment\n}\n");
   // Without a terminal, setup registers only with the clients it is given.
-  const clients = "cursor,claude-desktop,devin-desktop,windsurf,vs-code,vs-code-insiders,github-copilot-cli,gemini-cli";
+  const clients = "cursor,claude,devin-desktop,windsurf,vs-code,vs-code-insiders,github-copilot-cli,antigravity-cli";
   // Setup registers clients in name order and then waits for the extension, so the test stops it once every client has a result.
   const allReported = (output) => files.every(([name]) => output.includes(`${name}: added`) || output.includes(`${name}: failed`));
   const setup = run("setup", "--clients", clients);
@@ -177,8 +179,10 @@ test("file clients preserve configuration and reject comments", { timeout: 180_0
   assert.equal(readFileSync(malformed, "utf8"), "{ // comment\n}\n");
   for (const [, path, key] of files.slice(1)) {
     const value = JSON.parse(readFileSync(path, "utf8"));
-    assert.equal(value.other, 42);
-    assert.equal(value[key].existing.command, "other");
+    if (path !== empty) {
+      assert.equal(value.other, 42);
+      assert.equal(value[key].existing.command, "other");
+    }
     assert.equal(value[key].bruse.args.at(-1), join(installed, "browser", "mcp", "server.mjs"));
   }
   // The clients that document a type field get it.
@@ -200,7 +204,8 @@ test("file clients preserve configuration and reject comments", { timeout: 180_0
   assert.deepEqual(entry("GitHub Copilot CLI").tools, ["*"]);
   assert.ok(readdirSync(join(installed, "backups")).length >= files.length - 1);
   writeFileSync(malformed, JSON.stringify({ other: 42, mcpServers: { existing: { command: "other" } } }));
-  const retry = run("setup", "--clients", clients);
+  // A choice name of an earlier version still works.
+  const retry = run("setup", "--clients", clients.replace("claude,", "claude-desktop,"));
   await until(() => allReported(retry.output()), { timeoutMs: 60_000 });
   retry.child.kill("SIGTERM");
   await retry.done;
@@ -217,8 +222,10 @@ test("file clients preserve configuration and reject comments", { timeout: 180_0
   assert.equal(uninstall.code, 0, uninstall.output);
   for (const [, path, key] of files) {
     const value = JSON.parse(readFileSync(path, "utf8"));
-    assert.equal(value.other, 42);
-    assert.equal(value[key].existing.command, "other");
+    if (path !== empty) {
+      assert.equal(value.other, 42);
+      assert.equal(value[key].existing.command, "other");
+    }
     assert.equal(value[key].bruse, undefined);
   }
 });

@@ -27,15 +27,16 @@ Both parts are needed: the server cannot reach tabs, and the extension cannot ac
 2. **Run the installer:**
 
    ```sh
-   bruse setup --clients <names the user chose, such as claude-code,codex>
+   bruse setup --clients <names the user chose, such as claude,codex>
    ```
 
    It copies `browser/` to `~/.local/share/bruse/browser`, replacing an earlier version, and registers
    a native messaging host for each supported browser. It registers the
-   MCP server as `bruse` with the agent clients the user picks (Claude Code, Codex, Cursor, VS Code and
-   Insiders, GitHub Copilot CLI, Gemini CLI, Claude Desktop, Devin Desktop, Windsurf). Without a terminal
+   MCP server as `bruse` with the agent clients the user picks (Claude, which covers Claude Code and
+   Claude Desktop, Codex, Cursor, VS Code and Insiders, GitHub Copilot CLI, Antigravity CLI, Devin
+   Desktop, Windsurf). Without a terminal
    it cannot ask, so ask the user which clients they want and pass them, for example
-   `bruse setup --clients claude-code,codex`; without `--clients` a first install stops
+   `bruse setup --clients claude,codex`; without `--clients` a first install stops
    and lists the clients it found. Then it waits up to 10 minutes for the extension to connect. Run it
    in the background or with a long timeout, and read its output.
 3. **Get the extension loaded.** This is needed once, and no command can do it: browsers load an

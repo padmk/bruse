@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- **Setup registers with Antigravity CLI instead of Gemini CLI.** Antigravity CLI (`agy`) replaced Gemini CLI, so setup, doctor and uninstall now use `agy mcp` or `~/.gemini/config/mcp_config.json`, also when that file is still empty, and no longer touch Gemini CLI. A registration an earlier version made in Gemini CLI stays there; `gemini mcp remove --scope user bruse` removes it.
+- **One choice for Claude.** Setup lists Claude Code and Claude Desktop as one client, `claude`, that registers with every installation found; `bruse setup --clients claude-code` and `claude-desktop` still work and mean `claude`. Doctor and uninstall still report each installation on its own. Setup run without a terminal and without `--clients` still updates only the installations that already have the server.
+
 ## 0.26.4
 
 - **A declaration that starts with a pattern and lists a plain name runs.** A code cell such as `const { a } = obj, b;` or `let [first] = list, rest;` failed with `ReferenceError: b is not defined`, because the whole declaration was rewritten as one assignment and the name without an initializer was not assigned `undefined`. Such a name is now assigned `undefined` in every rewritten declaration, also after a pattern.
