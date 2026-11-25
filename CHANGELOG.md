@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **A declaration that starts with a pattern on the line after a statement without a semicolon runs.** In a code cell such as `let n = 1` followed by `const { b } = obj` on the next line, the rewritten pattern continued the line before it as a call and the cell failed with `TypeError: 1 is not a function`. The statement before it now ends first.
+
 ## 0.27.0
 
 - **Setup registers with Antigravity CLI instead of Gemini CLI.** Antigravity CLI (`agy`) replaced Gemini CLI, so setup, doctor and uninstall now use `agy mcp` or `~/.gemini/config/mcp_config.json`, also when that file is still empty, and no longer touch Gemini CLI. A registration an earlier version made in Gemini CLI stays there; `gemini mcp remove --scope user bruse` removes it.

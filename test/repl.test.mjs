@@ -78,6 +78,8 @@ for (const [name, source, expected] of [
   ["patterns between plain declarators", "var n, { a } = { a: 25 }, [c] = [1], m = 2;\nlet after = [n, a, c, m]", "[ undefined, 25, 1, 2 ]"],
   ["pattern initialized by a function whose body starts on the next line", "let n = 26, { name } = function named()\n{};\nlet after = [n, name]", "[ 26, 'named' ]"],
   ["pattern initialized by a template whose substitution ends on the next line", "let n = 27, [ch] = `${\"x\"\n}`, m = 2;\nlet after = [n, ch, m]", "[ 27, 'x', 2 ]"],
+  ["object pattern on the line after a statement without a semicolon", "let n = 29\nconst { b } = { b: 30 }\nlet after = [n, b]", "[ 29, 30 ]"],
+  ["array pattern on the line after a function expression", "let f = function () {}\nlet [c] = [31]\nlet after = [typeof f, c]", "[ 'function', 31 ]"],
   ["pattern initialized with a regular expression after a division", "let [ch] = 8 / /,x/.source.length + \"\", b = 28;\nlet after = [ch, b]", "[ '4', 28 ]"],]) {
   test(`REPL preserves declaration after ${name}`, async (t) => {
     const client = await server(t);

@@ -149,8 +149,10 @@ export function hoistTopLevelDeclarations(code) {
       while (end + 1 < tokens.length && !(tokens[end + 1].depth === 0 && (tokens[end + 1].text === ";" || tokens[end + 1].lineBoundary))) end++;
       if (next.text === "{" || next.text === "[") {
         // A declaration that starts with a destructuring pattern must be parenthesized to parse as an
-        // expression; the declarators after it are then parts of one comma expression.
-        edits.push({ at: next.start, remove: 0, insert: "(" });
+        // expression; the declarators after it are then parts of one comma expression. After a line
+        // break that ended the previous statement without ";", the parenthesis would continue it as a
+        // call, so a ";" ends that statement first.
+        edits.push({ at: next.start, remove: 0, insert: token.lineBoundary ? ";(" : "(" });
         edits.push({ at: tokens[end].end, remove: 0, insert: ")" });
       }
       // Declarators without an initializer become explicit undefined assignments.
